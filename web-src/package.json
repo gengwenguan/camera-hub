@@ -1,0 +1,17 @@
+{
+  "name": "camera-hub-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "tsc -p tsconfig.json",
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "@moq/watch": "0.4.5",
+    "mpegts.js": "1.8.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2"
+  }
+}

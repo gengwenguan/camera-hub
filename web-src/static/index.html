@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>camera-hub</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260811-5">
+    <link rel="stylesheet" href="/style.css?v=20260813-1">
+</head>
+<body>
+    <div class="backdrop"></div>
+    <header class="topbar">
+        <a class="brand" href="/" aria-label="camera-hub 首页">
+            <span class="brand-mark" aria-hidden="true">
+                <svg viewBox="0 0 32 32">
+                    <path d="M8 9.5 16 5l8 4.5v9L16 23l-8-4.5Z"/>
+                    <circle cx="16" cy="14" r="3"/>
+                    <circle cx="8" cy="25" r="2"/>
+                    <circle cx="24" cy="25" r="2"/>
+                    <path d="M14.5 16.5 9 23M17.5 16.5 23 23"/>
+                </svg>
+            </span>
+            <span>
+                <strong>camera-hub</strong>
+                <small>通用媒体处理节点</small>
+            </span>
+        </a>
+        <div class="top-actions">
+            <span class="connection" id="hubConnection" data-state="idle">
+                <i></i><span>等待连接</span>
+            </span>
+            <button class="button ghost" id="refreshButton" type="button">刷新</button>
+            <button class="button ghost" id="logoutButton" type="button">退出</button>
+        </div>
+    </header>
+
+    <main class="shell">
+        <nav class="section-nav" aria-label="功能分区">
+            <button type="button" class="active" data-view-target="overview">运行概览</button>
+            <button type="button" data-view-target="live">实时直播</button>
+            <button type="button" data-view-target="evaluation">协议评测</button>
+            <button type="button" data-view-target="speech">语音记录</button>
+            <button type="button" data-view-target="playback">录像回放</button>
+            <button type="button" data-view-target="photos">AI 相册</button>
+            <button type="button" data-view-target="settings">节点设置</button>
+        </nav>
+
+        <section class="hero" data-view="overview">
+            <div>
+                <p class="eyebrow">CAMERA HUB</p>
+                <h1>状态、AI 与远端录像</h1>
+                <p class="hero-copy">管理当前 camera-hub 节点。开发板硬件与日常功能请使用开发板 Web。</p>
+            </div>
+            <div class="updated">
+                <span>最后更新</span>
+                <strong id="lastUpdated">--</strong>
+            </div>
+        </section>
+
+        <section class="metrics" aria-label="运行概览" data-view="overview">
+            <article class="metric">
+                <span>在线设备</span>
+                <strong id="onlineMetric">--</strong>
+                <small id="totalMetric">等待加载</small>
+            </article>
+            <article class="metric">
+                <span>正在录像</span>
+                <strong id="recordingMetric">--</strong>
+                <small>camera-hub 节点写入状态</small>
+            </article>
+            <article class="metric">
+                <span>当前文件</span>
+                <strong id="bytesMetric">--</strong>
+                <small>当前分段累计大小</small>
+            </article>
+            <article class="metric">
+                <span>服务运行</span>
+                <strong id="uptimeMetric">--</strong>
+                <small>camera-hub uptime</small>
+            </article>
+        </section>
+
+        <section class="panel host-panel" data-view="overview">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">HOST SYSTEM</p>
+                    <h2>主机状态</h2>
+                </div>
+                <span class="panel-note" id="hostIdentity">正在读取主机信息</span>
+            </div>
+            <div class="host-grid">
+                <article>
+                    <span>CPU</span>
+                    <strong id="hostCpu">--</strong>
+                    <small id="hostLoad">等待采样</small>
+                </article>
+                <article>
+                    <span>系统内存</span>
+                    <strong id="hostMemory">--</strong>
+                    <small id="hostMemoryDetail">等待采样</small>
+                </article>
+                <article>
+                    <span>camera-hub 内存</span>
+                    <strong id="hostProcess">--</strong>
+                    <small>进程 RSS</small>
+                </article>
+                <article>
+                    <span>数据盘</span>
+                    <strong id="hostDisk">--</strong>
+                    <small id="hostDiskDetail">等待采样</small>
+                </article>
+            </div>
+        </section>
+
+        <section class="panel" data-view="overview">
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">DEVICES</p>
+                    <h2>设备状态</h2>
+                </div>
+                <span class="panel-note">每 10 秒自动刷新</span>
+            </div>
+            <div class="device-grid" id="deviceGrid">
+                <div class="empty">正在加载设备状态…</div>
+            </div>
+        </section>
+
+        <section class="view-heading" data-view="live" hidden>
+            <p class="eyebrow">HUB LIVE</p>
+            <h1>camera-hub 实时直播</h1>
+            <p>开发板只上传 H264/AAC；当前节点提供 fMP4/MSE、HTTP-FLV、WebRTC 与 MoQ 四种实时播放路径。</p>
+        </section>
+
+        <section class="panel live-panel" data-view="live" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">LIVE MEDIA</p>
+                    <h2>实时画面</h2>
+                </div>
+                <label class="inline-select">
+                    <span>设备</span>
+                    <select id="liveDeviceSelect" disabled>
+                        <option>暂无设备</option>
+                    </select>
+                </label>
+            </div>
+            <div class="live-stage">
+                <video id="livePlayer" controls playsinline></video>
+                <div id="moqPlayer" hidden></div>
+                <span class="live-badge" id="liveStatus">尚未开始</span>
+                <time class="live-clock" id="liveClock" aria-label="浏览器当前时间"></time>
+            </div>
+            <div class="live-actions">
+                <button class="button ghost" id="startSmoothLive" type="button">fMP4/MSE 直播</button>
+                <button class="button ghost" id="startFlvLive" type="button">HTTP-FLV 直播</button>
+                <button class="button ghost" id="startLowLive" type="button">WebRTC 直播</button>
+                <button class="button ghost" id="startMoqLive" type="button">MoQ 直播</button>
+                <button class="button ghost" id="stopLive" type="button" disabled>停止</button>
+                <span>fMP4/MSE、HTTP-FLV 基于 TCP；WebRTC、MoQ 基于 UDP。</span>
+            </div>
+        </section>
+
+        <section class="view-heading" data-view="evaluation" hidden>
+            <p class="eyebrow">PROTOCOL EVALUATION</p>
+            <h1>直播协议并行评测</h1>
+            <p>一键并行启动 fMP4/MSE、HTTP-FLV、WebRTC 与 MoQ，以浏览器真实渲染帧统一统计。</p>
+        </section>
+
+        <section class="panel evaluation-panel" data-view="evaluation" hidden>
+            <div class="panel-heading evaluation-heading">
+                <div>
+                    <p class="eyebrow">LIVE BENCHMARK</p>
+                    <h2>四协议同步评测</h2>
+                </div>
+                <div class="evaluation-controls">
+                    <label class="inline-select">
+                        <span>设备</span>
+                        <select id="evaluationDeviceSelect" disabled>
+                            <option>暂无设备</option>
+                        </select>
+                    </label>
+                    <button class="button primary" id="startEvaluation" type="button">一键开始</button>
+                    <button class="button ghost" id="stopEvaluation" type="button" disabled>同步停止</button>
+                </div>
+            </div>
+            <div class="evaluation-summary">
+                <strong id="evaluationStatus">尚未开始</strong>
+                <span id="evaluationClockStatus">等待时钟校准</span>
+            </div>
+            <div class="evaluation-grid">
+                <article class="evaluation-card">
+                    <header><strong>fMP4/MSE</strong><span>WebSocket · TCP</span></header>
+                    <video id="evaluationMseVideo" muted playsinline></video>
+                </article>
+                <article class="evaluation-card">
+                    <header><strong>HTTP-FLV</strong><span>FLV · TCP</span></header>
+                    <video id="evaluationFlvVideo" muted playsinline></video>
+                </article>
+                <article class="evaluation-card">
+                    <header><strong>WebRTC</strong><span>SRTP · UDP</span></header>
+                    <video id="evaluationWebrtcVideo" muted playsinline></video>
+                </article>
+                <article class="evaluation-card">
+                    <header><strong>MoQ</strong><span>MSF + LOC · QUIC</span></header>
+                    <div id="evaluationMoqPlayer" class="evaluation-moq"></div>
+                </article>
+            </div>
+            <div class="evaluation-table-wrap">
+                <table class="evaluation-table">
+                    <thead>
+                        <tr>
+                            <th>协议</th>
+                            <th>状态</th>
+                            <th>首帧出图</th>
+                            <th>当前编码后 E2E</th>
+                            <th>平均编码后 E2E</th>
+                            <th>最大编码后 E2E</th>
+                            <th>微卡顿 &gt;100ms</th>
+                            <th>可感知 &gt;250ms</th>
+                            <th>严重 &gt;500ms</th>
+                            <th>额外卡顿时长</th>
+                            <th>最大帧间隔</th>
+                            <th>渲染帧</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr data-eval-protocol="mse">
+                            <th>fMP4/MSE</th><td data-eval-field="status">等待启动</td>
+                            <td data-eval-field="first">--</td><td data-eval-field="current">--</td>
+                            <td data-eval-field="average">--</td><td data-eval-field="max">--</td>
+                            <td data-eval-field="micro-stalls">0</td>
+                            <td data-eval-field="perceptible-stalls">0</td>
+                            <td data-eval-field="severe-stalls">0</td>
+                            <td data-eval-field="stall-time">0 ms</td>
+                            <td data-eval-field="max-gap">--</td>
+                            <td data-eval-field="frames">0</td>
+                        </tr>
+                        <tr data-eval-protocol="flv">
+                            <th>HTTP-FLV</th><td data-eval-field="status">等待启动</td>
+                            <td data-eval-field="first">--</td><td data-eval-field="current">--</td>
+                            <td data-eval-field="average">--</td><td data-eval-field="max">--</td>
+                            <td data-eval-field="micro-stalls">0</td>
+                            <td data-eval-field="perceptible-stalls">0</td>
+                            <td data-eval-field="severe-stalls">0</td>
+                            <td data-eval-field="stall-time">0 ms</td>
+                            <td data-eval-field="max-gap">--</td>
+                            <td data-eval-field="frames">0</td>
+                        </tr>
+                        <tr data-eval-protocol="webrtc">
+                            <th>WebRTC</th><td data-eval-field="status">等待启动</td>
+                            <td data-eval-field="first">--</td><td data-eval-field="current">--</td>
+                            <td data-eval-field="average">--</td><td data-eval-field="max">--</td>
+                            <td data-eval-field="micro-stalls">0</td>
+                            <td data-eval-field="perceptible-stalls">0</td>
+                            <td data-eval-field="severe-stalls">0</td>
+                            <td data-eval-field="stall-time">0 ms</td>
+                            <td data-eval-field="max-gap">--</td>
+                            <td data-eval-field="frames">0</td>
+                        </tr>
+                        <tr data-eval-protocol="moq">
+                            <th>MoQ</th><td data-eval-field="status">等待启动</td>
+                            <td data-eval-field="first">--</td><td data-eval-field="current">--</td>
+                            <td data-eval-field="average">--</td><td data-eval-field="max">--</td>
+                            <td data-eval-field="micro-stalls">0</td>
+                            <td data-eval-field="perceptible-stalls">0</td>
+                            <td data-eval-field="severe-stalls">0</td>
+                            <td data-eval-field="stall-time">0 ms</td>
+                            <td data-eval-field="max-gap">--</td>
+                            <td data-eval-field="frames">0</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="evaluation-notes">
+                <p><strong>首帧：</strong>点击开始到第一帧提交浏览器合成器或 Canvas 完成绘制。</p>
+                <p><strong>编码后 E2E：</strong>CHP1 v2 为 H264 编码完成到真实渲染，不包含曝光、ISP 和编码耗时；v1 仅为节点接收到渲染的估算。</p>
+                <p><strong>卡顿：</strong>分别统计超过 100/250/500 ms 的帧间隔；额外时长扣除 30fps 正常帧周期，页面隐藏期间不计。</p>
+            </div>
+        </section>
+
+        <section class="view-heading" data-view="speech" hidden>
+            <p class="eyebrow">SPEECH NOTES</p>
+            <h1>录音转写与总结</h1>
+            <p>浏览器实时上传 Opus 分片；结束录音后，小米 6 串行完成中文转写和会议总结。</p>
+        </section>
+
+        <section class="panel speech-recorder-panel" data-view="speech" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">BROWSER RECORDER</p>
+                    <h2>新建语音记录</h2>
+                </div>
+                <span class="chip" id="speechRuntimeStatus">正在检查模型</span>
+            </div>
+            <div class="speech-recorder-grid">
+                <div class="speech-recorder-visual" id="speechRecorderVisual" data-state="idle">
+                    <span class="speech-pulse" aria-hidden="true"></span>
+                    <strong id="speechElapsed">00:00</strong>
+                    <small id="speechRecordingStatus">等待开始录音</small>
+                </div>
+                <div class="speech-controls">
+                    <label>
+                        <span>记录标题</span>
+                        <input id="speechTitle" type="text" maxlength="80"
+                               placeholder="例如：项目讨论">
+                    </label>
+                    <div class="speech-buttons">
+                        <button class="button primary" id="startSpeechRecording" type="button">
+                            开始录音
+                        </button>
+                        <button class="button ghost" id="stopSpeechRecording" type="button" disabled>
+                            结束并处理
+                        </button>
+                    </div>
+                    <dl class="speech-upload-stats">
+                        <div><dt>已上传</dt><dd id="speechUploaded">0 B</dd></div>
+                        <div><dt>音频格式</dt><dd id="speechMime">--</dd></div>
+                        <div><dt>结果目录</dt><dd id="speechStorage">等待服务状态</dd></div>
+                    </dl>
+                    <p class="speech-note">
+                        录音期间请保持页面在前台并避免锁屏。停止后可以离开页面，识别和总结会继续执行。
+                    </p>
+                </div>
+            </div>
+        </section>
+
+        <section class="panel speech-results-panel" data-view="speech" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">SPEECH HISTORY</p>
+                    <h2>语音记录</h2>
+                </div>
+                <button class="button ghost" id="refreshSpeech" type="button">刷新结果</button>
+            </div>
+            <div class="speech-results-grid">
+                <div class="speech-session-list" id="speechSessionList">
+                    <div class="empty">暂无语音记录</div>
+                </div>
+                <article class="speech-detail">
+                    <header>
+                        <div>
+                            <strong id="speechDetailTitle">请选择语音记录</strong>
+                            <small id="speechDetailMeta">转写和总结将在这里显示</small>
+                        </div>
+                        <span class="chip" id="speechDetailState">--</span>
+                    </header>
+                    <div class="speech-progress" id="speechProgress" hidden>
+                        <i></i>
+                    </div>
+                    <section>
+                        <h3>会议总结</h3>
+                        <pre id="speechSummary">尚未生成总结</pre>
+                    </section>
+                    <section>
+                        <h3>语音转写</h3>
+                        <pre id="speechTranscript">尚未生成转写</pre>
+                    </section>
+                    <div class="speech-detail-actions">
+                        <button class="button ghost" id="deleteSpeechSession" type="button" disabled>
+                            删除记录
+                        </button>
+                    </div>
+                </article>
+            </div>
+        </section>
+
+        <section class="view-heading" data-view="settings" hidden>
+            <p class="eyebrow">HUB SETTINGS</p>
+            <h1>camera-hub 服务设置</h1>
+            <p>只管理 camera-hub 自身的 ONNX AI、录像和清理策略。</p>
+        </section>
+
+        <section class="panel settings-panel" data-view="settings" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">HUB SETTINGS</p>
+                    <h2>camera-hub 配置</h2>
+                </div>
+                <span class="chip" id="settingsStatus">等待加载</span>
+            </div>
+            <form id="settingsForm">
+                <div class="settings-grid">
+                    <fieldset>
+                        <legend>ONNX AI</legend>
+                        <label class="toggle">
+                            <input type="checkbox" id="aiEnabled">
+                            <span>启用当前节点的人形检测与图片回传</span>
+                        </label>
+                        <label>
+                            <span>推理间隔（毫秒）</span>
+                            <input type="number" id="aiInterval" min="500" max="60000" step="100" required>
+                        </label>
+                        <label>
+                            <span>Person 置信度</span>
+                            <input type="number" id="aiThreshold" min="0.05" max="0.95" step="0.05" required>
+                        </label>
+                        <label>
+                            <span>最小人物框面积（画面 %）</span>
+                            <input type="number" id="aiMinPersonArea" min="0" max="100" step="0.1" required>
+                        </label>
+                        <label>
+                            <span>抓拍冷却（秒）</span>
+                            <input type="number" id="aiCooldown" min="1" max="3600" step="1" required>
+                        </label>
+                        <label>
+                            <span>单设备照片上限</span>
+                            <input type="number" id="aiSnapshotMaxCount" min="1" max="100000" step="1" required>
+                        </label>
+                        <label>
+                            <span>JPEG 图片质量（1–100）</span>
+                            <input type="number" id="aiSnapshotQuality" min="1" max="100" step="1" required>
+                        </label>
+                        <small id="aiRuntimeStatus">等待 AI 状态</small>
+                    </fieldset>
+                    <fieldset>
+                        <legend>远端录像</legend>
+                        <label class="toggle">
+                            <input type="checkbox" id="recordEnabled">
+                            <span>在当前节点长期保存录像</span>
+                        </label>
+                        <label>
+                            <span>分片时长（秒）</span>
+                            <input type="number" id="segmentSeconds" min="10" max="3600" step="1" required>
+                        </label>
+                        <label>
+                            <span>保留天数</span>
+                            <input type="number" id="retainDays" min="1" max="365" step="1" required>
+                        </label>
+                        <label>
+                            <span>容量上限（GB）</span>
+                            <input type="number" id="maxGb" min="1" max="512" step="1" required>
+                        </label>
+                        <small>关闭录像只停止写盘，不影响 AI、图片回传和实时直播。</small>
+                    </fieldset>
+                </div>
+                <div class="settings-actions">
+                    <button class="button ghost" id="reloadSettings" type="button">重新加载</button>
+                    <button class="button primary" id="saveSettings" type="submit">保存服务设置</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="view-heading" data-view="playback" hidden>
+            <p class="eyebrow">REMOTE RECORDS</p>
+            <h1>节点录像回放</h1>
+            <p>通过 `.idx` 索引和 HTTP Range 按需加载，支持直接播放与拖动。</p>
+        </section>
+
+        <section class="panel records-panel" data-view="playback" hidden>
+            <div class="panel-heading records-heading">
+                <div>
+                    <p class="eyebrow">REMOTE RECORDS</p>
+                    <h2>远端录像</h2>
+                </div>
+                <div class="filters">
+                    <label>
+                        <span>设备</span>
+                        <select id="deviceSelect" disabled>
+                            <option>暂无设备</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>日期</span>
+                        <select id="dateSelect" disabled>
+                            <option>暂无录像</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>倍速</span>
+                        <select id="playbackSpeed" aria-label="回放倍速"
+                                title="高于 2 倍速时自动静音">
+                            <option value="0.5">0.5x</option>
+                            <option value="1" selected>1x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="2">2x</option>
+                            <option value="4">4x</option>
+                            <option value="8">8x</option>
+                            <option value="16">16x</option>
+                        </select>
+                    </label>
+                </div>
+            </div>
+            <div class="record-summary" id="recordSummary">请选择设备查看远端录像。</div>
+            <div class="record-player" id="recordPlayerBox" hidden>
+                <video id="recordPlayer" controls playsinline preload="metadata"></video>
+                <div>
+                    <span>
+                        <strong id="recordPlayerTitle">--</strong>
+                        <small id="recordPlayerStatus">等待选择录像</small>
+                    </span>
+                    <a class="button ghost" id="recordDownload" href="#" download>下载录像</a>
+                </div>
+            </div>
+            <div class="day-timeline">
+                <div class="timeline-heading">
+                    <div>
+                        <strong>全天录像时间轴</strong>
+                        <small>拖动或点击，直接定位到当天录像</small>
+                    </div>
+                    <output id="timelinePosition">--:--:--</output>
+                </div>
+                <div class="timeline-wrap">
+                    <canvas id="recordTimeline" height="72" tabindex="0" role="slider"
+                            aria-label="全天录像时间轴" aria-valuemin="0"
+                            aria-valuemax="86399" aria-valuenow="0"></canvas>
+                    <span class="timeline-tip" id="timelineTip" hidden></span>
+                </div>
+                <div class="timeline-legend">
+                    <span><i class="available"></i>有录像</span>
+                    <span><i class="cursor"></i>播放位置</span>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>开始时间</th>
+                            <th>文件名</th>
+                            <th>大小</th>
+                            <th>状态</th>
+                            <th>更新时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recordTable">
+                        <tr><td colspan="6" class="empty-cell">暂无录像数据</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="view-heading" data-view="photos" hidden>
+            <p class="eyebrow">AI SNAPSHOTS</p>
+            <h1>AI 相册</h1>
+            <p>查看 camera-hub 节点 ONNX 检测保存的原始标注图片；开发板相册中保存的是同步副本。</p>
+        </section>
+
+        <section class="panel photos-panel" data-view="photos" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">PERSON DETECTIONS</p>
+                    <h2>检测抓拍</h2>
+                </div>
+                <div class="photo-actions">
+                    <label class="inline-select">
+                        <span>设备</span>
+                        <select id="photoDeviceSelect" disabled>
+                            <option>暂无设备</option>
+                        </select>
+                    </label>
+                    <button class="button ghost" id="refreshPhotos" type="button">刷新相册</button>
+                    <button class="button ghost" id="selectAllPhotos" type="button" disabled>全选</button>
+                    <button class="button ghost" id="clearPhotoSelection" type="button" disabled>取消选择</button>
+                    <button class="button danger" id="deleteSelectedPhotos" type="button" disabled>删除选中</button>
+                    <button class="button danger" id="clearPhotos" type="button" disabled>清空全部</button>
+                </div>
+            </div>
+            <div class="record-summary" id="photoSummary">请选择设备查看 AI 抓拍。</div>
+            <div class="photo-grid" id="photoGrid"></div>
+            <div class="empty" id="photoEmpty">暂无 AI 抓拍</div>
+        </section>
+    </main>
+
+    <div class="photo-lightbox" id="photoLightbox" hidden>
+        <button class="button ghost lightbox-close" id="closePhoto" type="button">关闭</button>
+        <img id="photoPreview" alt="AI 抓拍预览">
+        <div class="photo-lightbox-actions">
+            <a class="button ghost" id="downloadPhoto" href="#" download>下载原图</a>
+            <button class="button danger" id="deletePhoto" type="button">删除此照片</button>
+        </div>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+    <script type="module" src="/generated/flv-player.js?v=20260813-2"></script>
+    <script type="module" src="/generated/moq-player.js?v=20260813-2"></script>
+    <script type="module" src="/generated/evaluation.js?v=20260813-2"></script>
+    <script src="/app.js?v=20260814-1" defer></script>
+</body>
+</html>

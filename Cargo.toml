@@ -1,0 +1,44 @@
+[package]
+name = "camera-hub"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+axum = { version = "0.8", features = ["http1", "json", "tokio", "ws"] }
+axum-server = { version = "0.7.2", features = ["tls-rustls-no-provider"] }
+base64 = "0.23"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+clap = { version = "4.5", features = ["derive", "env"] }
+http-body-util = "0.1"
+hmac = "0.12"
+hex = "0.4"
+libc = "0.2"
+moq-loc = "=0.2.0"
+moq-msf = "=0.4.0"
+moq-native = { version = "=0.19.9", default-features = false, features = ["quinn", "ring"] }
+moq-net = "=0.2.10"
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-23", "load-dynamic", "ndarray"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tower-http = { version = "0.6", features = ["cors", "limit", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+webrtc = { git = "https://github.com/gengwenguan/webrtc", rev = "a91689c3dd237ea48a0ce5a827a69d3807420a5c" }
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[patch.crates-io]
+moq-native = { path = "vendor/moq-native" }
+web-transport-quinn = { path = "vendor/web-transport-quinn" }
