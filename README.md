@@ -292,7 +292,8 @@ LinuxDeploy 适配器可运行独立的 `camera-hub-voice` 进程。它使用 sh
 录像。
 
 Web 的“语音控制”页面支持配置命令短语、成功回复、GET/POST URL、JSON 请求体、
-boosting score、触发阈值和冷却时间。配置保存在
+boosting score、触发阈值、冷却时间和 0–100 的播报音量。播报音量只调整
+`espeak-ng` 生成的回复，不修改系统全局播放音量。配置保存在
 `CAMERA_HUB_VOICE_CONFIG_FILE`，触发记录写入
 `CAMERA_HUB_VOICE_EVENTS_FILE`。URL 成功返回后由 `espeak-ng` 生成中文回复并
 通过 ALSA 播放；失败时播放统一失败回复。

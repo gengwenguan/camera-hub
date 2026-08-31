@@ -47,6 +47,8 @@
         voiceEnabled: $("voiceEnabled"),
         voiceCaptureDevice: $("voiceCaptureDevice"),
         voicePlaybackDevice: $("voicePlaybackDevice"),
+        voicePlaybackVolume: $("voicePlaybackVolume"),
+        voicePlaybackVolumeValue: $("voicePlaybackVolumeValue"),
         voiceRequestTimeout: $("voiceRequestTimeout"),
         voiceGlobalCooldown: $("voiceGlobalCooldown"),
         voiceFailureReply: $("voiceFailureReply"),
@@ -384,6 +386,9 @@
             ui.voiceEnabled.checked = !!config.enabled;
             ui.voiceCaptureDevice.value = config.capture_device || "hw:0,0";
             ui.voicePlaybackDevice.value = config.playback_device || "plughw:0,0";
+            const playbackVolume = Number(config.playback_volume ?? 60);
+            ui.voicePlaybackVolume.value = playbackVolume;
+            ui.voicePlaybackVolumeValue.textContent = `${playbackVolume}%`;
             ui.voiceRequestTimeout.value = config.request_timeout_ms || 3000;
             ui.voiceGlobalCooldown.value = config.global_cooldown_ms || 2000;
             ui.voiceFailureReply.value = config.failure_reply || "操作失败，请稍后再试";
@@ -472,6 +477,7 @@
         config.enabled = ui.voiceEnabled.checked;
         config.capture_device = ui.voiceCaptureDevice.value.trim();
         config.playback_device = ui.voicePlaybackDevice.value.trim();
+        config.playback_volume = Number(ui.voicePlaybackVolume.value);
         config.capture_rate = Number(config.capture_rate || 48000);
         config.request_timeout_ms = Number(ui.voiceRequestTimeout.value);
         config.global_cooldown_ms = Number(ui.voiceGlobalCooldown.value);
@@ -1923,6 +1929,9 @@
     });
     ui.voiceForm.addEventListener("input", () => {
         state.voiceDirty = true;
+    });
+    ui.voicePlaybackVolume.addEventListener("input", () => {
+        ui.voicePlaybackVolumeValue.textContent = `${ui.voicePlaybackVolume.value}%`;
     });
     ui.voiceForm.addEventListener("submit", saveVoice);
     ui.reloadVoice.addEventListener("click", async () => {

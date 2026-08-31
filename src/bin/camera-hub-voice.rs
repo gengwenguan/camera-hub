@@ -378,7 +378,7 @@ async fn execute_command(
         } else {
             &config.failure_reply
         };
-        if let Err(error) = speak(reply, &config.playback_device).await {
+        if let Err(error) = speak(reply, &config.playback_device, config.playback_volume).await {
             status.last_error = format!("播放回复失败：{error:#}");
         }
     }
@@ -434,11 +434,12 @@ async fn call_command_url(
     }
 }
 
-async fn speak(text: &str, playback_device: &str) -> Result<()> {
+async fn speak(text: &str, playback_device: &str, playback_volume: u8) -> Result<()> {
     let wav =
         std::env::temp_dir().join(format!("camera-hub-voice-reply-{}.wav", std::process::id()));
+    let playback_volume = playback_volume.to_string();
     let status = Command::new("espeak-ng")
-        .args(["-v", "cmn", "-s", "145", "-w"])
+        .args(["-v", "cmn", "-s", "145", "-a", &playback_volume, "-w"])
         .arg(&wav)
         .arg(text)
         .status()

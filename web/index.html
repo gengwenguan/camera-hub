@@ -324,6 +324,11 @@
                         <span>播放设备</span>
                         <input id="voicePlaybackDevice" type="text" maxlength="80" required>
                     </label>
+                    <label class="voice-volume">
+                        <span>播报音量 <output id="voicePlaybackVolumeValue">60%</output></span>
+                        <input id="voicePlaybackVolume" type="range"
+                               min="0" max="100" step="5" value="60">
+                    </label>
                     <label>
                         <span>请求超时（毫秒）</span>
                         <input id="voiceRequestTimeout" type="number"

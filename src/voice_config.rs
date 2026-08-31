@@ -13,6 +13,7 @@ pub struct VoiceConfig {
     pub enabled: bool,
     pub capture_device: String,
     pub playback_device: String,
+    pub playback_volume: u8,
     pub capture_rate: i32,
     pub request_timeout_ms: u64,
     pub global_cooldown_ms: u64,
@@ -82,6 +83,7 @@ impl Default for VoiceConfig {
             enabled: false,
             capture_device: "hw:0,0".to_owned(),
             playback_device: "plughw:0,0".to_owned(),
+            playback_volume: 60,
             capture_rate: 48_000,
             request_timeout_ms: 3_000,
             global_cooldown_ms: 2_000,
@@ -128,6 +130,7 @@ impl VoiceConfig {
         self.version = VOICE_CONFIG_VERSION;
         self.capture_device = self.capture_device.trim().to_owned();
         self.playback_device = self.playback_device.trim().to_owned();
+        self.playback_volume = self.playback_volume.min(100);
         self.capture_rate = self.capture_rate.clamp(8_000, 192_000);
         self.request_timeout_ms = self.request_timeout_ms.clamp(500, 30_000);
         self.global_cooldown_ms = self.global_cooldown_ms.clamp(500, 60_000);
@@ -292,5 +295,13 @@ mod tests {
         let mut config = VoiceConfig::default();
         config.commands[0].phrase = "hey小雨".to_owned();
         assert!(config.normalize().is_err());
+    }
+
+    #[test]
+    fn loads_default_playback_volume_from_legacy_config() {
+        let mut value = serde_json::to_value(VoiceConfig::default()).unwrap();
+        value.as_object_mut().unwrap().remove("playback_volume");
+        let config: VoiceConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.playback_volume, 60);
     }
 }

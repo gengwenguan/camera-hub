@@ -1054,6 +1054,23 @@ input:focus {
     padding: 0 11px;
 }
 
+.voice-volume > span {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.voice-volume output {
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.voice-volume input[type="range"] {
+    min-height: 38px;
+    padding: 0;
+    accent-color: var(--accent);
+}
+
 .voice-command-heading {
     display: flex;
     gap: 14px;
