@@ -18,7 +18,7 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 use voice_config::{VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceWorkerStatus};
 
-const DEFAULT_KEYWORD: &str = "x iǎo y ǔ :1.50 #0.45 @小雨";
+const MODEL_PROBE_KEYWORD: &str = "x iǎo y ǔ :1.50 #0.45 @小雨";
 
 #[derive(Debug, Parser)]
 #[command(version, about = "Local keyword-control worker for camera-hub")]
@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     };
     write_status(&args.status, &status)?;
 
-    let spotter = match create_spotter(&args.model_dir) {
+    let mut spotter = match create_spotter(&args.model_dir, MODEL_PROBE_KEYWORD) {
         Ok(spotter) => spotter,
         Err(error) => {
             status.state = "failed".to_owned();
@@ -80,6 +80,7 @@ async fn main() -> Result<()> {
         .build()
         .context("build HTTP client")?;
     let mut cooldowns = HashMap::new();
+    let mut spotter_revision = 0_u64;
 
     loop {
         let config = match load_config(&args.config) {
@@ -122,6 +123,10 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
+        if spotter_revision != config.revision {
+            spotter = create_spotter(&args.model_dir, &keywords)?;
+            spotter_revision = config.revision;
+        }
 
         status.running = true;
         status.state = "listening".to_owned();
@@ -132,7 +137,6 @@ async fn main() -> Result<()> {
             &inference_lock,
             &client,
             &config,
-            &keywords,
             &args,
             &mut status,
             &mut cooldowns,
@@ -148,7 +152,7 @@ async fn main() -> Result<()> {
     }
 }
 
-fn create_spotter(model_dir: &Path) -> Result<KeywordSpotter> {
+fn create_spotter(model_dir: &Path, keywords: &str) -> Result<KeywordSpotter> {
     let mut config = KeywordSpotterConfig::default();
     config.model_config.transducer.encoder = Some(
         model_dir
@@ -171,7 +175,7 @@ fn create_spotter(model_dir: &Path) -> Result<KeywordSpotter> {
     config.model_config.tokens = Some(model_dir.join("tokens.txt").display().to_string());
     config.model_config.provider = Some("cpu".to_owned());
     config.model_config.num_threads = 1;
-    config.keywords_buf = Some(DEFAULT_KEYWORD.to_owned());
+    config.keywords_buf = Some(keywords.to_owned());
     KeywordSpotter::create(&config)
         .ok_or_else(|| anyhow::anyhow!("无法加载 sherpa-onnx 关键词模型"))
 }
@@ -181,7 +185,6 @@ async fn capture_once(
     inference_lock: &InferenceLock,
     client: &Client,
     config: &VoiceConfig,
-    keywords: &str,
     args: &Args,
     status: &mut VoiceWorkerStatus,
     cooldowns: &mut HashMap<String, Instant>,
@@ -191,7 +194,7 @@ async fn capture_once(
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("无法读取 arecord 音频输出"))?;
-    let stream = spotter.create_stream_with_keywords(keywords);
+    let stream = spotter.create_stream();
     let mut buffer = vec![0u8; 8192];
     let mut last_status = Instant::now();
 
