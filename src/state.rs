@@ -9,6 +9,7 @@ use crate::moq_live::MoqLive;
 use crate::mux::MediaMuxers;
 use crate::settings::HubSettingsStore;
 use crate::system::SystemMonitor;
+use crate::voice::VoiceService;
 use crate::webrtc_live::WebRtcRelay;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -57,6 +58,7 @@ pub struct AppState {
     pub moq: Arc<MoqLive>,
     pub ai: Arc<AiService>,
     pub settings: Arc<HubSettingsStore>,
+    pub voice: Arc<VoiceService>,
     pub webrtc: Arc<WebRtcRelay>,
     pub system: Arc<SystemMonitor>,
     devices: RwLock<BTreeMap<String, DeviceEntry>>,
@@ -71,6 +73,7 @@ impl AppState {
         settings: Arc<HubSettingsStore>,
         media: Arc<MediaStore>,
         ai: Arc<AiService>,
+        voice: Arc<VoiceService>,
         frames: Arc<FrameHub>,
     ) -> Self {
         let system = Arc::new(SystemMonitor::new(config.data_dir.clone()));
@@ -89,6 +92,7 @@ impl AppState {
             frames,
             ai,
             settings,
+            voice,
             system,
             devices: RwLock::new(BTreeMap::new()),
             links: RwLock::new(BTreeMap::new()),

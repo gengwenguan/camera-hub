@@ -4,15 +4,17 @@ mod benchmark;
 mod config;
 mod flv_live;
 mod frames;
+mod inference_lock;
 mod live;
 mod media;
 mod moq_live;
 mod mux;
 mod record_file;
 mod settings;
-mod speech;
 mod state;
 mod system;
+mod voice;
+mod voice_config;
 mod web;
 mod webrtc_live;
 
@@ -21,8 +23,9 @@ use crate::config::Config;
 use crate::frames::FrameHub;
 use crate::media::MediaStore;
 use crate::settings::{HubSettings, HubSettingsPatch, HubSettingsStore};
-use crate::speech::SpeechService;
 use crate::state::{AppState, DeviceHeartbeat};
+use crate::voice::VoiceService;
+use crate::voice_config::{VoiceConfig, VoiceTestRequest};
 use anyhow::{Context, Result};
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -30,7 +33,7 @@ use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Json, Router, middleware};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
@@ -70,13 +73,13 @@ async fn main() -> Result<()> {
     let media = Arc::new(MediaStore::new(config.data_dir.clone(), settings.clone())?);
     let frames = Arc::new(FrameHub::default());
     let ai = AiService::start(&config, settings.clone(), frames.clone())?;
-    let speech = SpeechService::start(&config)?;
+    let voice = Arc::new(VoiceService::load(&config)?);
     let state = Arc::new(AppState::new(
         config.clone(),
         settings,
         media.clone(),
         ai.clone(),
-        speech,
+        voice,
         frames,
     ));
     spawn_cleaner(media, ai);
@@ -106,23 +109,8 @@ async fn main() -> Result<()> {
             get(hub_settings).put(update_hub_settings),
         )
         .route("/api/v1/ai/status", get(ai_status))
-        .route("/api/v1/speech/status", get(speech_status))
-        .route(
-            "/api/v1/speech/sessions",
-            get(speech_sessions).post(create_speech_session),
-        )
-        .route(
-            "/api/v1/speech/sessions/{session_id}",
-            get(speech_session).delete(delete_speech_session),
-        )
-        .route(
-            "/api/v1/speech/sessions/{session_id}/chunks/{sequence}",
-            put(upload_speech_chunk),
-        )
-        .route(
-            "/api/v1/speech/sessions/{session_id}/finish",
-            post(finish_speech_session),
-        )
+        .route("/api/v1/voice", get(voice_overview).put(update_voice))
+        .route("/api/v1/voice/test", post(test_voice))
         .route("/api/v1/system/status", get(system_status))
         .route("/api/v1/moq/status", get(moq_status))
         .route(
@@ -778,101 +766,34 @@ async fn ai_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value
     Json(json!({"ai":state.ai.status()}))
 }
 
-#[derive(Default, Deserialize)]
-struct CreateSpeechSession {
-    #[serde(default)]
-    title: String,
-    mime_type: String,
+async fn voice_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let (config_path, status_path, events_path) = state.voice.paths();
+    Json(json!({
+        "config": state.voice.current(),
+        "status": state.voice.status(),
+        "events": state.voice.events(50),
+        "paths": {
+            "config": config_path,
+            "status": status_path,
+            "events": events_path,
+        }
+    }))
 }
 
-#[derive(Deserialize)]
-struct FinishSpeechSession {
-    chunk_count: u32,
-    duration_ms: u64,
-}
-
-async fn speech_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(json!({"speech":state.speech.status().await}))
-}
-
-async fn speech_sessions(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(json!({"sessions":state.speech.list().await}))
-}
-
-async fn create_speech_session(
+async fn update_voice(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<CreateSpeechSession>,
-) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    if !state.speech.available() {
-        return Err(ApiError::status(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "speech models are unavailable",
-        ));
-    }
-    let session = state
-        .speech
-        .create(&request.title, &request.mime_type)
-        .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({"ok":true,"session":session})),
-    ))
-}
-
-async fn speech_session(
-    State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
+    Json(config): Json<VoiceConfig>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let session = state
-        .speech
-        .detail(&session_id)
-        .await?
-        .ok_or_else(|| ApiError::status(StatusCode::NOT_FOUND, "speech session not found"))?;
-    Ok(Json(json!({"session":session})))
+    let config = state.voice.update(config)?;
+    Ok(Json(json!({"ok":true,"config":config})))
 }
 
-async fn upload_speech_chunk(
+async fn test_voice(
     State(state): State<Arc<AppState>>,
-    Path((session_id, sequence)): Path<(String, u32)>,
-    data: Bytes,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let session = state
-        .speech
-        .upload_chunk(&session_id, sequence, &data)
-        .await?;
-    Ok(Json(json!({
-        "ok": true,
-        "sequence": sequence,
-        "uploaded_bytes": session.uploaded_bytes
-    })))
-}
-
-async fn finish_speech_session(
-    State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-    Json(request): Json<FinishSpeechSession>,
+    Json(request): Json<VoiceTestRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let session = state
-        .speech
-        .finish(&session_id, request.chunk_count, request.duration_ms)
-        .await?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(json!({"ok":true,"session":session})),
-    ))
-}
-
-async fn delete_speech_session(
-    State(state): State<Arc<AppState>>,
-    Path(session_id): Path<String>,
-) -> Result<StatusCode, ApiError> {
-    if !state.speech.delete(&session_id).await? {
-        return Err(ApiError::status(
-            StatusCode::NOT_FOUND,
-            "speech session not found",
-        ));
-    }
-    Ok(StatusCode::NO_CONTENT)
+    state.voice.queue_test(request)?;
+    Ok((StatusCode::ACCEPTED, Json(json!({"ok":true}))))
 }
 
 async fn system_status(
@@ -961,8 +882,9 @@ async fn hub_settings(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
             "settings_file": state.settings.path(),
             "ai_runtime": state.config.ai_runtime,
             "ai_model": state.config.ai_model,
-            "speech_transcribe": state.config.speech_transcribe,
-            "speech_summarize": state.config.speech_summarize,
+            "voice_config_file": state.config.voice_config_file,
+            "voice_status_file": state.config.voice_status_file,
+            "voice_events_file": state.config.voice_events_file,
         }
     }))
 }

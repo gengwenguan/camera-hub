@@ -37,6 +37,24 @@
         maxGb: $("maxGb"),
         reloadSettings: $("reloadSettings"),
         saveSettings: $("saveSettings"),
+        voiceStatus: $("voiceStatus"),
+        voiceState: $("voiceState"),
+        voiceDetected: $("voiceDetected"),
+        voiceAudioLevel: $("voiceAudioLevel"),
+        voiceLastKeyword: $("voiceLastKeyword"),
+        voiceLastError: $("voiceLastError"),
+        voiceForm: $("voiceForm"),
+        voiceEnabled: $("voiceEnabled"),
+        voiceCaptureDevice: $("voiceCaptureDevice"),
+        voicePlaybackDevice: $("voicePlaybackDevice"),
+        voiceRequestTimeout: $("voiceRequestTimeout"),
+        voiceGlobalCooldown: $("voiceGlobalCooldown"),
+        voiceFailureReply: $("voiceFailureReply"),
+        voiceCommandList: $("voiceCommandList"),
+        voiceEventList: $("voiceEventList"),
+        addVoiceCommand: $("addVoiceCommand"),
+        reloadVoice: $("reloadVoice"),
+        saveVoice: $("saveVoice"),
         liveDeviceSelect: $("liveDeviceSelect"),
         livePlayer: $("livePlayer"),
         liveStatus: $("liveStatus"),
@@ -90,6 +108,9 @@
         currentRecord: "",
         segmentSeconds: 600,
         timelinePreview: null,
+        voiceConfig: null,
+        voiceDirty: false,
+        voiceBusy: false,
         busy: false,
         settingsDirty: false,
         toastTimer: 0,
@@ -317,6 +338,225 @@
             handleError(error);
         } finally {
             ui.saveSettings.disabled = false;
+        }
+    }
+
+    async function loadVoice(silent = false) {
+        if (state.voiceBusy) return;
+        state.voiceBusy = true;
+        try {
+            const body = await api("/api/v1/voice");
+            renderVoice(body);
+        } catch (error) {
+            if (!silent) handleError(error);
+        } finally {
+            state.voiceBusy = false;
+        }
+    }
+
+    function renderVoice(body) {
+        const config = body && body.config || {};
+        const status = body && body.status || {};
+        const stale = !status.updated_epoch ||
+            Date.now() / 1000 - Number(status.updated_epoch) > 15;
+        const online = !!status.available && !stale;
+        ui.voiceStatus.textContent = stale
+            ? "进程离线"
+            : status.running
+                ? "正在监听"
+                : status.state === "disabled"
+                    ? "已停用"
+                    : "等待音频";
+        ui.voiceStatus.className = `chip ${online ? "active" : "offline"}`;
+        ui.voiceState.textContent = status.state || "--";
+        ui.voiceDetected.textContent = String(status.detected_count || 0);
+        const rms = Number(status.audio_rms || 0);
+        ui.voiceAudioLevel.textContent = rms > 0
+            ? `${Math.max(-96, 20 * Math.log10(rms)).toFixed(1)} dBFS`
+            : "--";
+        ui.voiceLastKeyword.textContent = status.last_keyword || "--";
+        ui.voiceLastError.textContent =
+            status.last_error || (online ? "运行正常" : "等待 worker 状态");
+        ui.voiceLastError.classList.toggle("error", !!status.last_error);
+
+        if (!state.voiceDirty) {
+            state.voiceConfig = structuredClone(config);
+            ui.voiceEnabled.checked = !!config.enabled;
+            ui.voiceCaptureDevice.value = config.capture_device || "hw:0,0";
+            ui.voicePlaybackDevice.value = config.playback_device || "plughw:0,0";
+            ui.voiceRequestTimeout.value = config.request_timeout_ms || 3000;
+            ui.voiceGlobalCooldown.value = config.global_cooldown_ms || 2000;
+            ui.voiceFailureReply.value = config.failure_reply || "操作失败，请稍后再试";
+            renderVoiceCommands(Array.isArray(config.commands) ? config.commands : []);
+        }
+        renderVoiceEvents(Array.isArray(body.events) ? body.events : []);
+    }
+
+    function renderVoiceCommands(commands) {
+        if (!commands.length) {
+            ui.voiceCommandList.innerHTML = '<div class="empty">暂无语音命令</div>';
+            return;
+        }
+        ui.voiceCommandList.innerHTML = commands.map((command, index) => `
+            <article class="voice-command" data-command-index="${index}">
+                <header>
+                    <label class="toggle">
+                        <input type="checkbox" data-voice-field="enabled"
+                               ${command.enabled ? "checked" : ""}>
+                        <span>${esc(command.phrase || "未命名命令")}</span>
+                    </label>
+                    <div class="voice-command-actions">
+                        <button class="button ghost" type="button"
+                                data-voice-action="reply">测试回复</button>
+                        <button class="button ghost" type="button"
+                                data-voice-action="request">测试接口</button>
+                        <button class="button danger" type="button"
+                                data-voice-action="delete">删除</button>
+                    </div>
+                </header>
+                <div class="voice-command-grid">
+                    <label><span>命令短语</span>
+                        <input data-voice-field="phrase" type="text" maxlength="24"
+                               value="${esc(command.phrase)}" required></label>
+                    <label><span>成功回复</span>
+                        <input data-voice-field="reply" type="text" maxlength="120"
+                               value="${esc(command.reply)}" required></label>
+                    <label><span>请求方式</span>
+                        <select data-voice-field="method">
+                            <option value="GET" ${command.method === "GET" ? "selected" : ""}>GET</option>
+                            <option value="POST" ${command.method === "POST" ? "selected" : ""}>POST</option>
+                        </select></label>
+                    <label class="voice-url"><span>动作 URL</span>
+                        <input data-voice-field="url" type="url" maxlength="2048"
+                               value="${esc(command.url)}" placeholder="http://设备地址/action"></label>
+                    <label class="voice-body"><span>POST JSON</span>
+                        <input data-voice-field="body" type="text" maxlength="8192"
+                               value="${esc(command.body)}" placeholder='{"enabled":true}'></label>
+                    <label><span>Boost</span>
+                        <input data-voice-field="boosting_score" type="number"
+                               min="0" max="10" step="0.1"
+                               value="${Number(command.boosting_score ?? 1.5).toFixed(1)}" required></label>
+                    <label><span>触发阈值</span>
+                        <input data-voice-field="trigger_threshold" type="number"
+                               min="0.05" max="0.95" step="0.05"
+                               value="${Number(command.trigger_threshold ?? 0.45).toFixed(2)}" required></label>
+                    <label><span>冷却（毫秒）</span>
+                        <input data-voice-field="cooldown_ms" type="number"
+                               min="500" max="60000" step="100"
+                               value="${Number(command.cooldown_ms || 2000)}" required></label>
+                </div>
+                <input data-voice-field="id" type="hidden" value="${esc(command.id)}">
+            </article>`).join("");
+    }
+
+    function renderVoiceEvents(events) {
+        if (!events.length) {
+            ui.voiceEventList.innerHTML =
+                '<tr><td colspan="5">暂无触发记录</td></tr>';
+            return;
+        }
+        ui.voiceEventList.innerHTML = events.map((event) => `
+            <tr>
+                <td>${formatTimestamp(event.epoch)}</td>
+                <td>${esc(event.phrase || event.command_id)}</td>
+                <td>${event.source === "test" ? "测试" : "语音"}</td>
+                <td class="${event.success ? "voice-success" : "voice-failure"}">
+                    ${esc(event.message || (event.success ? "成功" : "失败"))}
+                </td>
+                <td>${Number(event.elapsed_ms || 0)} ms</td>
+            </tr>`).join("");
+    }
+
+    function collectVoiceConfig() {
+        const config = structuredClone(state.voiceConfig || {});
+        config.enabled = ui.voiceEnabled.checked;
+        config.capture_device = ui.voiceCaptureDevice.value.trim();
+        config.playback_device = ui.voicePlaybackDevice.value.trim();
+        config.capture_rate = Number(config.capture_rate || 48000);
+        config.request_timeout_ms = Number(ui.voiceRequestTimeout.value);
+        config.global_cooldown_ms = Number(ui.voiceGlobalCooldown.value);
+        config.failure_reply = ui.voiceFailureReply.value.trim();
+        config.commands = Array.from(
+            ui.voiceCommandList.querySelectorAll(".voice-command"),
+        ).map((row) => {
+            const field = (name) => row.querySelector(`[data-voice-field="${name}"]`);
+            return {
+                id: field("id").value,
+                enabled: field("enabled").checked,
+                phrase: field("phrase").value.trim(),
+                reply: field("reply").value.trim(),
+                method: field("method").value,
+                url: field("url").value.trim(),
+                body: field("body").value.trim(),
+                boosting_score: Number(field("boosting_score").value),
+                trigger_threshold: Number(field("trigger_threshold").value),
+                cooldown_ms: Number(field("cooldown_ms").value),
+            };
+        });
+        return config;
+    }
+
+    async function saveVoice(event) {
+        event.preventDefault();
+        if (!ui.voiceForm.reportValidity()) return;
+        ui.saveVoice.disabled = true;
+        try {
+            const body = await api("/api/v1/voice", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(collectVoiceConfig()),
+            });
+            state.voiceConfig = structuredClone(body.config);
+            state.voiceDirty = false;
+            showToast("语音控制配置已保存");
+            await loadVoice(true);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.saveVoice.disabled = false;
+        }
+    }
+
+    function addVoiceCommand() {
+        const commands = collectVoiceConfig().commands || [];
+        commands.push({
+            id: `command-${Date.now().toString(36)}`,
+            enabled: false,
+            phrase: "小雨",
+            reply: "好的",
+            method: "GET",
+            url: "",
+            body: "",
+            boosting_score: 1.5,
+            trigger_threshold: 0.45,
+            cooldown_ms: 2000,
+        });
+        state.voiceDirty = true;
+        renderVoiceCommands(commands);
+        ui.voiceCommandList.lastElementChild?.querySelector(
+            '[data-voice-field="phrase"]',
+        )?.focus();
+    }
+
+    async function testVoiceCommand(commandId, callUrl) {
+        if (state.voiceDirty) {
+            showToast("请先保存语音配置", true);
+            return;
+        }
+        try {
+            await api("/api/v1/voice/test", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    command_id: commandId,
+                    call_url: callUrl,
+                    speak_reply: !callUrl,
+                }),
+            });
+            showToast(callUrl ? "接口测试已提交" : "回复测试已提交");
+            window.setTimeout(() => loadVoice(true), 1200);
+        } catch (error) {
+            handleError(error);
         }
     }
 
@@ -1681,6 +1921,30 @@
         state.settingsDirty = false;
         await refreshAll(true);
     });
+    ui.voiceForm.addEventListener("input", () => {
+        state.voiceDirty = true;
+    });
+    ui.voiceForm.addEventListener("submit", saveVoice);
+    ui.reloadVoice.addEventListener("click", async () => {
+        state.voiceDirty = false;
+        await loadVoice();
+    });
+    ui.addVoiceCommand.addEventListener("click", addVoiceCommand);
+    ui.voiceCommandList.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-voice-action]");
+        if (!button) return;
+        const row = button.closest(".voice-command");
+        if (!row) return;
+        const id = row.querySelector('[data-voice-field="id"]').value;
+        if (button.dataset.voiceAction === "delete") {
+            row.remove();
+            state.voiceDirty = true;
+        } else if (button.dataset.voiceAction === "reply") {
+            testVoiceCommand(id, false);
+        } else if (button.dataset.voiceAction === "request") {
+            testVoiceCommand(id, true);
+        }
+    });
     ui.deviceSelect.addEventListener("change", () => selectDevice(ui.deviceSelect.value));
     ui.liveDeviceSelect.addEventListener("change", () => {
         selectDevice(ui.liveDeviceSelect.value);
@@ -1770,6 +2034,7 @@
             "overview",
             "live",
             "evaluation",
+            "voice",
             "playback",
             "photos",
             "settings",
@@ -1792,6 +2057,7 @@
         if (updateHash) history.replaceState(null, "", `#${target}`);
         if (target === "playback") requestAnimationFrame(resizeTimeline);
         if (target === "photos") loadPhotos();
+        if (target === "voice") loadVoice(true);
         if (target === "evaluation") window.CameraHubEvaluation?.refreshDevices();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -1809,5 +2075,8 @@
     updateLiveClock();
     setInterval(updateLiveClock, 50);
     setInterval(() => refreshAll(true), 10_000);
+    setInterval(() => {
+        if (state.view === "voice" && !state.voiceDirty) loadVoice(true);
+    }, 5_000);
     refreshAll(true);
 })();

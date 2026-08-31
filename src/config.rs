@@ -55,6 +55,34 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_VOICE_CONFIG_FILE",
+        default_value = "camera-hub-state/voice.json"
+    )]
+    pub voice_config_file: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_VOICE_STATUS_FILE",
+        default_value = "camera-hub-state/voice-status.json"
+    )]
+    pub voice_status_file: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_VOICE_EVENTS_FILE",
+        default_value = "camera-hub-data/voice/events.jsonl"
+    )]
+    pub voice_events_file: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_VOICE_COMMAND_FILE",
+        default_value = "camera-hub-state/voice-command.json"
+    )]
+    pub voice_command_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_ACME_WEBROOT",
         default_value = "camera-hub-state/acme"
     )]
@@ -114,20 +142,6 @@ pub struct Config {
 
     #[arg(long, env = "CAMERA_HUB_AI_SNAPSHOT_QUALITY", default_value_t = 95)]
     pub ai_snapshot_quality: u8,
-
-    #[arg(
-        long,
-        env = "CAMERA_HUB_SPEECH_TRANSCRIBE",
-        default_value = "camera-hub-speech/bin/transcribe"
-    )]
-    pub speech_transcribe: PathBuf,
-
-    #[arg(
-        long,
-        env = "CAMERA_HUB_SPEECH_SUMMARIZE",
-        default_value = "camera-hub-speech/bin/summarize"
-    )]
-    pub speech_summarize: PathBuf,
 }
 
 impl Config {

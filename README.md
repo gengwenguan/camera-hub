@@ -12,7 +12,8 @@ Android/Termux 等环境，不绑定特定手机或设备型号。它接收采�
 - 仅在 WebRTC 会话存在时启动 AAC→Opus，关闭会话后立即释放转码进程。
 - H264 IDR 可直接供 ONNX AI 解码推理，抓拍绘制 person 框后回传开发板。
 - 录像、AI、MSE、WebRTC 和 MoQ 使用相互隔离的消费队列。
-- Web 提供主机状态、实时直播、协议评测、录像回放、AI 相册和节点设置。
+- Web 提供主机状态、实时直播、协议评测、语音控制、录像回放、AI 相册和节点设置。
+- 可选 sherpa-onnx 中文关键词进程在本机离线识别固定命令，调用 HTTP 动作并播报结果。
 - MoQ 使用同进程 MoqService，以 MSF Draft-01 Catalog 和 LOC Draft-04 逐帧发布
   H264/AAC；浏览器通过 UDP/443 WebTransport + WebCodecs 播放，不增加独立 relay。
 - 裸公网 IPv6 使用 Let’s Encrypt shortlived IP 证书直接获得浏览器信任并自动续期。
@@ -185,6 +186,10 @@ CAMERA_HUB_TLS_CERT=/srv/camera-hub/state/cert.pem
 CAMERA_HUB_TLS_KEY=/srv/camera-hub/state/key.pem
 CAMERA_HUB_DATA_DIR=/srv/camera-hub/data
 CAMERA_HUB_SETTINGS_FILE=/srv/camera-hub/state/settings.json
+CAMERA_HUB_VOICE_CONFIG_FILE=/srv/camera-hub/state/voice.json
+CAMERA_HUB_VOICE_STATUS_FILE=/srv/camera-hub/state/voice-status.json
+CAMERA_HUB_VOICE_EVENTS_FILE=/srv/camera-hub/data/voice/events.jsonl
+CAMERA_HUB_VOICE_COMMAND_FILE=/srv/camera-hub/state/voice-command.json
 CAMERA_HUB_AI_RUNTIME=/srv/camera-hub/ai/lib/libonnxruntime.so
 CAMERA_HUB_AI_MODEL=/srv/camera-hub/ai/yolox_nano.onnx
 ```
@@ -206,6 +211,8 @@ Termux 等无 Root 环境直接使用 8080/8443。
 │   └── snapshot/
 │       └── YYYYMMDD/
 │           └── YYYYMMDD_HHMMSS_NNN.jpg
+└── voice/
+    └── events.jsonl
 ```
 
 数据目录应保持私有，不要放入允许匿名列目录或写入的文件服务根目录。
@@ -226,6 +233,9 @@ GET  /api/v1/media/status
 GET  /api/v1/settings
 PUT  /api/v1/settings
 GET  /api/v1/ai/status
+GET  /api/v1/voice
+PUT  /api/v1/voice
+POST /api/v1/voice/test
 GET  /api/v1/system/status
 GET  /api/v1/moq/status
 GET  /api/v1/devices/:id/live              # WebSocket fMP4 实时流
@@ -273,6 +283,19 @@ CAMERA_HUB_AI_MIN_SNAPSHOT_SECONDS=10
 CAMERA_HUB_AI_SNAPSHOT_MAX_COUNT=500
 CAMERA_HUB_AI_SNAPSHOT_QUALITY=95
 ```
+
+## 本机语音控制
+
+LinuxDeploy 适配器可运行独立的 `camera-hub-voice` 进程。它使用 sherpa-onnx
+中文 Zipformer KWS INT8 模型持续读取 48 kHz 单声道 PCM，并在内部重采样到
+16 kHz。主服务只负责 Web 配置、状态和测试请求；关键词模型异常不会影响直播和
+录像。
+
+Web 的“语音控制”页面支持配置命令短语、成功回复、GET/POST URL、JSON 请求体、
+boosting score、触发阈值和冷却时间。配置保存在
+`CAMERA_HUB_VOICE_CONFIG_FILE`，触发记录写入
+`CAMERA_HUB_VOICE_EVENTS_FILE`。URL 成功返回后由 `espeak-ng` 生成中文回复并
+通过 ALSA 播放；失败时播放统一失败回复。
 
 检测照片写入 `<data-dir>/<device_id>/snapshot/YYYYMMDD/`，并经同一设备 WebSocket
 回传开发板相册。照片使用推理时的同一帧，按 YOLOX 输出执行 person 框解码和 NMS，

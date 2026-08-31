@@ -1,11 +1,12 @@
 # LinuxDeploy 部署
 
 该目录是 camera-hub 在 LinuxDeploy 环境中的部署适配器，负责远端构建、安装、
-80/443 端口 capability、`rc.local` 自启动、证书管理和 DNSPod DDNS。核心服务与
-DDNS 是两个独立二进制和两个独立进程：
+80/443 端口 capability、`rc.local` 自启动、证书管理、离线关键词识别和
+DNSPod DDNS。核心服务、语音 worker 与 DDNS 是独立进程：
 
 ```text
 /usr/local/bin/camera-hub
+/usr/local/bin/camera-hub-voice
 /usr/local/bin/camera-hub-ddns
 ```
 
@@ -33,6 +34,19 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android \
 ```
 
 配置归属为 `android:android`，权限为 `0600`。已有配置不会被安装器覆盖。
+
+## 语音控制
+
+完整部署会下载 sherpa-onnx 中文 KWS INT8 模型，安装 `espeak-ng`，并使用
+`mi6-audio.sh` 配置 msm8998/tasha 的主麦克风和扬声器路由。语音命令默认关闭，
+需要在 camera-hub Web 的“语音控制”页面配置 URL 后启用。
+
+```text
+/home/android/.config/camera-hub-voice.json
+/home/android/.config/camera-hub-voice-status.json
+/home/android/camera-data/voice/events.jsonl
+/home/android/camera-voice/models/
+```
 
 ## DNSPod DDNS
 

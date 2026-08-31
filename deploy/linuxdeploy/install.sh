@@ -4,11 +4,15 @@ set -eu
 BINARY="${1:-}"
 PUBLIC_HOST="${2:-}"
 DDNS_BINARY="${3:-}"
+VOICE_BINARY="${4:-}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ENV_FILE="/home/android/.config/camera-hub.env"
 DDNS_ENV_FILE="/home/android/.config/camera-hub-ddns.env"
 STARTER="/usr/local/bin/camera-hub-start"
 DDNS_STARTER="/usr/local/bin/camera-hub-ddns-start"
+VOICE_STARTER="/usr/local/bin/camera-hub-voice-start"
+VOICE_AUDIO="/usr/local/bin/camera-hub-mi6-audio"
+VOICE_LIB_DIR="/usr/local/lib/camera-hub-voice"
 ACME_SCRIPT="/usr/local/bin/camera-hub-acme"
 EDGE_ACME_SCRIPT="/usr/local/bin/camera-hub-acme-edge"
 RC_LOCAL="/etc/rc.local"
@@ -31,15 +35,28 @@ if [ -n "$DDNS_BINARY" ]; then
     }
     install -m 0755 "$DDNS_BINARY" /usr/local/bin/camera-hub-ddns
 fi
+if [ -n "$VOICE_BINARY" ]; then
+    [ -x "$VOICE_BINARY" ] || {
+        echo "camera-hub-voice binary not found: $VOICE_BINARY" >&2
+        exit 1
+    }
+    install -m 0755 "$VOICE_BINARY" /usr/local/bin/camera-hub-voice
+    install -m 0755 "$SCRIPT_DIR/mi6-audio.sh" "$VOICE_AUDIO"
+    install -d "$VOICE_LIB_DIR"
+    for library in "$(dirname "$VOICE_BINARY")"/libonnxruntime.so* \
+        "$(dirname "$VOICE_BINARY")"/libsherpa-onnx-c-api.so*; do
+        [ -f "$library" ] || continue
+        install -m 0755 "$library" "$VOICE_LIB_DIR/$(basename "$library")"
+    done
+fi
 install -d -o android -g android /home/android/camera-data
+install -d -o android -g android /home/android/camera-data/voice
+install -d -o android -g android /home/android/camera-voice/models
 install -d -o android -g android /home/android/.config
 install -d -m 0700 -o android -g android /home/android/.ssh
-install -d -o android -g android /home/android/speech-ai/bin
 install -d -o android -g android "$ACME_WEBROOT/.well-known/acme-challenge"
 install -m 0755 "$SCRIPT_DIR/acme-ip.sh" "$ACME_SCRIPT"
 install -m 0755 "$SCRIPT_DIR/acme-edge.sh" "$EDGE_ACME_SCRIPT"
-install -m 0755 "$SCRIPT_DIR/speech/transcribe.sh" /home/android/speech-ai/bin/transcribe
-install -m 0755 "$SCRIPT_DIR/speech/summarize.sh" /home/android/speech-ai/bin/summarize
 
 if [ ! -f "$DDNS_ENV_FILE" ]; then
     install -m 0600 -o android -g android \
@@ -70,6 +87,10 @@ if [ ! -f "$ENV_FILE" ]; then
         echo "CAMERA_HUB_EDGE_RUNTIME_DIR='/root/maix_dist'"
         echo "CAMERA_HUB_DATA_DIR='/home/android/camera-data'"
         echo "CAMERA_HUB_SETTINGS_FILE='/home/android/.config/camera-hub.json'"
+        echo "CAMERA_HUB_VOICE_CONFIG_FILE='/home/android/.config/camera-hub-voice.json'"
+        echo "CAMERA_HUB_VOICE_STATUS_FILE='/home/android/.config/camera-hub-voice-status.json'"
+        echo "CAMERA_HUB_VOICE_EVENTS_FILE='/home/android/camera-data/voice/events.jsonl'"
+        echo "CAMERA_HUB_VOICE_COMMAND_FILE='/home/android/.config/camera-hub-voice-command.json'"
         echo "CAMERA_HUB_SEGMENT_SECONDS='600'"
         echo "CAMERA_HUB_MAX_BYTES='8589934592'"
         echo "CAMERA_HUB_RETAIN_DAYS='7'"
@@ -82,8 +103,6 @@ if [ ! -f "$ENV_FILE" ]; then
         echo "CAMERA_HUB_AI_MIN_SNAPSHOT_SECONDS='10'"
         echo "CAMERA_HUB_AI_SNAPSHOT_MAX_COUNT='500'"
         echo "CAMERA_HUB_AI_SNAPSHOT_QUALITY='95'"
-        echo "CAMERA_HUB_SPEECH_TRANSCRIBE='/home/android/speech-ai/bin/transcribe'"
-        echo "CAMERA_HUB_SPEECH_SUMMARIZE='/home/android/speech-ai/bin/summarize'"
     } > "$ENV_FILE"
     chown android:android "$ENV_FILE"
     chmod 0600 "$ENV_FILE"
@@ -111,13 +130,9 @@ grep -q '^CAMERA_HUB_AI_SNAPSHOT_MAX_COUNT=' "$ENV_FILE" ||
     echo "CAMERA_HUB_AI_SNAPSHOT_MAX_COUNT='500'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_AI_SNAPSHOT_QUALITY=' "$ENV_FILE" ||
     echo "CAMERA_HUB_AI_SNAPSHOT_QUALITY='95'" >> "$ENV_FILE"
-grep -q '^CAMERA_HUB_SPEECH_TRANSCRIBE=' "$ENV_FILE" ||
-    echo "CAMERA_HUB_SPEECH_TRANSCRIBE='/home/android/speech-ai/bin/transcribe'" >> "$ENV_FILE"
-grep -q '^CAMERA_HUB_SPEECH_SUMMARIZE=' "$ENV_FILE" ||
-    echo "CAMERA_HUB_SPEECH_SUMMARIZE='/home/android/speech-ai/bin/summarize'" >> "$ENV_FILE"
 sed -i \
-    "s#/home/android/speech-ai/bin/mi6-transcribe#/home/android/speech-ai/bin/transcribe#g;
-     s#/home/android/speech-ai/bin/mi6-summarize#/home/android/speech-ai/bin/summarize#g;
+    "/^CAMERA_HUB_SPEECH_TRANSCRIBE=/d;
+     /^CAMERA_HUB_SPEECH_SUMMARIZE=/d;
      /^CAMERA_HUB_AI_SNAPSHOT_RETAIN_DAYS=/d" \
     "$ENV_FILE"
 grep -q '^CAMERA_HUB_TLS_BIND=' "$ENV_FILE" ||
@@ -128,6 +143,14 @@ grep -q '^CAMERA_HUB_TLS_KEY=' "$ENV_FILE" ||
     echo "CAMERA_HUB_TLS_KEY='$TLS_KEY'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_SETTINGS_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_SETTINGS_FILE='/home/android/.config/camera-hub.json'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_VOICE_CONFIG_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_VOICE_CONFIG_FILE='/home/android/.config/camera-hub-voice.json'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_VOICE_STATUS_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_VOICE_STATUS_FILE='/home/android/.config/camera-hub-voice-status.json'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_VOICE_EVENTS_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_VOICE_EVENTS_FILE='/home/android/camera-data/voice/events.jsonl'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_VOICE_COMMAND_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_VOICE_COMMAND_FILE='/home/android/.config/camera-hub-voice-command.json'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_MOQ_ENABLED=' "$ENV_FILE" ||
     echo "CAMERA_HUB_MOQ_ENABLED='true'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_MOQ_BIND=' "$ENV_FILE" ||
@@ -199,6 +222,21 @@ exec /usr/local/bin/camera-hub-ddns
 EOF
 chmod 0755 "$DDNS_STARTER"
 
+if [ -n "$VOICE_BINARY" ]; then
+    if ! command -v espeak-ng >/dev/null 2>&1; then
+        DEBIAN_FRONTEND=noninteractive apt-get update
+        DEBIAN_FRONTEND=noninteractive apt-get install -y espeak-ng
+    fi
+    cat > "$VOICE_STARTER" <<'EOF'
+#!/bin/sh
+set -eu
+/usr/local/bin/camera-hub-mi6-audio setup
+exec su -s /bin/sh android -c \
+    'LD_LIBRARY_PATH=/usr/local/lib/camera-hub-voice exec /usr/local/bin/camera-hub-voice'
+EOF
+    chmod 0755 "$VOICE_STARTER"
+fi
+
 TMP="$(mktemp)"
 awk '
     /^# BEGIN CAMERA HUB$/ { skip=1; next }
@@ -211,6 +249,9 @@ awk '
         print "# BEGIN CAMERA HUB"
         print "if ! pgrep -x \"camera-hub\" > /dev/null; then"
         print "    su -s /bin/sh android -c '\''nohup /usr/local/bin/camera-hub-start > /home/android/camera-hub.log 2>&1 &'\''"
+        print "fi"
+        print "if [ -x /usr/local/bin/camera-hub-voice-start ] && ! pgrep -f \042^/usr/local/bin/camera-hub-voice( |$)\042 > /dev/null; then"
+        print "    nohup /usr/local/bin/camera-hub-voice-start > /home/android/camera-hub-voice.log 2>&1 &"
         print "fi"
         print "if ! pgrep -f \042[c]amera-hub-acme-loop\042 > /dev/null; then"
         print "    nohup sh -c \047sleep 30; while :; do /usr/local/bin/camera-hub-acme >> /home/android/camera-hub-acme.log 2>&1 || true; sleep 43200; done\047 camera-hub-acme-loop > /dev/null 2>&1 &"
@@ -240,6 +281,10 @@ pkill -9 -f '[c]amera-hub-mux' 2>/dev/null || true
 pkill -9 -f '[c]amera-hub-opus' 2>/dev/null || true
 su -s /bin/sh android -c \
     'nohup /usr/local/bin/camera-hub-start > /home/android/camera-hub.log 2>&1 &'
+if [ -x "$VOICE_STARTER" ]; then
+    pkill -f '^/usr/local/bin/camera-hub-voice( |$)' 2>/dev/null || true
+    nohup "$VOICE_STARTER" > /home/android/camera-hub-voice.log 2>&1 &
+fi
 sleep 2
 curl -g -fsS 'http://[::1]/health'
 echo

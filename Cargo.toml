@@ -20,7 +20,9 @@ moq-msf = "=0.4.0"
 moq-native = { version = "=0.19.9", default-features = false, features = ["quinn", "ring"] }
 moq-net = "=0.2.10"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-23", "load-dynamic", "ndarray"] }
+pinyin = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+sherpa-onnx = { version = "1.13.6", default-features = false, features = ["shared"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

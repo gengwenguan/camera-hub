@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::frames::FrameHub;
+use crate::inference_lock::InferenceLock;
 use crate::settings::HubSettingsStore;
 use anyhow::{Context, Result, bail};
 use chrono::{Duration as ChronoDuration, Timelike, Utc};
@@ -201,6 +202,7 @@ fn run_ai(
     let builder = Session::builder().map_err(ort_error)?;
     let mut builder = builder.with_intra_threads(4).map_err(ort_error)?;
     let mut session = builder.commit_from_file(&config.model).map_err(ort_error)?;
+    let inference_lock = InferenceLock::open()?;
     {
         let mut current = status.lock().unwrap_or_else(|error| error.into_inner());
         current.available = true;
@@ -241,12 +243,16 @@ fn run_ai(
                 }
             };
             let inference = Instant::now();
-            let result = match infer_person(
-                &mut session,
-                &frame,
-                current_settings.ai_threshold,
-                current_settings.ai_min_person_area_ratio,
-            ) {
+            let result = {
+                let _guard = inference_lock.lock()?;
+                infer_person(
+                    &mut session,
+                    &frame,
+                    current_settings.ai_threshold,
+                    current_settings.ai_min_person_area_ratio,
+                )
+            };
+            let result = match result {
                 Ok(result) => result,
                 Err(error) => {
                     update_error(&status, &device_id, error);

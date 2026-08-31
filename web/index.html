@@ -40,6 +40,7 @@
             <button type="button" class="active" data-view-target="overview">运行概览</button>
             <button type="button" data-view-target="live">实时直播</button>
             <button type="button" data-view-target="evaluation">协议评测</button>
+            <button type="button" data-view-target="voice">语音控制</button>
             <button type="button" data-view-target="playback">录像回放</button>
             <button type="button" data-view-target="photos">AI 相册</button>
             <button type="button" data-view-target="settings">节点设置</button>
@@ -275,6 +276,105 @@
                 <p><strong>首帧：</strong>点击开始到第一帧提交浏览器合成器或 Canvas 完成绘制。</p>
                 <p><strong>编码后 E2E：</strong>CHP1 v2 为 H264 编码完成到真实渲染，不包含曝光、ISP 和编码耗时；v1 仅为节点接收到渲染的估算。</p>
                 <p><strong>卡顿：</strong>分别统计超过 100/250/500 ms 的帧间隔；额外时长扣除 30fps 正常帧周期，页面隐藏期间不计。</p>
+            </div>
+        </section>
+
+        <section class="view-heading" data-view="voice" hidden>
+            <p class="eyebrow">LOCAL VOICE CONTROL</p>
+            <h1>离线关键词与硬件动作</h1>
+            <p>在小米 6 本机持续识别固定中文命令，请求对应接口后通过扬声器播报结果。</p>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">KEYWORD WORKER</p>
+                    <h2>运行状态</h2>
+                </div>
+                <span class="chip" id="voiceStatus">等待加载</span>
+            </div>
+            <dl class="voice-runtime">
+                <div><dt>当前状态</dt><dd id="voiceState">--</dd></div>
+                <div><dt>检测次数</dt><dd id="voiceDetected">0</dd></div>
+                <div><dt>麦克风电平</dt><dd id="voiceAudioLevel">--</dd></div>
+                <div><dt>最近命令</dt><dd id="voiceLastKeyword">--</dd></div>
+                <div><dt>运行信息</dt><dd id="voiceLastError">--</dd></div>
+            </dl>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">VOICE AUTOMATION</p>
+                    <h2>命令配置</h2>
+                </div>
+                <button class="button ghost" id="reloadVoice" type="button">重新加载</button>
+            </div>
+            <form id="voiceForm">
+                <div class="voice-global-grid">
+                    <label class="toggle">
+                        <input type="checkbox" id="voiceEnabled">
+                        <span>启用本机持续语音监听</span>
+                    </label>
+                    <label>
+                        <span>录音设备</span>
+                        <input id="voiceCaptureDevice" type="text" maxlength="80" required>
+                    </label>
+                    <label>
+                        <span>播放设备</span>
+                        <input id="voicePlaybackDevice" type="text" maxlength="80" required>
+                    </label>
+                    <label>
+                        <span>请求超时（毫秒）</span>
+                        <input id="voiceRequestTimeout" type="number"
+                               min="500" max="30000" step="100" required>
+                    </label>
+                    <label>
+                        <span>全局防重复（毫秒）</span>
+                        <input id="voiceGlobalCooldown" type="number"
+                               min="500" max="60000" step="100" required>
+                    </label>
+                    <label>
+                        <span>失败回复</span>
+                        <input id="voiceFailureReply" type="text" maxlength="120" required>
+                    </label>
+                </div>
+                <div class="voice-command-heading">
+                    <div>
+                        <h3>命令列表</h3>
+                        <small>阈值越高越难触发；开门类操作建议不低于 0.60。</small>
+                    </div>
+                    <button class="button ghost" id="addVoiceCommand" type="button">新增命令</button>
+                </div>
+                <div class="voice-command-list" id="voiceCommandList"></div>
+                <div class="settings-actions">
+                    <button class="button primary" id="saveVoice" type="submit">保存语音配置</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">ACTION LOG</p>
+                    <h2>最近触发</h2>
+                </div>
+            </div>
+            <div class="table-wrap">
+                <table class="voice-event-table">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>命令</th>
+                            <th>来源</th>
+                            <th>结果</th>
+                            <th>耗时</th>
+                        </tr>
+                    </thead>
+                    <tbody id="voiceEventList">
+                        <tr><td colspan="5">暂无触发记录</td></tr>
+                    </tbody>
+                </table>
             </div>
         </section>
 

@@ -9,9 +9,12 @@ REMOTE_DIR="${REMOTE_DIR:-/home/android/work/camera-hub}"
 WEBRTC_LOCAL_DIR="${LOCAL_DIR}/../github/webrtc"
 WEBRTC_REMOTE_DIR="${WEBRTC_REMOTE_DIR:-/home/android/work/webrtc}"
 WEBRTC_REV="a91689c3dd237ea48a0ce5a827a69d3807420a5c"
+VOICE_MODEL="sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+VOICE_RUNTIME="sherpa-onnx-v1.13.6-linux-aarch64-shared-cpu-lib.tar.bz2"
 ACTION="${1:-push}"
 
-SSH_OPTIONS=(-6 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+SSH_OPTIONS=(-6 -o ServerAliveInterval=20 -o ServerAliveCountMax=30 \
+    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
 if [[ -n "${HUB_PASSWORD}" ]]; then
     command -v sshpass >/dev/null || {
         echo "sshpass is required when HUB_PASSWORD is set" >&2
@@ -19,10 +22,10 @@ if [[ -n "${HUB_PASSWORD}" ]]; then
     }
     export SSHPASS="${HUB_PASSWORD}"
     SSH=(sshpass -e ssh "${SSH_OPTIONS[@]}")
-    RSYNC_SSH="sshpass -e ssh -6 -o HostName=${HUB_HOST} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    RSYNC_SSH="sshpass -e ssh -6 -o HostName=${HUB_HOST} -o ServerAliveInterval=20 -o ServerAliveCountMax=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 else
     SSH=(ssh "${SSH_OPTIONS[@]}")
-    RSYNC_SSH="ssh -6 -o HostName=${HUB_HOST} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+    RSYNC_SSH="ssh -6 -o HostName=${HUB_HOST} -o ServerAliveInterval=20 -o ServerAliveCountMax=30 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
 fi
 
 remote() {
@@ -30,11 +33,10 @@ remote() {
 }
 
 sync_source() {
-    remote "mkdir -p '${REMOTE_DIR}'; rm -rf '${REMOTE_DIR}/web-src'"
+    remote "mkdir -p '${REMOTE_DIR}'"
     rsync -az --delete \
         --exclude .git \
         --exclude target \
-        --exclude web-src \
         --exclude .DS_Store \
         --exclude '*.log' \
         -e "${RSYNC_SSH}" \
@@ -76,14 +78,38 @@ sync_ai_assets() {
         -C /home/android/camera-ai/runtime --strip-components=1"
 }
 
+sync_voice_assets() {
+    local cache_dir="${CAMERA_HUB_VOICE_CACHE:-/tmp/camera-hub-voice-cache}"
+    local archive="${cache_dir}/${VOICE_MODEL}.tar.bz2"
+    bash "${LOCAL_DIR}/deploy/linuxdeploy/fetch-voice-assets.sh" >/dev/null
+    remote "mkdir -p /home/android/camera-voice/models /home/android/camera-voice/cache"
+    rsync -az \
+        -e "${RSYNC_SSH}" \
+        "${archive}" \
+        "${HUB_USER}@camera-hub-node:/home/android/camera-voice/${VOICE_MODEL}.tar.bz2"
+    rsync -az \
+        -e "${RSYNC_SSH}" \
+        "${cache_dir}/${VOICE_RUNTIME}" \
+        "${HUB_USER}@camera-hub-node:/home/android/camera-voice/cache/${VOICE_RUNTIME}"
+    remote "set -e
+        root='/home/android/camera-voice/models/${VOICE_MODEL}'
+        if [ ! -s \"\$root/tokens.txt\" ]; then
+            rm -rf \"\$root\"
+            tar xjf '/home/android/camera-voice/${VOICE_MODEL}.tar.bz2' \
+                -C /home/android/camera-voice/models
+        fi"
+}
+
 build_remote() {
     remote "set -e
         . /home/android/.cargo/env
         cd '${REMOTE_DIR}'
+        SHERPA_ONNX_ARCHIVE_DIR='/home/android/camera-voice/cache' \
         cargo build --release --bins \
             --config 'patch.\"https://github.com/gengwenguan/webrtc\".webrtc.path=\"${WEBRTC_REMOTE_DIR}/webrtc\"'
         test -x target/release/camera-hub
         test -x target/release/camera-hub-ddns
+        test -x target/release/camera-hub-voice
     "
 }
 
@@ -92,7 +118,8 @@ install_remote() {
     # current public IPv6 locally instead of treating the SSH endpoint as an IP SAN.
     remote "sudo -n sh '${REMOTE_DIR}/deploy/linuxdeploy/install.sh' \
         '${REMOTE_DIR}/target/release/camera-hub' '' \
-        '${REMOTE_DIR}/target/release/camera-hub-ddns'"
+        '${REMOTE_DIR}/target/release/camera-hub-ddns' \
+        '${REMOTE_DIR}/target/release/camera-hub-voice'"
 }
 
 case "${ACTION}" in
@@ -102,17 +129,22 @@ case "${ACTION}" in
     build)
         sync_source
         sync_webrtc
+        sync_voice_assets
         build_remote
         ;;
     push)
         sync_source
         sync_webrtc
         sync_ai_assets
+        sync_voice_assets
         build_remote
         install_remote
         ;;
     ai-assets)
         sync_ai_assets
+        ;;
+    voice-assets)
+        sync_voice_assets
         ;;
     status)
         remote "curl -g -fsS 'http://[::1]/health'; echo
@@ -150,7 +182,7 @@ case "${ACTION}" in
         remote "tail -n 200 -f /home/android/camera-hub-ddns.log"
         ;;
     *)
-        echo "usage: $0 [sync|build|push|ai-assets|status|log|ddns-dry-run|ddns-once|ddns-start|ddns-log]" >&2
+        echo "usage: $0 [sync|build|push|ai-assets|voice-assets|status|log|ddns-dry-run|ddns-once|ddns-start|ddns-log]" >&2
         exit 2
         ;;
 esac

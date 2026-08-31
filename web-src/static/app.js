@@ -37,6 +37,24 @@
         maxGb: $("maxGb"),
         reloadSettings: $("reloadSettings"),
         saveSettings: $("saveSettings"),
+        voiceStatus: $("voiceStatus"),
+        voiceState: $("voiceState"),
+        voiceDetected: $("voiceDetected"),
+        voiceAudioLevel: $("voiceAudioLevel"),
+        voiceLastKeyword: $("voiceLastKeyword"),
+        voiceLastError: $("voiceLastError"),
+        voiceForm: $("voiceForm"),
+        voiceEnabled: $("voiceEnabled"),
+        voiceCaptureDevice: $("voiceCaptureDevice"),
+        voicePlaybackDevice: $("voicePlaybackDevice"),
+        voiceRequestTimeout: $("voiceRequestTimeout"),
+        voiceGlobalCooldown: $("voiceGlobalCooldown"),
+        voiceFailureReply: $("voiceFailureReply"),
+        voiceCommandList: $("voiceCommandList"),
+        voiceEventList: $("voiceEventList"),
+        addVoiceCommand: $("addVoiceCommand"),
+        reloadVoice: $("reloadVoice"),
+        saveVoice: $("saveVoice"),
         liveDeviceSelect: $("liveDeviceSelect"),
         livePlayer: $("livePlayer"),
         liveStatus: $("liveStatus"),
@@ -74,25 +92,6 @@
         downloadPhoto: $("downloadPhoto"),
         deletePhoto: $("deletePhoto"),
         closePhoto: $("closePhoto"),
-        speechRuntimeStatus: $("speechRuntimeStatus"),
-        speechRecorderVisual: $("speechRecorderVisual"),
-        speechElapsed: $("speechElapsed"),
-        speechRecordingStatus: $("speechRecordingStatus"),
-        speechTitle: $("speechTitle"),
-        startSpeechRecording: $("startSpeechRecording"),
-        stopSpeechRecording: $("stopSpeechRecording"),
-        speechUploaded: $("speechUploaded"),
-        speechMime: $("speechMime"),
-        speechStorage: $("speechStorage"),
-        refreshSpeech: $("refreshSpeech"),
-        speechSessionList: $("speechSessionList"),
-        speechDetailTitle: $("speechDetailTitle"),
-        speechDetailMeta: $("speechDetailMeta"),
-        speechDetailState: $("speechDetailState"),
-        speechProgress: $("speechProgress"),
-        speechSummary: $("speechSummary"),
-        speechTranscript: $("speechTranscript"),
-        deleteSpeechSession: $("deleteSpeechSession"),
         toast: $("toast"),
     };
     const state = {
@@ -109,24 +108,13 @@
         currentRecord: "",
         segmentSeconds: 600,
         timelinePreview: null,
-        speechSessions: [],
-        speechSession: "",
-        speechAvailable: false,
-        speechBusy: false,
+        voiceConfig: null,
+        voiceDirty: false,
+        voiceBusy: false,
         busy: false,
         settingsDirty: false,
         toastTimer: 0,
     };
-    let speechRecorder = null;
-    let speechStream = null;
-    let speechSessionId = "";
-    let speechSequence = 0;
-    let speechUploadedBytes = 0;
-    let speechStartedAt = 0;
-    let speechTimer = 0;
-    let speechUploadChain = Promise.resolve();
-    let speechUploadError = null;
-    let speechFinalizing = false;
 
     async function api(path, options = {}) {
         const response = await fetch(path, { cache: "no-store", ...options });
@@ -353,424 +341,220 @@
         }
     }
 
-    const speechStateLabels = {
-        recording: "录音上传中",
-        queued: "等待处理",
-        preparing: "正在准备音频",
-        transcribing: "正在语音识别",
-        summarizing: "正在生成总结",
-        completed: "已完成",
-        failed: "处理失败",
-    };
-
-    function speechStateLabel(value) {
-        return speechStateLabels[value] || value || "未知状态";
-    }
-
-    function speechStateClass(value) {
-        if (value === "completed") return "active";
-        if (value === "failed") return "offline";
-        return value === "recording" ? "online" : "";
-    }
-
-    function formatSpeechDuration(milliseconds) {
-        const seconds = Math.max(0, Math.floor(Number(milliseconds || 0) / 1000));
-        const hours = Math.floor(seconds / 3600);
-        const minutes = Math.floor((seconds % 3600) / 60);
-        const remainder = seconds % 60;
-        return hours
-            ? [hours, minutes, remainder].map((part) => String(part).padStart(2, "0")).join(":")
-            : [minutes, remainder].map((part) => String(part).padStart(2, "0")).join(":");
-    }
-
-    function speechDisplayTitle(session) {
-        const title = String(session && session.title || "").trim();
-        const automatic = !title ||
-            title === "语音记录" ||
-            /^语音记录 \d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(title);
-        if (!automatic) return title;
-        const date = new Date(Number(session.created_epoch || 0) * 1000);
-        if (Number.isNaN(date.getTime())) return "语音记录";
-        const parts = new Intl.DateTimeFormat("zh-CN", {
-            year: "numeric",
-            month: "2-digit",
-            day: "2-digit",
-            hour: "2-digit",
-            minute: "2-digit",
-            hourCycle: "h23",
-        }).formatToParts(date);
-        const values = Object.fromEntries(
-            parts.filter((part) => part.type !== "literal")
-                .map((part) => [part.type, part.value]),
-        );
-        return `语音记录 ${values.year}-${values.month}-${values.day} ` +
-            `${values.hour}:${values.minute}`;
-    }
-
-    function setSpeechRuntime(status) {
-        const speech = status && status.speech || {};
-        state.speechAvailable = !!speech.available;
-        ui.speechRuntimeStatus.textContent = speech.available
-            ? speech.active_session
-                ? "模型正在处理"
-                : speech.queued
-                    ? `队列 ${speech.queued} 项`
-                    : "模型可用"
-            : "模型不可用";
-        ui.speechRuntimeStatus.className =
-            `chip ${speech.available ? "active" : "offline"}`;
-        ui.speechStorage.textContent = speech.storage_root || "语音目录不可用";
-        ui.speechStorage.title = speech.storage_root || "";
-        ui.startSpeechRecording.disabled =
-            !speech.available || !!speechRecorder || speechFinalizing;
-    }
-
-    async function loadSpeechSessions(silent = false) {
-        if (state.speechBusy) return;
-        state.speechBusy = true;
-        ui.refreshSpeech.disabled = true;
+    async function loadVoice(silent = false) {
+        if (state.voiceBusy) return;
+        state.voiceBusy = true;
         try {
-            const [status, body] = await Promise.all([
-                api("/api/v1/speech/status"),
-                api("/api/v1/speech/sessions"),
-            ]);
-            setSpeechRuntime(status);
-            state.speechSessions = Array.isArray(body.sessions) ? body.sessions : [];
-            if (!state.speechSessions.some((item) => item.id === state.speechSession)) {
-                state.speechSession = state.speechSessions[0]
-                    ? state.speechSessions[0].id : "";
-            }
-            renderSpeechSessions();
-            if (state.speechSession) {
-                await loadSpeechDetail(state.speechSession);
-            } else {
-                renderSpeechDetail(null);
-            }
+            const body = await api("/api/v1/voice");
+            renderVoice(body);
         } catch (error) {
             if (!silent) handleError(error);
         } finally {
-            state.speechBusy = false;
-            ui.refreshSpeech.disabled = false;
+            state.voiceBusy = false;
         }
     }
 
-    function renderSpeechSessions() {
-        if (!state.speechSessions.length) {
-            ui.speechSessionList.innerHTML =
-                '<div class="empty">暂无语音记录</div>';
+    function renderVoice(body) {
+        const config = body && body.config || {};
+        const status = body && body.status || {};
+        const stale = !status.updated_epoch ||
+            Date.now() / 1000 - Number(status.updated_epoch) > 15;
+        const online = !!status.available && !stale;
+        ui.voiceStatus.textContent = stale
+            ? "进程离线"
+            : status.running
+                ? "正在监听"
+                : status.state === "disabled"
+                    ? "已停用"
+                    : "等待音频";
+        ui.voiceStatus.className = `chip ${online ? "active" : "offline"}`;
+        ui.voiceState.textContent = status.state || "--";
+        ui.voiceDetected.textContent = String(status.detected_count || 0);
+        const rms = Number(status.audio_rms || 0);
+        ui.voiceAudioLevel.textContent = rms > 0
+            ? `${Math.max(-96, 20 * Math.log10(rms)).toFixed(1)} dBFS`
+            : "--";
+        ui.voiceLastKeyword.textContent = status.last_keyword || "--";
+        ui.voiceLastError.textContent =
+            status.last_error || (online ? "运行正常" : "等待 worker 状态");
+        ui.voiceLastError.classList.toggle("error", !!status.last_error);
+
+        if (!state.voiceDirty) {
+            state.voiceConfig = structuredClone(config);
+            ui.voiceEnabled.checked = !!config.enabled;
+            ui.voiceCaptureDevice.value = config.capture_device || "hw:0,0";
+            ui.voicePlaybackDevice.value = config.playback_device || "plughw:0,0";
+            ui.voiceRequestTimeout.value = config.request_timeout_ms || 3000;
+            ui.voiceGlobalCooldown.value = config.global_cooldown_ms || 2000;
+            ui.voiceFailureReply.value = config.failure_reply || "操作失败，请稍后再试";
+            renderVoiceCommands(Array.isArray(config.commands) ? config.commands : []);
+        }
+        renderVoiceEvents(Array.isArray(body.events) ? body.events : []);
+    }
+
+    function renderVoiceCommands(commands) {
+        if (!commands.length) {
+            ui.voiceCommandList.innerHTML = '<div class="empty">暂无语音命令</div>';
             return;
         }
-        ui.speechSessionList.innerHTML = state.speechSessions.map((session) => {
-            const selected = session.id === state.speechSession ? " selected" : "";
-            const progress = session.progress_total
-                ? ` · ${session.progress_current}/${session.progress_total}` : "";
-            return `<button class="speech-session-card${selected}" type="button"
-                    data-speech-session="${esc(session.id)}" data-state="${esc(session.state)}">
-                <span>
-                    <strong>${esc(speechDisplayTitle(session))}</strong>
-                    <small>${formatTimestamp(session.created_epoch)} · ${formatSpeechDuration(session.duration_ms)}</small>
-                </span>
-                <span class="chip ${speechStateClass(session.state)}">${esc(speechStateLabel(session.state))}${progress}</span>
-            </button>`;
-        }).join("");
-        ui.speechSessionList.querySelectorAll("[data-speech-session]").forEach((button) => {
-            button.addEventListener("click", async () => {
-                state.speechSession = button.dataset.speechSession || "";
-                renderSpeechSessions();
-                await loadSpeechDetail(state.speechSession);
-            });
+        ui.voiceCommandList.innerHTML = commands.map((command, index) => `
+            <article class="voice-command" data-command-index="${index}">
+                <header>
+                    <label class="toggle">
+                        <input type="checkbox" data-voice-field="enabled"
+                               ${command.enabled ? "checked" : ""}>
+                        <span>${esc(command.phrase || "未命名命令")}</span>
+                    </label>
+                    <div class="voice-command-actions">
+                        <button class="button ghost" type="button"
+                                data-voice-action="reply">测试回复</button>
+                        <button class="button ghost" type="button"
+                                data-voice-action="request">测试接口</button>
+                        <button class="button danger" type="button"
+                                data-voice-action="delete">删除</button>
+                    </div>
+                </header>
+                <div class="voice-command-grid">
+                    <label><span>命令短语</span>
+                        <input data-voice-field="phrase" type="text" maxlength="24"
+                               value="${esc(command.phrase)}" required></label>
+                    <label><span>成功回复</span>
+                        <input data-voice-field="reply" type="text" maxlength="120"
+                               value="${esc(command.reply)}" required></label>
+                    <label><span>请求方式</span>
+                        <select data-voice-field="method">
+                            <option value="GET" ${command.method === "GET" ? "selected" : ""}>GET</option>
+                            <option value="POST" ${command.method === "POST" ? "selected" : ""}>POST</option>
+                        </select></label>
+                    <label class="voice-url"><span>动作 URL</span>
+                        <input data-voice-field="url" type="url" maxlength="2048"
+                               value="${esc(command.url)}" placeholder="http://设备地址/action"></label>
+                    <label class="voice-body"><span>POST JSON</span>
+                        <input data-voice-field="body" type="text" maxlength="8192"
+                               value="${esc(command.body)}" placeholder='{"enabled":true}'></label>
+                    <label><span>Boost</span>
+                        <input data-voice-field="boosting_score" type="number"
+                               min="0" max="10" step="0.1"
+                               value="${Number(command.boosting_score ?? 1.5).toFixed(1)}" required></label>
+                    <label><span>触发阈值</span>
+                        <input data-voice-field="trigger_threshold" type="number"
+                               min="0.05" max="0.95" step="0.05"
+                               value="${Number(command.trigger_threshold ?? 0.45).toFixed(2)}" required></label>
+                    <label><span>冷却（毫秒）</span>
+                        <input data-voice-field="cooldown_ms" type="number"
+                               min="500" max="60000" step="100"
+                               value="${Number(command.cooldown_ms || 2000)}" required></label>
+                </div>
+                <input data-voice-field="id" type="hidden" value="${esc(command.id)}">
+            </article>`).join("");
+    }
+
+    function renderVoiceEvents(events) {
+        if (!events.length) {
+            ui.voiceEventList.innerHTML =
+                '<tr><td colspan="5">暂无触发记录</td></tr>';
+            return;
+        }
+        ui.voiceEventList.innerHTML = events.map((event) => `
+            <tr>
+                <td>${formatTimestamp(event.epoch)}</td>
+                <td>${esc(event.phrase || event.command_id)}</td>
+                <td>${event.source === "test" ? "测试" : "语音"}</td>
+                <td class="${event.success ? "voice-success" : "voice-failure"}">
+                    ${esc(event.message || (event.success ? "成功" : "失败"))}
+                </td>
+                <td>${Number(event.elapsed_ms || 0)} ms</td>
+            </tr>`).join("");
+    }
+
+    function collectVoiceConfig() {
+        const config = structuredClone(state.voiceConfig || {});
+        config.enabled = ui.voiceEnabled.checked;
+        config.capture_device = ui.voiceCaptureDevice.value.trim();
+        config.playback_device = ui.voicePlaybackDevice.value.trim();
+        config.capture_rate = Number(config.capture_rate || 48000);
+        config.request_timeout_ms = Number(ui.voiceRequestTimeout.value);
+        config.global_cooldown_ms = Number(ui.voiceGlobalCooldown.value);
+        config.failure_reply = ui.voiceFailureReply.value.trim();
+        config.commands = Array.from(
+            ui.voiceCommandList.querySelectorAll(".voice-command"),
+        ).map((row) => {
+            const field = (name) => row.querySelector(`[data-voice-field="${name}"]`);
+            return {
+                id: field("id").value,
+                enabled: field("enabled").checked,
+                phrase: field("phrase").value.trim(),
+                reply: field("reply").value.trim(),
+                method: field("method").value,
+                url: field("url").value.trim(),
+                body: field("body").value.trim(),
+                boosting_score: Number(field("boosting_score").value),
+                trigger_threshold: Number(field("trigger_threshold").value),
+                cooldown_ms: Number(field("cooldown_ms").value),
+            };
         });
+        return config;
     }
 
-    async function loadSpeechDetail(sessionId) {
-        if (!sessionId) {
-            renderSpeechDetail(null);
-            return;
-        }
+    async function saveVoice(event) {
+        event.preventDefault();
+        if (!ui.voiceForm.reportValidity()) return;
+        ui.saveVoice.disabled = true;
         try {
-            const body = await api(
-                `/api/v1/speech/sessions/${encodeURIComponent(sessionId)}`,
-            );
-            renderSpeechDetail(body.session || null);
+            const body = await api("/api/v1/voice", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(collectVoiceConfig()),
+            });
+            state.voiceConfig = structuredClone(body.config);
+            state.voiceDirty = false;
+            showToast("语音控制配置已保存");
+            await loadVoice(true);
         } catch (error) {
             handleError(error);
+        } finally {
+            ui.saveVoice.disabled = false;
         }
     }
 
-    function renderSpeechDetail(session) {
-        if (!session) {
-            ui.speechDetailTitle.textContent = "请选择语音记录";
-            ui.speechDetailMeta.textContent = "转写和总结将在这里显示";
-            ui.speechDetailState.textContent = "--";
-            ui.speechDetailState.className = "chip";
-            ui.speechSummary.textContent = "尚未生成总结";
-            ui.speechTranscript.textContent = "尚未生成转写";
-            ui.speechProgress.hidden = true;
-            ui.deleteSpeechSession.disabled = true;
-            return;
-        }
-        const progress = session.progress_total
-            ? Math.min(100, session.progress_current / session.progress_total * 100)
-            : {
-                recording: 5,
-                queued: 10,
-                preparing: 20,
-                transcribing: 50,
-                summarizing: 80,
-                completed: 100,
-                failed: 100,
-            }[session.state] || 0;
-        ui.speechDetailTitle.textContent = speechDisplayTitle(session);
-        ui.speechDetailMeta.textContent =
-            `${formatTimestamp(session.created_epoch)} · ` +
-            `${formatSpeechDuration(session.duration_ms)} · ` +
-            `${formatBytes(session.uploaded_bytes)}` +
-            (session.error ? ` · ${session.error}` : "");
-        ui.speechDetailState.textContent = speechStateLabel(session.state);
-        ui.speechDetailState.className =
-            `chip ${speechStateClass(session.state)}`;
-        ui.speechSummary.textContent = session.summary || (
-            session.state === "failed" ? "总结生成失败" : "等待生成总结"
-        );
-        ui.speechTranscript.textContent = session.transcript || (
-            ["summarizing", "completed"].includes(session.state)
-                ? "转写结果为空" : "等待语音识别"
-        );
-        ui.speechProgress.hidden = ["completed", "failed", "recording"].includes(session.state);
-        ui.speechProgress.querySelector("i").style.width = `${progress}%`;
-        ui.deleteSpeechSession.disabled =
-            ["queued", "preparing", "transcribing", "summarizing"].includes(session.state) ||
-            session.id === speechSessionId;
-    }
-
-    function chooseSpeechMime() {
-        if (!window.MediaRecorder) return "";
-        const candidates = [
-            "audio/webm;codecs=opus",
-            "audio/webm",
-            "audio/mp4;codecs=mp4a.40.2",
-            "audio/mp4",
-            "audio/ogg;codecs=opus",
-        ];
-        return candidates.find((mime) =>
-            typeof MediaRecorder.isTypeSupported !== "function" ||
-            MediaRecorder.isTypeSupported(mime)
-        ) || "";
-    }
-
-    async function uploadSpeechChunk(sessionId, sequence, blob) {
-        let failure = null;
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            try {
-                await api(
-                    `/api/v1/speech/sessions/${encodeURIComponent(sessionId)}` +
-                    `/chunks/${sequence}`,
-                    {
-                        method: "PUT",
-                        headers: { "Content-Type": "application/octet-stream" },
-                        body: blob,
-                    },
-                );
-                return;
-            } catch (error) {
-                failure = error;
-                if (attempt < 2) {
-                    await new Promise((resolve) => setTimeout(resolve, 600 * (attempt + 1)));
-                }
-            }
-        }
-        throw failure || new Error("音频分片上传失败");
-    }
-
-    function queueSpeechChunk(blob) {
-        if (!blob || !blob.size || !speechSessionId) return;
-        const sessionId = speechSessionId;
-        const sequence = speechSequence;
-        speechSequence += 1;
-        speechUploadChain = speechUploadChain.then(async () => {
-            if (speechUploadError) return;
-            try {
-                await uploadSpeechChunk(sessionId, sequence, blob);
-                speechUploadedBytes += blob.size;
-                ui.speechUploaded.textContent = formatBytes(speechUploadedBytes);
-                ui.speechRecordingStatus.textContent = "正在录音并上传";
-            } catch (error) {
-                speechUploadError = error;
-                ui.speechRecorderVisual.dataset.state = "error";
-                ui.speechRecordingStatus.textContent =
-                    `上传失败：${error.message || error}`;
-                showToast("录音分片上传失败", true);
-                if (speechRecorder && speechRecorder.state !== "inactive") {
-                    speechRecorder.stop();
-                }
-            }
+    function addVoiceCommand() {
+        const commands = collectVoiceConfig().commands || [];
+        commands.push({
+            id: `command-${Date.now().toString(36)}`,
+            enabled: false,
+            phrase: "小雨",
+            reply: "好的",
+            method: "GET",
+            url: "",
+            body: "",
+            boosting_score: 1.5,
+            trigger_threshold: 0.45,
+            cooldown_ms: 2000,
         });
+        state.voiceDirty = true;
+        renderVoiceCommands(commands);
+        ui.voiceCommandList.lastElementChild?.querySelector(
+            '[data-voice-field="phrase"]',
+        )?.focus();
     }
 
-    function updateSpeechClock() {
-        if (!speechStartedAt) return;
-        ui.speechElapsed.textContent = formatSpeechDuration(Date.now() - speechStartedAt);
-    }
-
-    function releaseSpeechCapture(stateName, statusText) {
-        clearInterval(speechTimer);
-        speechTimer = 0;
-        if (speechStream) {
-            speechStream.getTracks().forEach((track) => track.stop());
-        }
-        speechRecorder = null;
-        speechStream = null;
-        speechSessionId = "";
-        speechStartedAt = 0;
-        speechFinalizing = false;
-        ui.speechRecorderVisual.dataset.state = stateName;
-        ui.speechRecordingStatus.textContent = statusText;
-        ui.startSpeechRecording.disabled = !state.speechAvailable;
-        ui.stopSpeechRecording.disabled = true;
-    }
-
-    async function finalizeSpeechRecording() {
-        if (speechFinalizing) return;
-        speechFinalizing = true;
-        clearInterval(speechTimer);
-        ui.stopSpeechRecording.disabled = true;
-        ui.speechRecorderVisual.dataset.state = "uploading";
-        ui.speechRecordingStatus.textContent = "正在完成分片上传";
-        const sessionId = speechSessionId;
-        const durationMs = Math.max(1, Date.now() - speechStartedAt);
-        try {
-            await speechUploadChain;
-            if (speechUploadError) throw speechUploadError;
-            if (!speechSequence) throw new Error("录音没有产生有效音频");
-            await api(
-                `/api/v1/speech/sessions/${encodeURIComponent(sessionId)}/finish`,
-                {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        chunk_count: speechSequence,
-                        duration_ms: durationMs,
-                    }),
-                },
-            );
-            state.speechSession = sessionId;
-            ui.speechTitle.value = "";
-            releaseSpeechCapture("queued", "已进入识别与总结队列");
-            showToast("录音上传完成，后台开始处理");
-            await loadSpeechSessions(true);
-        } catch (error) {
-            try {
-                await fetch(
-                    `/api/v1/speech/sessions/${encodeURIComponent(sessionId)}`,
-                    { method: "DELETE", cache: "no-store" },
-                );
-            } catch (_) {}
-            releaseSpeechCapture("error", `录音处理失败：${error.message || error}`);
-            showToast(`录音处理失败：${error.message || error}`, true);
-        }
-    }
-
-    async function startSpeechCapture() {
-        if (speechRecorder || speechFinalizing) return;
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia ||
-            !window.MediaRecorder) {
-            showToast("当前浏览器不支持麦克风录音", true);
+    async function testVoiceCommand(commandId, callUrl) {
+        if (state.voiceDirty) {
+            showToast("请先保存语音配置", true);
             return;
         }
-        ui.startSpeechRecording.disabled = true;
-        ui.speechRecordingStatus.textContent = "正在请求麦克风权限";
-        let sessionId = "";
         try {
-            speechStream = await navigator.mediaDevices.getUserMedia({
-                audio: {
-                    channelCount: 1,
-                    echoCancellation: true,
-                    noiseSuppression: true,
-                    autoGainControl: true,
-                },
-            });
-            const mimeType = chooseSpeechMime();
-            const options = {
-                audioBitsPerSecond: 24_000,
-                ...(mimeType ? { mimeType } : {}),
-            };
-            speechRecorder = new MediaRecorder(speechStream, options);
-            const actualMime = speechRecorder.mimeType || mimeType;
-            if (!/^(audio\/webm|audio\/mp4|audio\/ogg)/i.test(actualMime)) {
-                throw new Error(`服务端暂不支持 ${actualMime || "当前音频格式"}`);
-            }
-            const body = await api("/api/v1/speech/sessions", {
+            await api("/api/v1/voice/test", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    title: ui.speechTitle.value.trim(),
-                    mime_type: actualMime,
+                    command_id: commandId,
+                    call_url: callUrl,
+                    speak_reply: !callUrl,
                 }),
             });
-            sessionId = body.session.id;
-            speechSessionId = sessionId;
-            speechSequence = 0;
-            speechUploadedBytes = 0;
-            speechUploadError = null;
-            speechUploadChain = Promise.resolve();
-            speechStartedAt = Date.now();
-            ui.speechUploaded.textContent = "0 B";
-            ui.speechMime.textContent = actualMime;
-            ui.speechElapsed.textContent = "00:00";
-            ui.speechRecorderVisual.dataset.state = "recording";
-            ui.speechRecordingStatus.textContent = "正在录音并上传";
-            ui.stopSpeechRecording.disabled = false;
-            speechRecorder.addEventListener("dataavailable", (event) => {
-                queueSpeechChunk(event.data);
-            });
-            speechRecorder.addEventListener("stop", finalizeSpeechRecording, { once: true });
-            speechRecorder.addEventListener("error", (event) => {
-                speechUploadError = event.error || new Error("浏览器录音失败");
-                if (speechRecorder && speechRecorder.state !== "inactive") {
-                    speechRecorder.stop();
-                }
-            });
-            speechRecorder.start(1000);
-            speechTimer = setInterval(updateSpeechClock, 250);
-            updateSpeechClock();
-        } catch (error) {
-            if (sessionId) {
-                try {
-                    await fetch(
-                        `/api/v1/speech/sessions/${encodeURIComponent(sessionId)}`,
-                        { method: "DELETE", cache: "no-store" },
-                    );
-                } catch (_) {}
-            }
-            releaseSpeechCapture("error", `无法开始录音：${error.message || error}`);
-            showToast(`无法开始录音：${error.message || error}`, true);
-        }
-    }
-
-    function stopSpeechCapture() {
-        if (!speechRecorder || speechRecorder.state === "inactive") return;
-        ui.stopSpeechRecording.disabled = true;
-        ui.speechRecordingStatus.textContent = "正在结束录音";
-        try { speechRecorder.requestData(); } catch (_) {}
-        speechRecorder.stop();
-    }
-
-    async function deleteSelectedSpeechSession() {
-        if (!state.speechSession || ui.deleteSpeechSession.disabled) return;
-        const session = state.speechSessions.find((item) => item.id === state.speechSession);
-        const title = session ? speechDisplayTitle(session) : state.speechSession;
-        if (!window.confirm(`删除“${title}”及其音频和结果？`)) {
-            return;
-        }
-        ui.deleteSpeechSession.disabled = true;
-        try {
-            await api(
-                `/api/v1/speech/sessions/${encodeURIComponent(state.speechSession)}`,
-                { method: "DELETE" },
-            );
-            state.speechSession = "";
-            showToast("语音记录已删除");
-            await loadSpeechSessions(true);
+            showToast(callUrl ? "接口测试已提交" : "回复测试已提交");
+            window.setTimeout(() => loadVoice(true), 1200);
         } catch (error) {
             handleError(error);
         }
@@ -2137,6 +1921,30 @@
         state.settingsDirty = false;
         await refreshAll(true);
     });
+    ui.voiceForm.addEventListener("input", () => {
+        state.voiceDirty = true;
+    });
+    ui.voiceForm.addEventListener("submit", saveVoice);
+    ui.reloadVoice.addEventListener("click", async () => {
+        state.voiceDirty = false;
+        await loadVoice();
+    });
+    ui.addVoiceCommand.addEventListener("click", addVoiceCommand);
+    ui.voiceCommandList.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-voice-action]");
+        if (!button) return;
+        const row = button.closest(".voice-command");
+        if (!row) return;
+        const id = row.querySelector('[data-voice-field="id"]').value;
+        if (button.dataset.voiceAction === "delete") {
+            row.remove();
+            state.voiceDirty = true;
+        } else if (button.dataset.voiceAction === "reply") {
+            testVoiceCommand(id, false);
+        } else if (button.dataset.voiceAction === "request") {
+            testVoiceCommand(id, true);
+        }
+    });
     ui.deviceSelect.addEventListener("change", () => selectDevice(ui.deviceSelect.value));
     ui.liveDeviceSelect.addEventListener("change", () => {
         selectDevice(ui.liveDeviceSelect.value);
@@ -2149,10 +1957,6 @@
     ui.startLowLive.addEventListener("click", startHubWebRtc);
     ui.startMoqLive.addEventListener("click", startHubMoq);
     ui.stopLive.addEventListener("click", stopHubLive);
-    ui.startSpeechRecording.addEventListener("click", startSpeechCapture);
-    ui.stopSpeechRecording.addEventListener("click", stopSpeechCapture);
-    ui.refreshSpeech.addEventListener("click", () => loadSpeechSessions());
-    ui.deleteSpeechSession.addEventListener("click", deleteSelectedSpeechSession);
     ui.refreshPhotos.addEventListener("click", loadPhotos);
     ui.selectAllPhotos.addEventListener("click", selectAllPhotos);
     ui.clearPhotoSelection.addEventListener("click", clearPhotoSelection);
@@ -2230,7 +2034,7 @@
             "overview",
             "live",
             "evaluation",
-            "speech",
+            "voice",
             "playback",
             "photos",
             "settings",
@@ -2253,7 +2057,7 @@
         if (updateHash) history.replaceState(null, "", `#${target}`);
         if (target === "playback") requestAnimationFrame(resizeTimeline);
         if (target === "photos") loadPhotos();
-        if (target === "speech") loadSpeechSessions(true);
+        if (target === "voice") loadVoice(true);
         if (target === "evaluation") window.CameraHubEvaluation?.refreshDevices();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -2265,11 +2069,6 @@
         activateView(location.hash.slice(1), false);
     });
     window.addEventListener("resize", resizeTimeline);
-    window.addEventListener("beforeunload", (event) => {
-        if (!speechRecorder || speechRecorder.state === "inactive") return;
-        event.preventDefault();
-        event.returnValue = "";
-    });
     activateView(location.hash.slice(1) || "overview", false);
     requestAnimationFrame(resizeTimeline);
 
@@ -2277,7 +2076,7 @@
     setInterval(updateLiveClock, 50);
     setInterval(() => refreshAll(true), 10_000);
     setInterval(() => {
-        if (state.view === "speech" && !speechRecorder) loadSpeechSessions(true);
+        if (state.view === "voice" && !state.voiceDirty) loadVoice(true);
     }, 5_000);
     refreshAll(true);
 })();

@@ -40,7 +40,7 @@
             <button type="button" class="active" data-view-target="overview">运行概览</button>
             <button type="button" data-view-target="live">实时直播</button>
             <button type="button" data-view-target="evaluation">协议评测</button>
-            <button type="button" data-view-target="speech">语音记录</button>
+            <button type="button" data-view-target="voice">语音控制</button>
             <button type="button" data-view-target="playback">录像回放</button>
             <button type="button" data-view-target="photos">AI 相册</button>
             <button type="button" data-view-target="settings">节点设置</button>
@@ -279,89 +279,102 @@
             </div>
         </section>
 
-        <section class="view-heading" data-view="speech" hidden>
-            <p class="eyebrow">SPEECH NOTES</p>
-            <h1>录音转写与总结</h1>
-            <p>浏览器实时上传 Opus 分片；结束录音后，小米 6 串行完成中文转写和会议总结。</p>
+        <section class="view-heading" data-view="voice" hidden>
+            <p class="eyebrow">LOCAL VOICE CONTROL</p>
+            <h1>离线关键词与硬件动作</h1>
+            <p>在小米 6 本机持续识别固定中文命令，请求对应接口后通过扬声器播报结果。</p>
         </section>
 
-        <section class="panel speech-recorder-panel" data-view="speech" hidden>
+        <section class="panel voice-panel" data-view="voice" hidden>
             <div class="panel-heading">
                 <div>
-                    <p class="eyebrow">BROWSER RECORDER</p>
-                    <h2>新建语音记录</h2>
+                    <p class="eyebrow">KEYWORD WORKER</p>
+                    <h2>运行状态</h2>
                 </div>
-                <span class="chip" id="speechRuntimeStatus">正在检查模型</span>
+                <span class="chip" id="voiceStatus">等待加载</span>
             </div>
-            <div class="speech-recorder-grid">
-                <div class="speech-recorder-visual" id="speechRecorderVisual" data-state="idle">
-                    <span class="speech-pulse" aria-hidden="true"></span>
-                    <strong id="speechElapsed">00:00</strong>
-                    <small id="speechRecordingStatus">等待开始录音</small>
+            <dl class="voice-runtime">
+                <div><dt>当前状态</dt><dd id="voiceState">--</dd></div>
+                <div><dt>检测次数</dt><dd id="voiceDetected">0</dd></div>
+                <div><dt>麦克风电平</dt><dd id="voiceAudioLevel">--</dd></div>
+                <div><dt>最近命令</dt><dd id="voiceLastKeyword">--</dd></div>
+                <div><dt>运行信息</dt><dd id="voiceLastError">--</dd></div>
+            </dl>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">VOICE AUTOMATION</p>
+                    <h2>命令配置</h2>
                 </div>
-                <div class="speech-controls">
-                    <label>
-                        <span>记录标题</span>
-                        <input id="speechTitle" type="text" maxlength="80"
-                               placeholder="例如：项目讨论">
+                <button class="button ghost" id="reloadVoice" type="button">重新加载</button>
+            </div>
+            <form id="voiceForm">
+                <div class="voice-global-grid">
+                    <label class="toggle">
+                        <input type="checkbox" id="voiceEnabled">
+                        <span>启用本机持续语音监听</span>
                     </label>
-                    <div class="speech-buttons">
-                        <button class="button primary" id="startSpeechRecording" type="button">
-                            开始录音
-                        </button>
-                        <button class="button ghost" id="stopSpeechRecording" type="button" disabled>
-                            结束并处理
-                        </button>
-                    </div>
-                    <dl class="speech-upload-stats">
-                        <div><dt>已上传</dt><dd id="speechUploaded">0 B</dd></div>
-                        <div><dt>音频格式</dt><dd id="speechMime">--</dd></div>
-                        <div><dt>结果目录</dt><dd id="speechStorage">等待服务状态</dd></div>
-                    </dl>
-                    <p class="speech-note">
-                        录音期间请保持页面在前台并避免锁屏。停止后可以离开页面，识别和总结会继续执行。
-                    </p>
+                    <label>
+                        <span>录音设备</span>
+                        <input id="voiceCaptureDevice" type="text" maxlength="80" required>
+                    </label>
+                    <label>
+                        <span>播放设备</span>
+                        <input id="voicePlaybackDevice" type="text" maxlength="80" required>
+                    </label>
+                    <label>
+                        <span>请求超时（毫秒）</span>
+                        <input id="voiceRequestTimeout" type="number"
+                               min="500" max="30000" step="100" required>
+                    </label>
+                    <label>
+                        <span>全局防重复（毫秒）</span>
+                        <input id="voiceGlobalCooldown" type="number"
+                               min="500" max="60000" step="100" required>
+                    </label>
+                    <label>
+                        <span>失败回复</span>
+                        <input id="voiceFailureReply" type="text" maxlength="120" required>
+                    </label>
                 </div>
-            </div>
+                <div class="voice-command-heading">
+                    <div>
+                        <h3>命令列表</h3>
+                        <small>阈值越高越难触发；开门类操作建议不低于 0.60。</small>
+                    </div>
+                    <button class="button ghost" id="addVoiceCommand" type="button">新增命令</button>
+                </div>
+                <div class="voice-command-list" id="voiceCommandList"></div>
+                <div class="settings-actions">
+                    <button class="button primary" id="saveVoice" type="submit">保存语音配置</button>
+                </div>
+            </form>
         </section>
 
-        <section class="panel speech-results-panel" data-view="speech" hidden>
+        <section class="panel voice-panel" data-view="voice" hidden>
             <div class="panel-heading">
                 <div>
-                    <p class="eyebrow">SPEECH HISTORY</p>
-                    <h2>语音记录</h2>
+                    <p class="eyebrow">ACTION LOG</p>
+                    <h2>最近触发</h2>
                 </div>
-                <button class="button ghost" id="refreshSpeech" type="button">刷新结果</button>
             </div>
-            <div class="speech-results-grid">
-                <div class="speech-session-list" id="speechSessionList">
-                    <div class="empty">暂无语音记录</div>
-                </div>
-                <article class="speech-detail">
-                    <header>
-                        <div>
-                            <strong id="speechDetailTitle">请选择语音记录</strong>
-                            <small id="speechDetailMeta">转写和总结将在这里显示</small>
-                        </div>
-                        <span class="chip" id="speechDetailState">--</span>
-                    </header>
-                    <div class="speech-progress" id="speechProgress" hidden>
-                        <i></i>
-                    </div>
-                    <section>
-                        <h3>会议总结</h3>
-                        <pre id="speechSummary">尚未生成总结</pre>
-                    </section>
-                    <section>
-                        <h3>语音转写</h3>
-                        <pre id="speechTranscript">尚未生成转写</pre>
-                    </section>
-                    <div class="speech-detail-actions">
-                        <button class="button ghost" id="deleteSpeechSession" type="button" disabled>
-                            删除记录
-                        </button>
-                    </div>
-                </article>
+            <div class="table-wrap">
+                <table class="voice-event-table">
+                    <thead>
+                        <tr>
+                            <th>时间</th>
+                            <th>命令</th>
+                            <th>来源</th>
+                            <th>结果</th>
+                            <th>耗时</th>
+                        </tr>
+                    </thead>
+                    <tbody id="voiceEventList">
+                        <tr><td colspan="5">暂无触发记录</td></tr>
+                    </tbody>
+                </table>
             </div>
         </section>
 

@@ -214,9 +214,9 @@ select {
     top: 84px;
     z-index: 15;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     gap: 6px;
-    max-width: 840px;
+    max-width: 980px;
     margin: 0 0 38px;
     padding: 6px;
     border: 1px solid var(--line);
@@ -972,6 +972,145 @@ input:focus {
     margin-top: 18px;
 }
 
+.voice-panel form {
+    padding-top: 20px;
+}
+
+.voice-runtime {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1px;
+    margin: 20px 0 0;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line);
+}
+
+.voice-runtime div {
+    min-width: 0;
+    padding: 13px;
+    background: #0b0e20;
+}
+
+.voice-runtime dt,
+.voice-runtime dd {
+    margin: 0;
+}
+
+.voice-runtime dt {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.voice-runtime dd {
+    margin-top: 7px;
+    overflow: hidden;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.voice-runtime dd.error,
+.voice-failure {
+    color: var(--danger);
+}
+
+.voice-success {
+    color: var(--accent);
+}
+
+.voice-global-grid,
+.voice-command-grid {
+    display: grid;
+    gap: 12px;
+}
+
+.voice-global-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+}
+
+.voice-global-grid label:not(.toggle),
+.voice-command-grid label {
+    display: grid;
+    gap: 7px;
+}
+
+.voice-global-grid label > span,
+.voice-command-grid label > span,
+.voice-command-heading small {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.voice-global-grid input,
+.voice-command-grid input,
+.voice-command-grid select {
+    width: 100%;
+    padding: 0 11px;
+}
+
+.voice-command-heading {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    justify-content: space-between;
+    margin: 22px 0 12px;
+}
+
+.voice-command-heading h3 {
+    margin: 0 0 5px;
+    font-size: 13px;
+}
+
+.voice-command-list {
+    display: grid;
+    gap: 10px;
+}
+
+.voice-command {
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .018);
+}
+
+.voice-command > header {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 13px;
+}
+
+.voice-command-actions {
+    display: flex;
+    gap: 7px;
+}
+
+.voice-command-actions .button {
+    min-height: 34px;
+    padding: 0 10px;
+    font-size: 10px;
+}
+
+.voice-command-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.voice-command-grid .voice-url,
+.voice-command-grid .voice-body {
+    grid-column: span 2;
+}
+
+.voice-event-table {
+    min-width: 720px;
+}
+
 .button.primary {
     color: #090b18;
     background: var(--accent);
@@ -1274,7 +1413,7 @@ td.file-name {
     .section-nav {
         top: 70px;
         width: 100%;
-        grid-template-columns: repeat(6, minmax(108px, 1fr));
+        grid-template-columns: repeat(7, minmax(108px, 1fr));
         margin-bottom: 28px;
         overflow-x: auto;
         scrollbar-width: none;
@@ -1372,6 +1511,31 @@ td.file-name {
 
     .settings-grid label:not(.toggle) {
         grid-template-columns: 1fr;
+    }
+
+    .voice-runtime,
+    .voice-command-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .voice-runtime {
+        gap: 0;
+    }
+
+    .voice-global-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .voice-command-grid .voice-url,
+    .voice-command-grid .voice-body {
+        grid-column: auto;
+    }
+
+    .voice-command > header,
+    .voice-command-heading,
+    .voice-command-actions {
+        align-items: stretch;
+        flex-direction: column;
     }
 
     .settings-actions,
