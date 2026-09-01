@@ -9,6 +9,7 @@ mod live;
 mod media;
 mod moq_live;
 mod mux;
+mod qq;
 mod record_file;
 mod settings;
 mod state;
@@ -22,6 +23,7 @@ use crate::ai::AiService;
 use crate::config::Config;
 use crate::frames::FrameHub;
 use crate::media::MediaStore;
+use crate::qq::{QqConfigUpdate, QqNotifyError, QqNotifyRequest, QqService};
 use crate::settings::{HubSettings, HubSettingsPatch, HubSettingsStore};
 use crate::state::{AppState, DeviceHeartbeat};
 use crate::voice::VoiceService;
@@ -30,7 +32,7 @@ use anyhow::{Context, Result};
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
-use axum::http::header::{CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
@@ -73,12 +75,14 @@ async fn main() -> Result<()> {
     let media = Arc::new(MediaStore::new(config.data_dir.clone(), settings.clone())?);
     let frames = Arc::new(FrameHub::default());
     let ai = AiService::start(&config, settings.clone(), frames.clone())?;
+    let qq = QqService::start(&config)?;
     let voice = Arc::new(VoiceService::load(&config)?);
     let state = Arc::new(AppState::new(
         config.clone(),
         settings,
         media.clone(),
         ai.clone(),
+        qq,
         voice,
         frames,
     ));
@@ -109,6 +113,10 @@ async fn main() -> Result<()> {
             get(hub_settings).put(update_hub_settings),
         )
         .route("/api/v1/ai/status", get(ai_status))
+        .route("/api/v1/qq", get(qq_overview).put(update_qq))
+        .route("/api/v1/qq/push-token", post(rotate_qq_push_token))
+        .route("/api/v1/qq/test", post(test_qq))
+        .route("/api/v1/integrations/qq/notify", post(qq_notify_external))
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
         .route("/api/v1/system/status", get(system_status))
@@ -155,7 +163,7 @@ async fn main() -> Result<()> {
                     Method::DELETE,
                     Method::OPTIONS,
                 ])
-                .allow_headers([CONTENT_TYPE]),
+                .allow_headers([AUTHORIZATION, CONTENT_TYPE]),
         )
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(auth::require_auth))
@@ -766,6 +774,69 @@ async fn ai_status(State(state): State<Arc<AppState>>) -> Json<serde_json::Value
     Json(json!({"ai":state.ai.status()}))
 }
 
+async fn qq_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({"qq":state.qq.overview()}))
+}
+
+async fn update_qq(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<QqConfigUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.qq.update(update)?;
+    Ok(Json(json!({"ok":true,"config":config})))
+}
+
+async fn rotate_qq_push_token(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let token = state.qq.rotate_push_token()?;
+    Ok(Json(json!({"ok":true,"token":token})))
+}
+
+async fn test_qq(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<QqNotifyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let receipt = state.qq.notify(request).await.map_err(qq_notify_error)?;
+    Ok(Json(json!({"ok":true,"delivery":receipt})))
+}
+
+async fn qq_notify_external(
+    State(state): State<Arc<AppState>>,
+    Extension(transport): Extension<auth::TransportSecurity>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !transport.secure && transport.tls_available {
+        return Err(ApiError::status(
+            StatusCode::UPGRADE_REQUIRED,
+            "QQ 推送接口必须使用 HTTPS",
+        ));
+    }
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    if !state.qq.verify_push_token(token) {
+        return Err(qq_notify_error(QqNotifyError::Unauthorized));
+    }
+    let request = serde_json::from_slice::<QqNotifyRequest>(&body)
+        .map_err(|error| ApiError::status(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let receipt = state.qq.notify(request).await.map_err(qq_notify_error)?;
+    Ok(Json(json!({"ok":true,"delivery":receipt})))
+}
+
+fn qq_notify_error(error: QqNotifyError) -> ApiError {
+    let status = match &error {
+        QqNotifyError::Invalid(_) => StatusCode::BAD_REQUEST,
+        QqNotifyError::Unauthorized => StatusCode::UNAUTHORIZED,
+        QqNotifyError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        QqNotifyError::Delivery(_) => StatusCode::BAD_GATEWAY,
+    };
+    ApiError::status(status, error.to_string())
+}
+
 async fn voice_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let (config_path, status_path, events_path) = state.voice.paths();
     Json(json!({
@@ -882,6 +953,7 @@ async fn hub_settings(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
             "settings_file": state.settings.path(),
             "ai_runtime": state.config.ai_runtime,
             "ai_model": state.config.ai_model,
+            "qq_config_file": state.config.qq_config_file,
             "voice_config_file": state.config.voice_config_file,
             "voice_status_file": state.config.voice_status_file,
             "voice_events_file": state.config.voice_events_file,

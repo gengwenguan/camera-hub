@@ -57,6 +57,31 @@
         addVoiceCommand: $("addVoiceCommand"),
         reloadVoice: $("reloadVoice"),
         saveVoice: $("saveVoice"),
+        qqStatus: $("qqStatus"),
+        qqState: $("qqState"),
+        qqBotName: $("qqBotName"),
+        qqConnectedAt: $("qqConnectedAt"),
+        qqSentCount: $("qqSentCount"),
+        qqLastError: $("qqLastError"),
+        qqForm: $("qqForm"),
+        qqEnabled: $("qqEnabled"),
+        qqAppId: $("qqAppId"),
+        qqAppSecret: $("qqAppSecret"),
+        qqSecretState: $("qqSecretState"),
+        qqDefaultGroup: $("qqDefaultGroup"),
+        qqGroupList: $("qqGroupList"),
+        reloadQq: $("reloadQq"),
+        saveQq: $("saveQq"),
+        clearQqSecret: $("clearQqSecret"),
+        qqPushTokenState: $("qqPushTokenState"),
+        qqPushEndpoint: $("qqPushEndpoint"),
+        qqPushToken: $("qqPushToken"),
+        rotateQqPushToken: $("rotateQqPushToken"),
+        copyQqPushToken: $("copyQqPushToken"),
+        qqTestForm: $("qqTestForm"),
+        qqTestTarget: $("qqTestTarget"),
+        qqTestMessage: $("qqTestMessage"),
+        sendQqTest: $("sendQqTest"),
         liveDeviceSelect: $("liveDeviceSelect"),
         livePlayer: $("livePlayer"),
         liveStatus: $("liveStatus"),
@@ -113,6 +138,9 @@
         voiceConfig: null,
         voiceDirty: false,
         voiceBusy: false,
+        qqConfig: null,
+        qqDirty: false,
+        qqBusy: false,
         busy: false,
         settingsDirty: false,
         toastTimer: 0,
@@ -563,6 +591,198 @@
             window.setTimeout(() => loadVoice(true), 1200);
         } catch (error) {
             handleError(error);
+        }
+    }
+
+    async function loadQq(silent = false) {
+        if (state.qqBusy) return;
+        state.qqBusy = true;
+        try {
+            const body = await api("/api/v1/qq");
+            renderQq(body && body.qq || {});
+        } catch (error) {
+            if (!silent) handleError(error);
+        } finally {
+            state.qqBusy = false;
+        }
+    }
+
+    function renderQq(body) {
+        const config = body.config || {};
+        const status = body.status || {};
+        const online = !!status.online;
+        ui.qqStatus.textContent = online
+            ? "在线"
+            : status.state === "connecting"
+                ? "连接中"
+                : status.state === "retrying"
+                    ? "正在重连"
+                    : status.state === "incomplete"
+                        ? "配置不完整"
+                        : "离线";
+        ui.qqStatus.className = `chip ${online ? "active" : "offline"}`;
+        ui.qqState.textContent = status.detail || status.state || "--";
+        ui.qqBotName.textContent = status.bot_name || "--";
+        ui.qqConnectedAt.textContent = formatTimestamp(status.connected_epoch);
+        ui.qqSentCount.textContent = String(status.sent_count || 0);
+        ui.qqLastError.textContent =
+            status.last_error || (online ? "运行正常" : status.detail || "等待连接");
+        ui.qqLastError.classList.toggle("error", !!status.last_error);
+        ui.qqPushEndpoint.value =
+            `${location.origin}${body.push_endpoint || "/api/v1/integrations/qq/notify"}`;
+        ui.qqPushTokenState.textContent = config.push_token_configured
+            ? "Token 已配置" : "尚未生成 Token";
+        ui.qqPushTokenState.className =
+            `chip ${config.push_token_configured ? "active" : ""}`.trim();
+
+        if (!state.qqDirty) {
+            state.qqConfig = structuredClone(config);
+            ui.qqEnabled.checked = !!config.enabled;
+            ui.qqAppId.value = config.app_id || "";
+            ui.qqAppSecret.value = "";
+            ui.qqSecretState.textContent = config.secret_configured
+                ? "AppSecret 已配置，留空不会修改"
+                : "尚未配置 AppSecret";
+            ui.clearQqSecret.disabled = !config.secret_configured;
+            renderQqGroups(Array.isArray(config.groups) ? config.groups : [], config.default_group);
+        }
+        updateQqCredentialRequirements();
+    }
+
+    function renderQqGroups(groups, defaultGroup) {
+        ui.qqDefaultGroup.replaceChildren();
+        ui.qqTestTarget.replaceChildren();
+        ui.qqTestTarget.add(new Option("默认群", "default"));
+        if (!groups.length) {
+            ui.qqDefaultGroup.add(new Option("尚未发现群", ""));
+            ui.qqDefaultGroup.disabled = true;
+            ui.qqTestTarget.disabled = true;
+            ui.qqGroupList.innerHTML =
+                '<div class="empty">机器人加入群后会自动登记目标群</div>';
+            return;
+        }
+        ui.qqDefaultGroup.add(new Option("请选择默认群", ""));
+        for (const group of groups) {
+            ui.qqDefaultGroup.add(new Option(group.name || group.openid, group.openid));
+            ui.qqTestTarget.add(new Option(group.name || group.openid, group.openid));
+        }
+        ui.qqDefaultGroup.value = defaultGroup || "";
+        ui.qqDefaultGroup.disabled = false;
+        ui.qqTestTarget.disabled = false;
+        ui.qqGroupList.innerHTML = groups.map((group) => `
+            <label class="qq-group-row" data-qq-group="${esc(group.openid)}">
+                <span>
+                    <strong>${esc(group.name || "未命名群")}</strong>
+                    <code title="${esc(group.openid)}">${esc(group.openid)}</code>
+                </span>
+                <input type="text" maxlength="32" value="${esc(group.name || "")}"
+                       data-qq-group-alias="${esc(group.openid)}"
+                       aria-label="群别名">
+            </label>`).join("");
+    }
+
+    function updateQqCredentialRequirements() {
+        ui.qqAppId.required = ui.qqEnabled.checked;
+        ui.qqAppSecret.required =
+            ui.qqEnabled.checked && !(state.qqConfig && state.qqConfig.secret_configured);
+    }
+
+    function collectQqConfig(clearSecret = false) {
+        const aliases = {};
+        ui.qqGroupList.querySelectorAll("[data-qq-group-alias]").forEach((input) => {
+            aliases[input.dataset.qqGroupAlias] = input.value.trim();
+        });
+        return {
+            enabled: clearSecret ? false : ui.qqEnabled.checked,
+            app_id: ui.qqAppId.value.trim(),
+            app_secret: clearSecret ? "" : ui.qqAppSecret.value.trim(),
+            clear_secret: clearSecret,
+            default_group: ui.qqDefaultGroup.value,
+            group_aliases: aliases,
+        };
+    }
+
+    async function saveQqConfig(event, clearSecret = false) {
+        if (event) event.preventDefault();
+        if (!clearSecret && !ui.qqForm.reportValidity()) return;
+        ui.saveQq.disabled = true;
+        ui.clearQqSecret.disabled = true;
+        try {
+            await api("/api/v1/qq", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(collectQqConfig(clearSecret)),
+            });
+            state.qqDirty = false;
+            ui.qqAppSecret.value = "";
+            showToast(clearSecret ? "QQ AppSecret 已清除" : "QQ 机器人配置已保存");
+            await loadQq(true);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.saveQq.disabled = false;
+            ui.clearQqSecret.disabled = false;
+        }
+    }
+
+    async function rotateQqPushToken() {
+        const configured = !!(state.qqConfig && state.qqConfig.push_token_configured);
+        if (configured && !window.confirm("重新生成后，旧 Push Token 会立即失效。继续？")) {
+            return;
+        }
+        ui.rotateQqPushToken.disabled = true;
+        try {
+            const body = await api("/api/v1/qq/push-token", { method: "POST" });
+            ui.qqPushToken.value = body.token || "";
+            ui.copyQqPushToken.disabled = !ui.qqPushToken.value;
+            if (state.qqConfig) state.qqConfig.push_token_configured = true;
+            ui.qqPushTokenState.textContent = "新 Token 仅显示一次";
+            ui.qqPushTokenState.className = "chip active";
+            showToast("新 Push Token 已生成");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.rotateQqPushToken.disabled = false;
+        }
+    }
+
+    async function copyQqPushToken() {
+        if (!ui.qqPushToken.value) return;
+        try {
+            await navigator.clipboard.writeText(ui.qqPushToken.value);
+        } catch (_) {
+            ui.qqPushToken.select();
+            document.execCommand("copy");
+        }
+        showToast("Push Token 已复制");
+    }
+
+    async function sendQqTest(event) {
+        event.preventDefault();
+        if (!ui.qqTestForm.reportValidity()) return;
+        if (state.qqDirty) {
+            showToast("请先保存 QQ 机器人配置", true);
+            return;
+        }
+        ui.sendQqTest.disabled = true;
+        try {
+            const body = await api("/api/v1/qq/test", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    target: ui.qqTestTarget.value,
+                    content: ui.qqTestMessage.value.trim(),
+                }),
+            });
+            showToast(
+                `已向 ${body.delivery?.target || "目标群"}发送 ` +
+                `${body.delivery?.messages || 1} 条消息`,
+            );
+            await loadQq(true);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.sendQqTest.disabled = false;
         }
     }
 
@@ -1954,6 +2174,23 @@
             testVoiceCommand(id, true);
         }
     });
+    ui.qqForm.addEventListener("input", () => {
+        state.qqDirty = true;
+        updateQqCredentialRequirements();
+    });
+    ui.qqForm.addEventListener("submit", (event) => saveQqConfig(event));
+    ui.reloadQq.addEventListener("click", async () => {
+        state.qqDirty = false;
+        await loadQq();
+    });
+    ui.clearQqSecret.addEventListener("click", async () => {
+        if (!state.qqConfig?.secret_configured) return;
+        if (!window.confirm("清除 AppSecret 后机器人会立即离线。继续？")) return;
+        await saveQqConfig(null, true);
+    });
+    ui.rotateQqPushToken.addEventListener("click", rotateQqPushToken);
+    ui.copyQqPushToken.addEventListener("click", copyQqPushToken);
+    ui.qqTestForm.addEventListener("submit", sendQqTest);
     ui.deviceSelect.addEventListener("change", () => selectDevice(ui.deviceSelect.value));
     ui.liveDeviceSelect.addEventListener("change", () => {
         selectDevice(ui.liveDeviceSelect.value);
@@ -2044,6 +2281,7 @@
             "live",
             "evaluation",
             "voice",
+            "qq",
             "playback",
             "photos",
             "settings",
@@ -2063,10 +2301,20 @@
             button.classList.toggle("active", active);
             button.setAttribute("aria-current", active ? "page" : "false");
         });
+        const activeNavigation = document.querySelector(`[data-view-target="${target}"]`);
+        if (activeNavigation && activeNavigation.parentElement) {
+            const navigation = activeNavigation.parentElement;
+            navigation.scrollLeft = Math.max(
+                0,
+                activeNavigation.offsetLeft -
+                    (navigation.clientWidth - activeNavigation.offsetWidth) / 2,
+            );
+        }
         if (updateHash) history.replaceState(null, "", `#${target}`);
         if (target === "playback") requestAnimationFrame(resizeTimeline);
         if (target === "photos") loadPhotos();
         if (target === "voice") loadVoice(true);
+        if (target === "qq") loadQq(true);
         if (target === "evaluation") window.CameraHubEvaluation?.refreshDevices();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -2086,6 +2334,7 @@
     setInterval(() => refreshAll(true), 10_000);
     setInterval(() => {
         if (state.view === "voice" && !state.voiceDirty) loadVoice(true);
+        if (state.view === "qq" && !state.qqDirty) loadQq(true);
     }, 5_000);
     refreshAll(true);
 })();

@@ -7,6 +7,7 @@ use crate::live::LiveStreams;
 use crate::media::MediaStore;
 use crate::moq_live::MoqLive;
 use crate::mux::MediaMuxers;
+use crate::qq::QqService;
 use crate::settings::HubSettingsStore;
 use crate::system::SystemMonitor;
 use crate::voice::VoiceService;
@@ -56,6 +57,7 @@ pub struct AppState {
     pub frames: Arc<FrameHub>,
     pub muxers: Arc<MediaMuxers>,
     pub moq: Arc<MoqLive>,
+    pub qq: Arc<QqService>,
     pub ai: Arc<AiService>,
     pub settings: Arc<HubSettingsStore>,
     pub voice: Arc<VoiceService>,
@@ -73,6 +75,7 @@ impl AppState {
         settings: Arc<HubSettingsStore>,
         media: Arc<MediaStore>,
         ai: Arc<AiService>,
+        qq: Arc<QqService>,
         voice: Arc<VoiceService>,
         frames: Arc<FrameHub>,
     ) -> Self {
@@ -89,6 +92,7 @@ impl AppState {
             webrtc: Arc::new(WebRtcRelay::new(frames.clone(), benchmark.clone())),
             muxers: Arc::new(MediaMuxers::new(frames.clone(), media, live)),
             moq,
+            qq,
             frames,
             ai,
             settings,

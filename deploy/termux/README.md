@@ -13,6 +13,7 @@ Android Bionic ABI，因此必须在 Termux 内原生编译，或使用
 | WebRTC H264 | 支持 |
 | WebRTC AAC→Opus | 依赖 FFmpeg 的 `libopus` encoder |
 | ONNX AI | 默认关闭，需要 Android/Termux ABI 的 ONNX Runtime |
+| QQ Gateway 与消息推送 | 支持 |
 | 80/443 | 无 Root 不使用，默认 8080/8443 |
 | 开机启动 | 使用 Termux:Boot，不使用 systemd/rc.local |
 
@@ -44,6 +45,7 @@ CAMERA_HUB_PUBLIC_HOST=2409:... ./deploy/termux/install.sh
 ~/.config/camera-hub.env
 ~/.local/share/camera-hub/data/
 ~/.local/share/camera-hub/state/
+~/.local/share/camera-hub/state/qq.json
 ~/.termux/boot/20-camera-hub
 ~/camera-hub.log
 ```

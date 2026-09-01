@@ -87,6 +87,7 @@ if [ ! -f "$ENV_FILE" ]; then
         echo "CAMERA_HUB_EDGE_RUNTIME_DIR='/root/maix_dist'"
         echo "CAMERA_HUB_DATA_DIR='/home/android/camera-data'"
         echo "CAMERA_HUB_SETTINGS_FILE='/home/android/.config/camera-hub.json'"
+        echo "CAMERA_HUB_QQ_CONFIG_FILE='/home/android/.config/camera-hub-qq.json'"
         echo "CAMERA_HUB_VOICE_CONFIG_FILE='/home/android/.config/camera-hub-voice.json'"
         echo "CAMERA_HUB_VOICE_STATUS_FILE='/home/android/.config/camera-hub-voice-status.json'"
         echo "CAMERA_HUB_VOICE_EVENTS_FILE='/home/android/camera-data/voice/events.jsonl'"
@@ -143,6 +144,8 @@ grep -q '^CAMERA_HUB_TLS_KEY=' "$ENV_FILE" ||
     echo "CAMERA_HUB_TLS_KEY='$TLS_KEY'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_SETTINGS_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_SETTINGS_FILE='/home/android/.config/camera-hub.json'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_QQ_CONFIG_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_QQ_CONFIG_FILE='/home/android/.config/camera-hub-qq.json'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_VOICE_CONFIG_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_VOICE_CONFIG_FILE='/home/android/.config/camera-hub-voice.json'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_VOICE_STATUS_FILE=' "$ENV_FILE" ||

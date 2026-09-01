@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <title>camera-hub</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260811-5">
-    <link rel="stylesheet" href="/style.css?v=20260813-1">
+    <link rel="stylesheet" href="/style.css?v=20260901-1">
 </head>
 <body>
     <div class="backdrop"></div>
@@ -41,6 +41,7 @@
             <button type="button" data-view-target="live">实时直播</button>
             <button type="button" data-view-target="evaluation">协议评测</button>
             <button type="button" data-view-target="voice">语音控制</button>
+            <button type="button" data-view-target="qq">QQ 机器人</button>
             <button type="button" data-view-target="playback">录像回放</button>
             <button type="button" data-view-target="photos">AI 相册</button>
             <button type="button" data-view-target="settings">节点设置</button>
@@ -383,6 +384,121 @@
             </div>
         </section>
 
+        <section class="view-heading" data-view="qq" hidden>
+            <p class="eyebrow">QQ BOT</p>
+            <h1>QQ 机器人</h1>
+            <p>维护 Gateway 在线状态、目标群和外部程序的消息推送入口。</p>
+        </section>
+
+        <section class="panel qq-panel" data-view="qq" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">GATEWAY STATUS</p>
+                    <h2>连接状态</h2>
+                </div>
+                <span class="chip offline" id="qqStatus">等待加载</span>
+            </div>
+            <dl class="qq-runtime">
+                <div><dt>状态</dt><dd id="qqState">--</dd></div>
+                <div><dt>机器人</dt><dd id="qqBotName">--</dd></div>
+                <div><dt>已连接</dt><dd id="qqConnectedAt">--</dd></div>
+                <div><dt>已发送</dt><dd id="qqSentCount">0</dd></div>
+                <div><dt>运行信息</dt><dd id="qqLastError">--</dd></div>
+            </dl>
+        </section>
+
+        <section class="panel qq-panel" data-view="qq" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">BOT CONFIGURATION</p>
+                    <h2>接入配置</h2>
+                </div>
+                <button class="button ghost" id="reloadQq" type="button">重新加载</button>
+            </div>
+            <form id="qqForm">
+                <div class="qq-config-grid">
+                    <fieldset>
+                        <legend>机器人凭据</legend>
+                        <label class="toggle">
+                            <input type="checkbox" id="qqEnabled">
+                            <span>启用 WebSocket 接入</span>
+                        </label>
+                        <label>
+                            <span>AppID</span>
+                            <input id="qqAppId" type="text" inputmode="numeric"
+                                   maxlength="32" pattern="[0-9]*" autocomplete="off">
+                        </label>
+                        <label>
+                            <span>AppSecret</span>
+                            <input id="qqAppSecret" type="password" maxlength="256"
+                                   autocomplete="new-password"
+                                   placeholder="留空则保留现有密钥">
+                        </label>
+                        <small id="qqSecretState">尚未配置 AppSecret</small>
+                    </fieldset>
+                    <fieldset>
+                        <legend>消息目标</legend>
+                        <label>
+                            <span>默认群</span>
+                            <select id="qqDefaultGroup" disabled>
+                                <option value="">尚未发现群</option>
+                            </select>
+                        </label>
+                        <div class="qq-group-list" id="qqGroupList">
+                            <div class="empty">机器人加入群后会自动登记目标群</div>
+                        </div>
+                    </fieldset>
+                </div>
+                <div class="settings-actions qq-config-actions">
+                    <button class="button danger" id="clearQqSecret"
+                            type="button">清除密钥</button>
+                    <button class="button primary" id="saveQq" type="submit">保存并重连</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="panel qq-panel" data-view="qq" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">PUSH API</p>
+                    <h2>外部程序推送</h2>
+                </div>
+                <span class="chip" id="qqPushTokenState">尚未生成 Token</span>
+            </div>
+            <div class="qq-push-grid">
+                <label>
+                    <span>推送接口</span>
+                    <input id="qqPushEndpoint" type="text" readonly>
+                </label>
+                <label>
+                    <span>新 Push Token</span>
+                    <input id="qqPushToken" type="text" readonly
+                           placeholder="生成后仅在本次页面显示">
+                </label>
+                <div class="qq-token-actions">
+                    <button class="button ghost" id="rotateQqPushToken"
+                            type="button">生成 Token</button>
+                    <button class="button ghost" id="copyQqPushToken"
+                            type="button" disabled>复制 Token</button>
+                </div>
+            </div>
+            <form class="qq-test-form" id="qqTestForm">
+                <label>
+                    <span>目标群</span>
+                    <select id="qqTestTarget" disabled>
+                        <option value="default">默认群</option>
+                    </select>
+                </label>
+                <label class="qq-test-message">
+                    <span>测试消息</span>
+                    <textarea id="qqTestMessage" maxlength="12000"
+                              rows="3" required>camera-hub QQ 推送测试</textarea>
+                </label>
+                <button class="button primary" id="sendQqTest"
+                        type="submit">发送测试</button>
+            </form>
+        </section>
+
         <section class="view-heading" data-view="settings" hidden>
             <p class="eyebrow">HUB SETTINGS</p>
             <h1>camera-hub 服务设置</h1>
@@ -593,6 +709,6 @@
     <script type="module" src="/generated/flv-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/moq-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/evaluation.js?v=20260813-2"></script>
-    <script src="/app.js?v=20260814-1" defer></script>
+    <script src="/app.js?v=20260901-1" defer></script>
 </body>
 </html>

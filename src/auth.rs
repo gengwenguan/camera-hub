@@ -121,6 +121,7 @@ fn public_path(method: &str, path: &str) -> bool {
     method == "OPTIONS"
         || path == "/login"
         || path == "/api/v1/auth/login"
+        || (method == "POST" && path == "/api/v1/integrations/qq/notify")
         || path == "/health"
         || path == "/certificate.sha256"
         || path.starts_with("/.well-known/acme-challenge/")
@@ -305,5 +306,12 @@ mod tests {
     fn strips_http_port_but_preserves_ipv6_brackets() {
         assert_eq!(without_port("mi6.gwghome.site:80"), "mi6.gwghome.site");
         assert_eq!(without_port("[2409::1]:80"), "[2409::1]");
+    }
+
+    #[test]
+    fn exposes_only_the_exact_qq_push_route() {
+        assert!(public_path("POST", "/api/v1/integrations/qq/notify"));
+        assert!(!public_path("GET", "/api/v1/integrations/qq/notify"));
+        assert!(!public_path("POST", "/api/v1/integrations/qq/notify/extra"));
     }
 }

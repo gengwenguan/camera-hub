@@ -39,7 +39,8 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android \
 
 完整部署会下载 sherpa-onnx 中文 KWS INT8 模型，安装 `espeak-ng`，并使用
 `mi6-audio.sh` 配置 msm8998/tasha 的主麦克风和扬声器路由。语音命令默认关闭，
-需要在 camera-hub Web 的“语音控制”页面配置 URL 后启用。
+需要在 camera-hub Web 的“语音控制”页面配置 URL 后启用。播报音量默认 60%，
+可在同一页面调整，不影响系统其他音频。
 
 ```text
 /home/android/.config/camera-hub-voice.json
@@ -47,6 +48,18 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android \
 /home/android/camera-data/voice/events.jsonl
 /home/android/camera-voice/models/
 ```
+
+## QQ 机器人
+
+QQ Gateway 客户端运行在 `camera-hub` 主进程中。Web 配置写入：
+
+```text
+/home/android/.config/camera-hub-qq.json
+```
+
+该文件由服务以 `0600` 权限保存，包含 AppSecret，请勿复制到仓库或日志。机器人
+启用后由主进程维护 WebSocket、Access Token 和重连；TraeWork 等外部程序使用 Web
+页面生成的独立 Push Token 调用 `/api/v1/integrations/qq/notify`。
 
 ## DNSPod DDNS
 

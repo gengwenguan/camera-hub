@@ -33,7 +33,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
     font: inherit;
 }
 
@@ -214,7 +215,7 @@ select {
     top: 84px;
     z-index: 15;
     display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-columns: repeat(8, minmax(0, 1fr));
     gap: 6px;
     max-width: 980px;
     margin: 0 0 38px;
@@ -539,7 +540,8 @@ h2 {
 }
 
 select,
-input {
+input,
+textarea {
     min-height: 40px;
     border: 1px solid var(--line);
     border-radius: 10px;
@@ -554,7 +556,8 @@ select {
 }
 
 select:focus,
-input:focus {
+input:focus,
+textarea:focus {
     border-color: rgba(162, 173, 255, 0.62);
     box-shadow: 0 0 0 3px rgba(124, 140, 255, 0.09);
 }
@@ -1128,6 +1131,179 @@ input:focus {
     min-width: 720px;
 }
 
+.qq-panel form {
+    padding-top: 20px;
+}
+
+.qq-runtime {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1px;
+    margin: 20px 0 0;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--line);
+}
+
+.qq-runtime div {
+    min-width: 0;
+    padding: 13px;
+    background: #0b0e20;
+}
+
+.qq-runtime dt,
+.qq-runtime dd {
+    margin: 0;
+}
+
+.qq-runtime dt {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.qq-runtime dd {
+    margin-top: 7px;
+    overflow: hidden;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qq-runtime dd.error {
+    color: var(--danger);
+}
+
+.qq-config-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.qq-config-grid fieldset {
+    display: grid;
+    align-content: start;
+    gap: 14px;
+    min-width: 0;
+    margin: 0;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+}
+
+.qq-config-grid legend {
+    padding: 0 7px;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.qq-config-grid label:not(.toggle),
+.qq-push-grid label,
+.qq-test-form label {
+    display: grid;
+    gap: 7px;
+}
+
+.qq-config-grid label > span,
+.qq-config-grid small,
+.qq-push-grid label > span,
+.qq-test-form label > span {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.qq-config-grid input:not([type="checkbox"]),
+.qq-config-grid select,
+.qq-push-grid input,
+.qq-test-form select,
+.qq-test-form textarea {
+    width: 100%;
+    padding: 0 11px;
+}
+
+.qq-group-list {
+    display: grid;
+    gap: 8px;
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+.qq-group-list .empty {
+    padding: 28px 14px;
+}
+
+.qq-group-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(120px, 180px);
+    gap: 12px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.qq-group-row:last-child {
+    border-bottom: 0;
+}
+
+.qq-group-row span,
+.qq-group-row strong,
+.qq-group-row code {
+    display: block;
+    min-width: 0;
+}
+
+.qq-group-row strong {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qq-group-row code {
+    overflow: hidden;
+    margin-top: 5px;
+    color: var(--muted);
+    font-size: 10px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qq-config-actions {
+    justify-content: space-between;
+}
+
+.qq-push-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) auto;
+    gap: 12px;
+    align-items: end;
+    padding-top: 20px;
+}
+
+.qq-token-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.qq-test-form {
+    display: grid;
+    grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+    margin-top: 20px;
+    padding-top: 20px !important;
+    border-top: 1px solid var(--line);
+}
+
+.qq-test-form textarea {
+    min-height: 78px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    resize: vertical;
+}
+
 .button.primary {
     color: #090b18;
     background: var(--accent);
@@ -1430,7 +1606,7 @@ td.file-name {
     .section-nav {
         top: 70px;
         width: 100%;
-        grid-template-columns: repeat(7, minmax(108px, 1fr));
+        grid-template-columns: repeat(8, minmax(108px, 1fr));
         margin-bottom: 28px;
         overflow-x: auto;
         scrollbar-width: none;
@@ -1531,7 +1707,11 @@ td.file-name {
     }
 
     .voice-runtime,
-    .voice-command-grid {
+    .voice-command-grid,
+    .qq-runtime,
+    .qq-config-grid,
+    .qq-push-grid,
+    .qq-test-form {
         grid-template-columns: 1fr;
     }
 
@@ -1550,7 +1730,8 @@ td.file-name {
 
     .voice-command > header,
     .voice-command-heading,
-    .voice-command-actions {
+    .voice-command-actions,
+    .qq-token-actions {
         align-items: stretch;
         flex-direction: column;
     }

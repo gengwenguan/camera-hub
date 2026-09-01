@@ -55,6 +55,13 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_QQ_CONFIG_FILE",
+        default_value = "camera-hub-state/qq.json"
+    )]
+    pub qq_config_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_VOICE_CONFIG_FILE",
         default_value = "camera-hub-state/voice.json"
     )]

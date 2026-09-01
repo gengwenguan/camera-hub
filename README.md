@@ -186,6 +186,7 @@ CAMERA_HUB_TLS_CERT=/srv/camera-hub/state/cert.pem
 CAMERA_HUB_TLS_KEY=/srv/camera-hub/state/key.pem
 CAMERA_HUB_DATA_DIR=/srv/camera-hub/data
 CAMERA_HUB_SETTINGS_FILE=/srv/camera-hub/state/settings.json
+CAMERA_HUB_QQ_CONFIG_FILE=/srv/camera-hub/state/qq.json
 CAMERA_HUB_VOICE_CONFIG_FILE=/srv/camera-hub/state/voice.json
 CAMERA_HUB_VOICE_STATUS_FILE=/srv/camera-hub/state/voice-status.json
 CAMERA_HUB_VOICE_EVENTS_FILE=/srv/camera-hub/data/voice/events.jsonl
@@ -225,7 +226,8 @@ Termux 等无 Root 环境直接使用 8080/8443。
 GET  /api/v1/devices/:id/link
 ```
 
-以下 Web/Viewer 接口不需要鉴权，可直接访问：
+以下为主要 Web/API 接口。管理接口使用登录 Cookie 鉴权；设备链路、健康检查、
+证书和 ACME 端点保持公开：
 
 ```text
 GET  /api/v1/devices
@@ -233,6 +235,10 @@ GET  /api/v1/media/status
 GET  /api/v1/settings
 PUT  /api/v1/settings
 GET  /api/v1/ai/status
+GET  /api/v1/qq
+PUT  /api/v1/qq
+POST /api/v1/qq/push-token
+POST /api/v1/qq/test
 GET  /api/v1/voice
 PUT  /api/v1/voice
 POST /api/v1/voice/test
@@ -313,6 +319,26 @@ Web 设置页使用百分比显示，设为 `0` 可关闭面积过滤。
 Web AI 相册支持删除单张或清空当前设备照片。删除只作用于 camera-hub 本地
 `snapshot` 目录，不会反向删除此前已经同步到开发板相册的副本。
 
+## QQ 机器人
+
+Web 的“QQ 机器人”页面配置 AppID、AppSecret、默认目标群和外部推送 Token。
+主进程通过 QQ Gateway WebSocket 维持机器人在线，并从加群或群消息事件中登记
+`group_openid`。AppSecret 只写入权限为 `0600` 的
+`CAMERA_HUB_QQ_CONFIG_FILE`；配置查询不会返回原始密钥。
+
+外部程序使用独立 Push Token 发送纯文本消息，不接触 AppSecret 或 QQ Access Token：
+
+```bash
+curl -X POST https://hub.example/api/v1/integrations/qq/notify \
+  -H "Authorization: Bearer $CAMERA_HUB_QQ_PUSH_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"target":"default","content":"任务执行完成"}'
+```
+
+该接口不使用 Web 登录 Cookie；配置 Token 后必须携带 Bearer 凭据。部署存在 HTTPS
+监听时，HTTP 请求会被拒绝。消息只允许发往 Gateway 事件已经登记的群，`target`
+可使用 `default`、群别名或已登记的 `group_openid`。
+
 ## Web 管理界面
 
 Web 是独立的轻量运维页面，不复制开发板完整控制台，提供运行概览、实时直播、
@@ -324,6 +350,7 @@ Web 是独立的轻量运维页面，不复制开发板完整控制台，提供�
 - 协议评测同步启动 MSE、HTTP-FLV、WebRTC 和 MoQ，停止时统一释放四路会话。
 - 展示当前主机 CPU、负载、内存、进程 RSS、数据盘和服务运行时长。
 - 管理 ONNX AI、录像分片、保留天数和容量上限。
+- 管理 QQ Gateway、目标群和外部消息推送凭据。
 - 录像支持 MSE、`.idx`、HTTP Range 和 24 小时总时间轴。
 - AI 相册读取当前 camera-hub 节点保存的检测抓拍。
 
