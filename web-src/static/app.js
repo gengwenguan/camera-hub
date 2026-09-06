@@ -42,8 +42,15 @@
         voiceDetected: $("voiceDetected"),
         voiceAudioLevel: $("voiceAudioLevel"),
         voiceLastKeyword: $("voiceLastKeyword"),
+        voiceTtsState: $("voiceTtsState"),
         voiceLastError: $("voiceLastError"),
         voiceForm: $("voiceForm"),
+        voiceReferencePrompt: $("voiceReferencePrompt"),
+        voiceReferenceStatus: $("voiceReferenceStatus"),
+        voiceReferencePreview: $("voiceReferencePreview"),
+        recordVoiceReference: $("recordVoiceReference"),
+        stopVoiceReference: $("stopVoiceReference"),
+        deleteVoiceReference: $("deleteVoiceReference"),
         voiceEnabled: $("voiceEnabled"),
         voiceCaptureDevice: $("voiceCaptureDevice"),
         voicePlaybackDevice: $("voicePlaybackDevice"),
@@ -138,6 +145,12 @@
         voiceConfig: null,
         voiceDirty: false,
         voiceBusy: false,
+        voiceRecorder: null,
+        voiceStream: null,
+        voiceChunks: [],
+        voiceRecordTimer: 0,
+        voicePreviewUrl: "",
+        voiceProfileBusy: false,
         qqConfig: null,
         qqDirty: false,
         qqBusy: false,
@@ -387,8 +400,9 @@
     function renderVoice(body) {
         const config = body && body.config || {};
         const status = body && body.status || {};
+        const serverEpoch = Number(body && body.server_epoch) || Date.now() / 1000;
         const stale = !status.updated_epoch ||
-            Date.now() / 1000 - Number(status.updated_epoch) > 15;
+            serverEpoch - Number(status.updated_epoch) > 15;
         const online = !!status.available && !stale;
         ui.voiceStatus.textContent = stale
             ? "进程离线"
@@ -405,11 +419,21 @@
             ? `${Math.max(-96, 20 * Math.log10(rms)).toFixed(1)} dBFS`
             : "--";
         ui.voiceLastKeyword.textContent = status.last_keyword || "--";
+        const profileRevision = Number(config.voice_profile_revision || 0);
+        ui.voiceTtsState.textContent = status.tts_state ||
+            (profileRevision > 0 ? "声纹已录入" : "系统声音");
         ui.voiceLastError.textContent =
             status.last_error || (online ? "运行正常" : "等待 worker 状态");
         ui.voiceLastError.classList.toggle("error", !!status.last_error);
+        ui.voiceReferencePrompt.textContent = body.reference_prompt || "--";
+        if (!state.voiceProfileBusy && !state.voiceRecorder) {
+            ui.voiceReferenceStatus.textContent = profileRevision > 0
+                ? `声纹已录入 · 版本 ${profileRevision} · 修改后将重新生成全部回复`
+                : "尚未录入，继续使用系统声音";
+            ui.deleteVoiceReference.disabled = profileRevision === 0;
+        }
 
-        if (!state.voiceDirty) {
+        if (!state.voiceDirty && !state.voiceProfileBusy) {
             state.voiceConfig = structuredClone(config);
             ui.voiceEnabled.checked = !!config.enabled;
             ui.voiceCaptureDevice.value = config.capture_device || "hw:0,0";
@@ -592,6 +616,189 @@
         } catch (error) {
             handleError(error);
         }
+    }
+
+    async function startVoiceReferenceRecording() {
+        if (state.voiceProfileBusy) return;
+        if (state.voiceDirty) {
+            showToast("请先保存语音配置", true);
+            return;
+        }
+        if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder !== "function") {
+            showToast("当前浏览器不支持录音", true);
+            return;
+        }
+        setVoiceProfileBusy(true);
+        let stream = null;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    channelCount: 1,
+                    echoCancellation: false,
+                    noiseSuppression: false,
+                    autoGainControl: false,
+                },
+            });
+            const recorder = new MediaRecorder(stream);
+            const chunks = [];
+            state.voiceStream = stream;
+            state.voiceRecorder = recorder;
+            state.voiceChunks = chunks;
+            recorder.addEventListener("dataavailable", (event) => {
+                if (event.data.size) chunks.push(event.data);
+            });
+            recorder.addEventListener(
+                "stop",
+                () => uploadVoiceReference(recorder, stream, chunks),
+                { once: true },
+            );
+            recorder.start(250);
+            ui.stopVoiceReference.disabled = false;
+            ui.voiceReferenceStatus.textContent = "正在录音，请完整朗读上方文稿";
+            clearTimeout(state.voiceRecordTimer);
+            state.voiceRecordTimer = window.setTimeout(stopVoiceReferenceRecording, 15_000);
+        } catch (error) {
+            stopVoiceReferenceTracks(stream);
+            setVoiceProfileBusy(false);
+            handleError(error);
+        }
+    }
+
+    function stopVoiceReferenceRecording() {
+        clearTimeout(state.voiceRecordTimer);
+        state.voiceRecordTimer = 0;
+        if (state.voiceRecorder?.state === "recording") {
+            state.voiceRecorder.stop();
+        }
+        ui.stopVoiceReference.disabled = true;
+    }
+
+    function stopVoiceReferenceTracks(stream = state.voiceStream) {
+        stream?.getTracks().forEach((track) => track.stop());
+        if (state.voiceStream === stream) state.voiceStream = null;
+    }
+
+    function setVoiceProfileBusy(busy) {
+        state.voiceProfileBusy = busy;
+        ui.voiceForm.querySelectorAll("input, select, textarea, button").forEach((control) => {
+            control.disabled = busy;
+        });
+        ui.reloadVoice.disabled = busy;
+        if (busy) return;
+        ui.stopVoiceReference.disabled = true;
+        ui.deleteVoiceReference.disabled =
+            Number(state.voiceConfig?.voice_profile_revision || 0) === 0;
+    }
+
+    async function uploadVoiceReference(recorder, stream, chunks) {
+        stopVoiceReferenceTracks(stream);
+        ui.voiceReferenceStatus.textContent = "正在处理并录入声纹";
+        try {
+            const blob = new Blob(chunks, {
+                type: recorder.mimeType || "audio/webm",
+            });
+            const wav = await audioBlobToWav(blob, 24_000);
+            if (state.voicePreviewUrl) URL.revokeObjectURL(state.voicePreviewUrl);
+            state.voicePreviewUrl = URL.createObjectURL(wav);
+            ui.voiceReferencePreview.src = state.voicePreviewUrl;
+            ui.voiceReferencePreview.hidden = false;
+            const response = await api("/api/v1/voice/reference", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ audio_base64: await blobToBase64(wav) }),
+            });
+            state.voiceConfig = structuredClone(response.config);
+            state.voiceDirty = false;
+            showToast("声纹已录入，正在重新生成全部回复");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            if (state.voiceRecorder === recorder) {
+                state.voiceRecorder = null;
+                state.voiceChunks = [];
+            }
+            setVoiceProfileBusy(false);
+            await loadVoice(true);
+        }
+    }
+
+    async function deleteVoiceReference() {
+        if (state.voiceProfileBusy) return;
+        if (state.voiceDirty) {
+            showToast("请先保存或重新加载语音配置", true);
+            return;
+        }
+        if (!window.confirm("删除声纹并恢复系统声音？")) return;
+        setVoiceProfileBusy(true);
+        try {
+            const response = await api("/api/v1/voice/reference", { method: "DELETE" });
+            state.voiceConfig = structuredClone(response.config);
+            state.voiceDirty = false;
+            if (state.voicePreviewUrl) URL.revokeObjectURL(state.voicePreviewUrl);
+            state.voicePreviewUrl = "";
+            ui.voiceReferencePreview.removeAttribute("src");
+            ui.voiceReferencePreview.hidden = true;
+            showToast("已恢复系统声音");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            setVoiceProfileBusy(false);
+            await loadVoice(true);
+        }
+    }
+
+    async function audioBlobToWav(blob, sampleRate) {
+        const context = new AudioContext();
+        try {
+            const decoded = await context.decodeAudioData(await blob.arrayBuffer());
+            const frameCount = Math.max(1, Math.round(decoded.duration * sampleRate));
+            const offline = new OfflineAudioContext(1, frameCount, sampleRate);
+            const source = offline.createBufferSource();
+            source.buffer = decoded;
+            source.connect(offline.destination);
+            source.start();
+            const rendered = await offline.startRendering();
+            return encodePcmWav(rendered.getChannelData(0), sampleRate);
+        } finally {
+            await context.close();
+        }
+    }
+
+    function encodePcmWav(samples, sampleRate) {
+        const buffer = new ArrayBuffer(44 + samples.length * 2);
+        const view = new DataView(buffer);
+        const writeText = (offset, text) => {
+            for (let index = 0; index < text.length; index += 1) {
+                view.setUint8(offset + index, text.charCodeAt(index));
+            }
+        };
+        writeText(0, "RIFF");
+        view.setUint32(4, 36 + samples.length * 2, true);
+        writeText(8, "WAVE");
+        writeText(12, "fmt ");
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, 1, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * 2, true);
+        view.setUint16(32, 2, true);
+        view.setUint16(34, 16, true);
+        writeText(36, "data");
+        view.setUint32(40, samples.length * 2, true);
+        for (let index = 0; index < samples.length; index += 1) {
+            const sample = Math.max(-1, Math.min(1, samples[index]));
+            view.setInt16(44 + index * 2, sample < 0 ? sample * 32768 : sample * 32767, true);
+        }
+        return new Blob([buffer], { type: "audio/wav" });
+    }
+
+    async function blobToBase64(blob) {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = "";
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+        }
+        return btoa(binary);
     }
 
     async function loadQq(silent = false) {
@@ -2159,6 +2366,9 @@
         await loadVoice();
     });
     ui.addVoiceCommand.addEventListener("click", addVoiceCommand);
+    ui.recordVoiceReference.addEventListener("click", startVoiceReferenceRecording);
+    ui.stopVoiceReference.addEventListener("click", stopVoiceReferenceRecording);
+    ui.deleteVoiceReference.addEventListener("click", deleteVoiceReference);
     ui.voiceCommandList.addEventListener("click", (event) => {
         const button = event.target.closest("[data-voice-action]");
         if (!button) return;
@@ -2333,7 +2543,7 @@
     setInterval(updateLiveClock, 50);
     setInterval(() => refreshAll(true), 10_000);
     setInterval(() => {
-        if (state.view === "voice" && !state.voiceDirty) loadVoice(true);
+        if (state.view === "voice") loadVoice(true);
         if (state.view === "qq" && !state.qqDirty) loadQq(true);
     }, 5_000);
     refreshAll(true);

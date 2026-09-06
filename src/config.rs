@@ -90,6 +90,16 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_TTS_URL",
+        default_value = "http://127.0.0.1:39081"
+    )]
+    pub tts_url: String,
+
+    #[arg(long, env = "CAMERA_HUB_TTS_TOKEN", default_value = "")]
+    pub tts_token: String,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_ACME_WEBROOT",
         default_value = "camera-hub-state/acme"
     )]

@@ -9,6 +9,9 @@ const MOQ_PLAYER: &str = include_str!("../web/generated/moq-player.js");
 const EVALUATION: &str = include_str!("../web/generated/evaluation.js");
 const STYLE: &str = include_str!("../web/style.css");
 const ICON_SVG: &str = include_str!("../web/favicon.svg");
+const VOICE_STUDIO: &str = include_str!("../web/voice-studio.html");
+const VOICE_STUDIO_APP: &str = include_str!("../web/voice-studio.js");
+const VOICE_STUDIO_STYLE: &str = include_str!("../web/voice-studio.css");
 
 pub async fn index() -> impl IntoResponse {
     (
@@ -39,6 +42,21 @@ pub async fn style() -> Response {
 
 pub async fn favicon() -> Response {
     static_response("image/svg+xml", ICON_SVG)
+}
+
+pub async fn voice_studio() -> impl IntoResponse {
+    (
+        [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Html(VOICE_STUDIO),
+    )
+}
+
+pub async fn voice_studio_app() -> Response {
+    static_response("application/javascript; charset=utf-8", VOICE_STUDIO_APP)
+}
+
+pub async fn voice_studio_style() -> Response {
+    static_response("text/css; charset=utf-8", VOICE_STUDIO_STYLE)
 }
 
 fn static_response(content_type: &'static str, body: &'static str) -> Response {

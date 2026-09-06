@@ -2,11 +2,12 @@
 
 该目录是 camera-hub 在 LinuxDeploy 环境中的部署适配器，负责远端构建、安装、
 80/443 端口 capability、`rc.local` 自启动、证书管理、离线关键词识别和
-DNSPod DDNS。核心服务、语音 worker 与 DDNS 是独立进程：
+DNSPod DDNS。核心服务、语音 worker、TTS 服务与 DDNS 是独立进程：
 
 ```text
 /usr/local/bin/camera-hub
 /usr/local/bin/camera-hub-voice
+/usr/local/bin/camera-hub-tts
 /usr/local/bin/camera-hub-ddns
 ```
 
@@ -37,17 +38,36 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android \
 
 ## 语音控制
 
-完整部署会下载 sherpa-onnx 中文 KWS INT8 模型，安装 `espeak-ng`，并使用
-`mi6-audio.sh` 配置 msm8998/tasha 的主麦克风和扬声器路由。语音命令默认关闭，
-需要在 camera-hub Web 的“语音控制”页面配置 URL 后启用。播报音量默认 60%，
-可在同一页面调整，不影响系统其他音频。
+完整部署会下载 sherpa-onnx 中文 KWS INT8、ZipVoice distill INT8 和 Vocos
+24 kHz 模型，安装 `espeak-ng`，并使用 `mi6-audio.sh` 配置 msm8998/tasha 的
+主麦克风和扬声器路由。语音命令默认关闭，需要在 camera-hub Web 的“语音控制”
+页面配置 URL 后启用。播报音量默认 60%，可在同一页面调整，不影响系统其他音频。
 
 ```text
 /home/android/.config/camera-hub-voice.json
 /home/android/.config/camera-hub-voice-status.json
 /home/android/camera-data/voice/events.jsonl
+/home/android/camera-data/voice/tts/
 /home/android/camera-voice/models/
 ```
+
+语音和 TTS 进程分别由 `/usr/local/bin/camera-hub-voice-start` 与
+`/usr/local/bin/camera-hub-tts-start` 监督，异常退出后 2 秒重启。它们与主服务
+读取同一份 `/home/android/.config/camera-hub.env`。TTS 只监听回环地址，并使用
+安装时生成的内部 Bearer token。
+
+管理页可录入本人的参考声音；录入或修改回复后会自动重新生成缓存。没有声纹或 TTS
+异常时继续使用 `espeak-ng`，ZipVoice 模型也会保持未加载。公网 `/voice-studio`
+与 camera-hub 共用 80/443，匿名开放，不要求后台登录或访问口令；浏览器会自动创建
+24 小时签名隔离会话，主服务重启后令牌仍然有效。公网录音必须经 HTTPS，才能获得
+浏览器麦克风权限；没有可用证书时，非回环 Voice Studio 请求会被拒绝。
+
+公网使用不设置用户级会话数或生成次数配额，但推理只允许一个活动任务，忙时返回
+429，不积压等待请求。`CAMERA_HUB_TTS_MAX_DATA_BYTES` 默认是 512 MiB；达到预算时
+自动清理最旧缓存和公网临时 profile，防止匿名流量耗尽 MI6 磁盘。
+
+不要公开 `CAMERA_HUB_TTS_TOKEN`，也不要把 `CAMERA_HUB_TTS_BIND` 改为公网地址。
+测试请求超过 60 秒会被丢弃，事件日志达到 4 MiB 后滚动。
 
 ## QQ 机器人
 

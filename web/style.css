@@ -979,9 +979,53 @@ textarea:focus {
     padding-top: 20px;
 }
 
+.voice-profile {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 18px;
+    align-items: center;
+    margin-bottom: 16px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .018);
+}
+
+.voice-profile h3,
+.voice-profile p {
+    margin: 0;
+}
+
+.voice-reference-prompt {
+    max-width: 760px;
+    margin-top: 9px !important;
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.75;
+}
+
+.voice-profile .muted {
+    margin-top: 8px;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.voice-profile-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.voice-profile audio {
+    grid-column: 1 / -1;
+    width: 100%;
+    height: 38px;
+}
+
 .voice-runtime {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 1px;
     margin: 20px 0 0;
     overflow: hidden;
@@ -1717,6 +1761,14 @@ td.file-name {
 
     .voice-runtime {
         gap: 0;
+    }
+
+    .voice-profile {
+        grid-template-columns: 1fr;
+    }
+
+    .voice-profile-actions {
+        justify-content: flex-start;
     }
 
     .voice-global-grid {

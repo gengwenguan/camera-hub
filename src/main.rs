@@ -16,6 +16,8 @@ mod state;
 mod system;
 mod voice;
 mod voice_config;
+mod voice_studio;
+mod voice_tts;
 mod web;
 mod webrtc_live;
 
@@ -25,9 +27,13 @@ use crate::frames::FrameHub;
 use crate::media::MediaStore;
 use crate::qq::{QqConfigUpdate, QqNotifyError, QqNotifyRequest, QqService};
 use crate::settings::{HubSettings, HubSettingsPatch, HubSettingsStore};
-use crate::state::{AppState, DeviceHeartbeat};
-use crate::voice::VoiceService;
+use crate::state::{AppServices, AppState, DeviceHeartbeat};
+use crate::voice::{VoiceRevisionConflict, VoiceService};
 use crate::voice_config::{VoiceConfig, VoiceTestRequest};
+use crate::voice_studio::{VoiceStudio, VoiceStudioError};
+use crate::voice_tts::{
+    VoiceReferenceUpload, VoiceStudioReferenceRequest, VoiceStudioSynthesizeRequest,
+};
 use anyhow::{Context, Result};
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -35,7 +41,7 @@ use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
 use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router, middleware};
 use axum_server::tls_rustls::RustlsConfig;
 use clap::Parser;
@@ -77,14 +83,18 @@ async fn main() -> Result<()> {
     let ai = AiService::start(&config, settings.clone(), frames.clone())?;
     let qq = QqService::start(&config)?;
     let voice = Arc::new(VoiceService::load(&config)?);
+    let voice_studio = Arc::new(VoiceStudio::new(&config)?);
     let state = Arc::new(AppState::new(
         config.clone(),
-        settings,
-        media.clone(),
-        ai.clone(),
-        qq,
-        voice,
-        frames,
+        AppServices {
+            settings,
+            media: media.clone(),
+            ai: ai.clone(),
+            qq,
+            voice,
+            voice_studio,
+            frames,
+        },
     ));
     spawn_cleaner(media, ai);
 
@@ -94,6 +104,9 @@ async fn main() -> Result<()> {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/", get(web::index))
         .route("/app.js", get(web::app))
+        .route("/voice-studio", get(web::voice_studio))
+        .route("/voice-studio.js", get(web::voice_studio_app))
+        .route("/voice-studio.css", get(web::voice_studio_style))
         .route("/generated/flv-player.js", get(web::flv_player))
         .route("/generated/moq-player.js", get(web::moq_player))
         .route("/generated/evaluation.js", get(web::evaluation))
@@ -119,6 +132,22 @@ async fn main() -> Result<()> {
         .route("/api/v1/integrations/qq/notify", post(qq_notify_external))
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
+        .route(
+            "/api/v1/voice/reference",
+            put(enroll_voice_reference).delete(delete_voice_reference),
+        )
+        .route(
+            "/api/v1/public/voice-studio/session",
+            post(create_voice_studio_session),
+        )
+        .route(
+            "/api/v1/public/voice-studio/reference",
+            put(enroll_voice_studio_reference),
+        )
+        .route(
+            "/api/v1/public/voice-studio/synthesize",
+            post(synthesize_voice_studio),
+        )
         .route("/api/v1/system/status", get(system_status))
         .route("/api/v1/moq/status", get(moq_status))
         .route(
@@ -840,6 +869,8 @@ fn qq_notify_error(error: QqNotifyError) -> ApiError {
 async fn voice_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let (config_path, status_path, events_path) = state.voice.paths();
     Json(json!({
+        "server_epoch": crate::frames::epoch_us().max(0) / 1_000_000,
+        "reference_prompt": state.voice.reference_prompt(),
         "config": state.voice.current(),
         "status": state.voice.status(),
         "events": state.voice.events(50),
@@ -855,7 +886,13 @@ async fn update_voice(
     State(state): State<Arc<AppState>>,
     Json(config): Json<VoiceConfig>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let config = state.voice.update(config)?;
+    let config = state.voice.update(config).map_err(|error| {
+        if error.is::<VoiceRevisionConflict>() {
+            ApiError::status(StatusCode::CONFLICT, error.to_string())
+        } else {
+            ApiError::from(error)
+        }
+    })?;
     Ok(Json(json!({"ok":true,"config":config})))
 }
 
@@ -865,6 +902,53 @@ async fn test_voice(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     state.voice.queue_test(request)?;
     Ok((StatusCode::ACCEPTED, Json(json!({"ok":true}))))
+}
+
+async fn enroll_voice_reference(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<VoiceReferenceUpload>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let (config, profile) = state.voice.enroll_reference(request).await?;
+    Ok(Json(json!({
+        "ok": true,
+        "config": config,
+        "profile": profile,
+    })))
+}
+
+async fn delete_voice_reference(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.voice.delete_reference().await?;
+    Ok(Json(json!({"ok":true,"config":config})))
+}
+
+async fn create_voice_studio_session(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<crate::voice_tts::VoiceStudioSessionResponse>, VoiceStudioError> {
+    Ok(Json(state.voice_studio.create_session()?))
+}
+
+async fn enroll_voice_studio_reference(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<VoiceStudioReferenceRequest>,
+) -> Result<Json<crate::voice_tts::TtsProfileResponse>, VoiceStudioError> {
+    Ok(Json(state.voice_studio.enroll(request).await?))
+}
+
+async fn synthesize_voice_studio(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<VoiceStudioSynthesizeRequest>,
+) -> Result<Response, VoiceStudioError> {
+    let wav = state.voice_studio.synthesize(request).await?;
+    Ok((
+        [
+            (CONTENT_TYPE, HeaderValue::from_static("audio/wav")),
+            (CACHE_CONTROL, HeaderValue::from_static("private, no-store")),
+        ],
+        Body::from(wav),
+    )
+        .into_response())
 }
 
 async fn system_status(
@@ -957,6 +1041,7 @@ async fn hub_settings(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
             "voice_config_file": state.config.voice_config_file,
             "voice_status_file": state.config.voice_status_file,
             "voice_events_file": state.config.voice_events_file,
+            "tts_url": state.config.tts_url,
         }
     }))
 }

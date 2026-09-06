@@ -16,6 +16,7 @@ impl InferenceLock {
     pub fn open() -> Result<Self> {
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(LOCK_PATH)

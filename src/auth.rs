@@ -1,5 +1,6 @@
 use axum::Json;
 use axum::body::Body;
+use axum::extract::connect_info::ConnectInfo;
 use axum::extract::{Extension, Request};
 use axum::http::header::{COOKIE, HOST, LOCATION, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
@@ -9,6 +10,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::Read;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -77,9 +79,6 @@ impl WebAuth {
 }
 
 pub async fn require_auth(request: Request, next: Next) -> Response {
-    if public_path(request.method().as_str(), request.uri().path()) {
-        return next.run(request).await;
-    }
     let transport = request
         .extensions()
         .get::<TransportSecurity>()
@@ -88,6 +87,31 @@ pub async fn require_auth(request: Request, next: Next) -> Response {
             secure: false,
             tls_available: false,
         });
+    if voice_studio_path(request.uri().path()) && !transport.secure {
+        if transport.tls_available {
+            return https_redirect(
+                request.headers(),
+                request.uri().path_and_query().map(|value| value.as_str()),
+            );
+        }
+        let local = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .is_some_and(|peer| peer.0.ip().is_loopback());
+        if !local {
+            return (
+                StatusCode::UPGRADE_REQUIRED,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": "voice studio requires HTTPS"
+                })),
+            )
+                .into_response();
+        }
+    }
+    if public_path(request.method().as_str(), request.uri().path()) {
+        return next.run(request).await;
+    }
     if !transport.secure && transport.tls_available {
         return https_redirect(
             request.headers(),
@@ -117,10 +141,21 @@ pub async fn require_auth(request: Request, next: Next) -> Response {
     redirect("/login", StatusCode::SEE_OTHER)
 }
 
+fn voice_studio_path(path: &str) -> bool {
+    path == "/voice-studio"
+        || path == "/voice-studio.js"
+        || path == "/voice-studio.css"
+        || path.starts_with("/api/v1/public/voice-studio/")
+}
+
 fn public_path(method: &str, path: &str) -> bool {
     method == "OPTIONS"
         || path == "/login"
         || path == "/api/v1/auth/login"
+        || path == "/voice-studio"
+        || path == "/voice-studio.js"
+        || path == "/voice-studio.css"
+        || path.starts_with("/api/v1/public/voice-studio/")
         || (method == "POST" && path == "/api/v1/integrations/qq/notify")
         || path == "/health"
         || path == "/certificate.sha256"
@@ -309,9 +344,15 @@ mod tests {
     }
 
     #[test]
-    fn exposes_only_the_exact_qq_push_route() {
+    fn exposes_only_explicit_public_api_routes() {
         assert!(public_path("POST", "/api/v1/integrations/qq/notify"));
         assert!(!public_path("GET", "/api/v1/integrations/qq/notify"));
         assert!(!public_path("POST", "/api/v1/integrations/qq/notify/extra"));
+        assert!(public_path("POST", "/api/v1/public/voice-studio/session"));
+        assert!(public_path("GET", "/voice-studio"));
+        assert!(!public_path("POST", "/api/v1/voice/reference"));
+        assert!(voice_studio_path("/voice-studio"));
+        assert!(voice_studio_path("/api/v1/public/voice-studio/synthesize"));
+        assert!(!voice_studio_path("/api/v1/voice/reference"));
     }
 }

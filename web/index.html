@@ -299,6 +299,7 @@
                 <div><dt>检测次数</dt><dd id="voiceDetected">0</dd></div>
                 <div><dt>麦克风电平</dt><dd id="voiceAudioLevel">--</dd></div>
                 <div><dt>最近命令</dt><dd id="voiceLastKeyword">--</dd></div>
+                <div><dt>回复声音</dt><dd id="voiceTtsState">--</dd></div>
                 <div><dt>运行信息</dt><dd id="voiceLastError">--</dd></div>
             </dl>
         </section>
@@ -312,6 +313,26 @@
                 <button class="button ghost" id="reloadVoice" type="button">重新加载</button>
             </div>
             <form id="voiceForm">
+                <section class="voice-profile">
+                    <div>
+                        <p class="eyebrow">VOICE PROFILE</p>
+                        <h3>回复声纹</h3>
+                        <p id="voiceReferencePrompt" class="voice-reference-prompt">--</p>
+                        <p id="voiceReferenceStatus" class="muted">尚未录入，继续使用系统声音</p>
+                    </div>
+                    <div class="voice-profile-actions">
+                        <button class="button primary" id="recordVoiceReference" type="button">
+                            开始录音
+                        </button>
+                        <button class="button ghost" id="stopVoiceReference" type="button" disabled>
+                            停止并录入
+                        </button>
+                        <button class="button danger" id="deleteVoiceReference" type="button">
+                            删除声纹
+                        </button>
+                    </div>
+                    <audio id="voiceReferencePreview" controls hidden></audio>
+                </section>
                 <div class="voice-global-grid">
                     <label class="toggle">
                         <input type="checkbox" id="voiceEnabled">

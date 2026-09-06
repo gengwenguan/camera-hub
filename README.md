@@ -14,6 +14,8 @@ Android/Termux 等环境，不绑定特定手机或设备型号。它接收采�
 - 录像、AI、MSE、WebRTC 和 MoQ 使用相互隔离的消费队列。
 - Web 提供主机状态、实时直播、协议评测、语音控制、录像回放、AI 相册和节点设置。
 - 可选 sherpa-onnx 中文关键词进程在本机离线识别固定命令，调用 HTTP 动作并播报结果。
+- 可选 ZipVoice INT8 服务使用授权参考录音生成个人音色回复，并提供匿名访问的
+  `/voice-studio` 临时自助合成页面。
 - MoQ 使用同进程 MoqService，以 MSF Draft-01 Catalog 和 LOC Draft-04 逐帧发布
   H264/AAC；浏览器通过 UDP/443 WebTransport + WebCodecs 播放，不增加独立 relay。
 - 裸公网 IPv6 使用 Let’s Encrypt shortlived IP 证书直接获得浏览器信任并自动续期。
@@ -191,6 +193,13 @@ CAMERA_HUB_VOICE_CONFIG_FILE=/srv/camera-hub/state/voice.json
 CAMERA_HUB_VOICE_STATUS_FILE=/srv/camera-hub/state/voice-status.json
 CAMERA_HUB_VOICE_EVENTS_FILE=/srv/camera-hub/data/voice/events.jsonl
 CAMERA_HUB_VOICE_COMMAND_FILE=/srv/camera-hub/state/voice-command.json
+CAMERA_HUB_VOICE_MODEL_DIR=/srv/camera-hub/voice/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
+CAMERA_HUB_TTS_URL=http://127.0.0.1:39081
+CAMERA_HUB_TTS_TOKEN=<random-internal-token>
+CAMERA_HUB_TTS_MODEL_DIR=/srv/camera-hub/voice/models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia
+CAMERA_HUB_TTS_VOCODER=/srv/camera-hub/voice/models/vocos_24khz.onnx
+CAMERA_HUB_TTS_DATA_DIR=/srv/camera-hub/data/voice/tts
+CAMERA_HUB_TTS_MAX_DATA_BYTES=536870912
 CAMERA_HUB_AI_RUNTIME=/srv/camera-hub/ai/lib/libonnxruntime.so
 CAMERA_HUB_AI_MODEL=/srv/camera-hub/ai/yolox_nano.onnx
 ```
@@ -242,6 +251,11 @@ POST /api/v1/qq/test
 GET  /api/v1/voice
 PUT  /api/v1/voice
 POST /api/v1/voice/test
+PUT  /api/v1/voice/reference
+DELETE /api/v1/voice/reference
+POST /api/v1/public/voice-studio/session
+PUT  /api/v1/public/voice-studio/reference
+POST /api/v1/public/voice-studio/synthesize
 GET  /api/v1/system/status
 GET  /api/v1/moq/status
 GET  /api/v1/devices/:id/live              # WebSocket fMP4 实时流
@@ -301,8 +315,34 @@ Web 的“语音控制”页面支持配置命令短语、成功回复、GET/POS
 boosting score、触发阈值、冷却时间和 0–100 的播报音量。播报音量只调整
 `espeak-ng` 生成的回复，不修改系统全局播放音量。配置保存在
 `CAMERA_HUB_VOICE_CONFIG_FILE`，触发记录写入
-`CAMERA_HUB_VOICE_EVENTS_FILE`。URL 成功返回后由 `espeak-ng` 生成中文回复并
-通过 ALSA 播放；失败时播放统一失败回复。
+`CAMERA_HUB_VOICE_EVENTS_FILE`。没有录入参考声音时，由 `espeak-ng` 生成中文回复并
+通过 ALSA 播放。录入后，独立 `camera-hub-tts` 进程使用 ZipVoice distill INT8
+生成个人音色 WAV；重新录入或修改回复会重新预生成所有命令回复及统一失败回复，
+命令触发时优先播放缓存。TTS 不可用时自动回退 `espeak-ng`。
+
+参考声音必须完整朗读页面给出的固定文稿。浏览器会将录音转换为 24 kHz、单声道、
+16-bit PCM WAV；后端限制时长为 3–20 秒、文件不超过 1 MiB。参考声音、文稿和缓存
+保存在 TTS 私有数据目录，文件权限为 `0600`。
+
+公网声纹工作室位于 `/voice-studio`，与 camera-hub Web 共用 80/443，不需要管理
+后台登录或访问口令。页面打开后自动创建 24 小时签名匿名会话，服务重启后会话仍然
+有效，各会话的声音相互隔离，不设置会话数或生成次数配额。模型推理仍按硬件约束
+全局串行；忙时立即返回 429，不保留无界等待请求。参考 WAV、文本长度和输出文件
+大小保留格式边界。模型服务默认仅监听 `127.0.0.1:39081`，不直接暴露公网。
+
+TTS 数据目录默认最多使用 512 MiB，可通过 `CAMERA_HUB_TTS_MAX_DATA_BYTES` 调整。
+达到预算时先清理最旧缓存，再清理最旧的公网临时 profile；默认管理声纹不会被容量
+清理。公网请求仍没有用户级次数限制，该预算只用于防止匿名流量耗尽设备磁盘。
+
+ZipVoice、KWS 和 YOLO 使用同一个跨进程推理锁。MI6 本机只允许一个 TTS 任务且不
+排队，忙时调用方需要稍后重试；缓存未命中时会在整个生成期间暂停 KWS/YOLO 推理，
+缓存命中不执行模型推理。面向持续公网使用时，应在独立 CPU/GPU 节点运行
+`camera-hub-tts`，通过 HTTPS 反向代理后再设置 `CAMERA_HUB_TTS_URL`；客户端会拒绝
+非回环地址上的明文 HTTP，避免参考声音在网络中裸传。`/voice-studio` 在没有本地
+证书时只允许回环访问，非本机请求返回 426。
+
+语音与 TTS worker 异常退出后由 LinuxDeploy 启动器自动重启。测试请求超过 60 秒后
+不再执行；事件日志达到 4 MiB 时保留一份滚动历史，Web 查询只读取当前日志尾部。
 
 检测照片写入 `<data-dir>/<device_id>/snapshot/YYYYMMDD/`，并经同一设备 WebSocket
 回传开发板相册。照片使用推理时的同一帧，按 YOLOX 输出执行 person 框解码和 NMS，

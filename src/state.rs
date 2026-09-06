@@ -11,6 +11,7 @@ use crate::qq::QqService;
 use crate::settings::HubSettingsStore;
 use crate::system::SystemMonitor;
 use crate::voice::VoiceService;
+use crate::voice_studio::VoiceStudio;
 use crate::webrtc_live::WebRtcRelay;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -61,6 +62,7 @@ pub struct AppState {
     pub ai: Arc<AiService>,
     pub settings: Arc<HubSettingsStore>,
     pub voice: Arc<VoiceService>,
+    pub voice_studio: Arc<VoiceStudio>,
     pub webrtc: Arc<WebRtcRelay>,
     pub system: Arc<SystemMonitor>,
     devices: RwLock<BTreeMap<String, DeviceEntry>>,
@@ -69,16 +71,27 @@ pub struct AppState {
     started: Instant,
 }
 
+pub struct AppServices {
+    pub settings: Arc<HubSettingsStore>,
+    pub media: Arc<MediaStore>,
+    pub ai: Arc<AiService>,
+    pub qq: Arc<QqService>,
+    pub voice: Arc<VoiceService>,
+    pub voice_studio: Arc<VoiceStudio>,
+    pub frames: Arc<FrameHub>,
+}
+
 impl AppState {
-    pub fn new(
-        config: Config,
-        settings: Arc<HubSettingsStore>,
-        media: Arc<MediaStore>,
-        ai: Arc<AiService>,
-        qq: Arc<QqService>,
-        voice: Arc<VoiceService>,
-        frames: Arc<FrameHub>,
-    ) -> Self {
+    pub fn new(config: Config, services: AppServices) -> Self {
+        let AppServices {
+            settings,
+            media,
+            ai,
+            qq,
+            voice,
+            voice_studio,
+            frames,
+        } = services;
         let system = Arc::new(SystemMonitor::new(config.data_dir.clone()));
         let benchmark = Arc::new(BenchmarkRegistry::default());
         let live = Arc::new(LiveStreams::default());
@@ -97,6 +110,7 @@ impl AppState {
             ai,
             settings,
             voice,
+            voice_studio,
             system,
             devices: RwLock::new(BTreeMap::new()),
             links: RwLock::new(BTreeMap::new()),

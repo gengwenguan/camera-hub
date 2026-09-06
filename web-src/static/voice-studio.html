@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Voice Studio</title>
+    <link rel="stylesheet" href="/voice-studio.css">
+</head>
+<body>
+    <header class="topbar">
+        <div>
+            <span class="brand-mark">CH</span>
+            <strong>Voice Studio</strong>
+        </div>
+        <span id="serviceStatus" class="status">正在建立会话</span>
+    </header>
+
+    <main>
+        <section class="intro">
+            <p class="eyebrow">PUBLIC VOICE SYNTHESIS</p>
+            <h1>用你的声音生成语音</h1>
+            <p>录入一段授权声音样本，然后输入短文本生成 WAV。会话和声音样本将在 24 小时后过期。</p>
+        </section>
+
+        <section class="tool-section" id="recordSection" hidden>
+            <div class="section-heading">
+                <span class="step">01</span>
+                <div>
+                    <h2>录入参考声音</h2>
+                    <p>在安静环境中，以自然语速完整朗读下方文稿。</p>
+                </div>
+            </div>
+            <blockquote id="referencePrompt">--</blockquote>
+            <label class="consent">
+                <input id="voiceConsent" type="checkbox">
+                <span>我确认这是本人声音，或已获得声音所有者明确授权。</span>
+            </label>
+            <div class="actions">
+                <button id="startRecording" type="button">开始录音</button>
+                <button id="stopRecording" class="secondary" type="button" disabled>停止并录入</button>
+            </div>
+            <audio id="referencePreview" controls hidden></audio>
+            <p id="recordStatus" class="feedback">等待录音</p>
+        </section>
+
+        <section class="tool-section" id="synthesisSection" hidden>
+            <div class="section-heading">
+                <span class="step">02</span>
+                <div>
+                    <h2>生成 WAV</h2>
+                    <p>输入文字后生成当前声音的 WAV 文件。</p>
+                </div>
+            </div>
+            <form id="synthesisForm">
+                <label>
+                    <span>合成文本</span>
+                    <textarea id="synthesisText" maxlength="120" rows="4"
+                              placeholder="输入需要用当前声音朗读的文字" required></textarea>
+                </label>
+                <div class="actions">
+                    <span id="textCount">0 / 120</span>
+                    <button id="generateVoice" type="submit">生成语音</button>
+                </div>
+            </form>
+            <div id="result" class="result" hidden>
+                <audio id="resultAudio" controls></audio>
+                <a id="downloadWav" class="download" download="voice-studio.wav">下载 WAV</a>
+            </div>
+            <p id="synthesisStatus" class="feedback">等待输入</p>
+        </section>
+    </main>
+
+    <script src="/voice-studio.js"></script>
+</body>
+</html>

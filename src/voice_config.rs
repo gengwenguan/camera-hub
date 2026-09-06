@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 pub const VOICE_CONFIG_VERSION: u32 = 1;
+pub const VOICE_TEST_REQUEST_MAX_AGE_SECS: u64 = 60;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
@@ -14,6 +15,7 @@ pub struct VoiceConfig {
     pub capture_device: String,
     pub playback_device: String,
     pub playback_volume: u8,
+    pub voice_profile_revision: u64,
     pub capture_rate: i32,
     pub request_timeout_ms: u64,
     pub global_cooldown_ms: u64,
@@ -49,6 +51,7 @@ pub struct VoiceWorkerStatus {
     pub detected_count: u64,
     pub audio_rms: f32,
     pub last_keyword: String,
+    pub tts_state: String,
     pub last_error: String,
     pub updated_epoch: u64,
 }
@@ -75,6 +78,14 @@ pub struct VoiceTestRequest {
     pub created_epoch: u64,
 }
 
+impl VoiceTestRequest {
+    pub fn is_fresh(&self, now: u64) -> bool {
+        self.created_epoch != 0
+            && self.created_epoch <= now.saturating_add(5)
+            && now.saturating_sub(self.created_epoch) <= VOICE_TEST_REQUEST_MAX_AGE_SECS
+    }
+}
+
 impl Default for VoiceConfig {
     fn default() -> Self {
         Self {
@@ -84,6 +95,7 @@ impl Default for VoiceConfig {
             capture_device: "hw:0,0".to_owned(),
             playback_device: "plughw:0,0".to_owned(),
             playback_volume: 60,
+            voice_profile_revision: 0,
             capture_rate: 48_000,
             request_timeout_ms: 3_000,
             global_cooldown_ms: 2_000,
@@ -168,13 +180,21 @@ impl VoiceConfig {
                 bail!("命令 {} 仅支持 GET 或 POST", command.phrase);
             }
             command.url = command.url.trim().to_owned();
-            if !command.url.is_empty()
-                && !(command.url.starts_with("http://") || command.url.starts_with("https://"))
+            command.body = command.body.trim().to_owned();
+            if !(command.url.is_empty()
+                || command.url.starts_with("http://")
+                || command.url.starts_with("https://"))
             {
                 bail!("命令 {} 的 URL 必须使用 http 或 https", command.phrase);
             }
             if command.url.len() > 2048 || command.body.len() > 8192 {
                 bail!("命令 {} 的 URL 或请求体过长", command.phrase);
+            }
+            if command.method == "POST"
+                && !command.body.trim().is_empty()
+                && let Err(error) = serde_json::from_str::<serde_json::Value>(&command.body)
+            {
+                bail!("命令 {} 的 POST JSON 无效：{error}", command.phrase);
             }
             command.boosting_score = finite_or(command.boosting_score, 1.5).clamp(0.0, 10.0);
             command.trigger_threshold =
@@ -230,10 +250,7 @@ fn clean_phrase(value: &str) -> Result<String> {
 
 fn clean_text(value: &str, max_chars: usize, label: &str) -> Result<String> {
     let value = value.trim().to_owned();
-    if value.is_empty()
-        || value.chars().count() > max_chars
-        || value.contains('\r')
-        || value.contains('\n')
+    if value.is_empty() || value.chars().count() > max_chars || value.chars().any(char::is_control)
     {
         bail!("{label}不能为空、不能换行且最多 {max_chars} 个字符");
     }
@@ -303,5 +320,33 @@ mod tests {
         value.as_object_mut().unwrap().remove("playback_volume");
         let config: VoiceConfig = serde_json::from_value(value).unwrap();
         assert_eq!(config.playback_volume, 60);
+    }
+
+    #[test]
+    fn validates_post_json_body() {
+        let mut config = VoiceConfig::default();
+        config.commands[0].method = "POST".to_owned();
+        config.commands[0].body = "{invalid".to_owned();
+        assert!(config.normalize().is_err());
+
+        let mut config = VoiceConfig::default();
+        config.commands[0].method = "POST".to_owned();
+        config.commands[0].body = r#"{"enabled":true}"#.to_owned();
+        assert!(config.normalize().is_ok());
+    }
+
+    #[test]
+    fn expires_stale_or_future_test_requests() {
+        let now = 1_000;
+        let mut request = VoiceTestRequest {
+            created_epoch: now,
+            ..VoiceTestRequest::default()
+        };
+        assert!(request.is_fresh(now));
+
+        request.created_epoch = now - VOICE_TEST_REQUEST_MAX_AGE_SECS - 1;
+        assert!(!request.is_fresh(now));
+        request.created_epoch = now + 6;
+        assert!(!request.is_fresh(now));
     }
 }

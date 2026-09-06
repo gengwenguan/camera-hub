@@ -5,12 +5,14 @@ BINARY="${1:-}"
 PUBLIC_HOST="${2:-}"
 DDNS_BINARY="${3:-}"
 VOICE_BINARY="${4:-}"
+TTS_BINARY="${5:-}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ENV_FILE="/home/android/.config/camera-hub.env"
 DDNS_ENV_FILE="/home/android/.config/camera-hub-ddns.env"
 STARTER="/usr/local/bin/camera-hub-start"
 DDNS_STARTER="/usr/local/bin/camera-hub-ddns-start"
 VOICE_STARTER="/usr/local/bin/camera-hub-voice-start"
+TTS_STARTER="/usr/local/bin/camera-hub-tts-start"
 VOICE_AUDIO="/usr/local/bin/camera-hub-mi6-audio"
 VOICE_LIB_DIR="/usr/local/lib/camera-hub-voice"
 ACME_SCRIPT="/usr/local/bin/camera-hub-acme"
@@ -42,15 +44,27 @@ if [ -n "$VOICE_BINARY" ]; then
     }
     install -m 0755 "$VOICE_BINARY" /usr/local/bin/camera-hub-voice
     install -m 0755 "$SCRIPT_DIR/mi6-audio.sh" "$VOICE_AUDIO"
+fi
+if [ -n "$TTS_BINARY" ]; then
+    [ -x "$TTS_BINARY" ] || {
+        echo "camera-hub-tts binary not found: $TTS_BINARY" >&2
+        exit 1
+    }
+    install -m 0755 "$TTS_BINARY" /usr/local/bin/camera-hub-tts
+fi
+RUNTIME_BINARY="$VOICE_BINARY"
+[ -n "$RUNTIME_BINARY" ] || RUNTIME_BINARY="$TTS_BINARY"
+if [ -n "$RUNTIME_BINARY" ]; then
     install -d "$VOICE_LIB_DIR"
-    for library in "$(dirname "$VOICE_BINARY")"/libonnxruntime.so* \
-        "$(dirname "$VOICE_BINARY")"/libsherpa-onnx-c-api.so*; do
+    for library in "$(dirname "$RUNTIME_BINARY")"/libonnxruntime.so* \
+        "$(dirname "$RUNTIME_BINARY")"/libsherpa-onnx-c-api.so*; do
         [ -f "$library" ] || continue
         install -m 0755 "$library" "$VOICE_LIB_DIR/$(basename "$library")"
     done
 fi
 install -d -o android -g android /home/android/camera-data
 install -d -o android -g android /home/android/camera-data/voice
+install -d -m 0700 -o android -g android /home/android/camera-data/voice/tts
 install -d -o android -g android /home/android/camera-voice/models
 install -d -o android -g android /home/android/.config
 install -d -m 0700 -o android -g android /home/android/.ssh
@@ -92,6 +106,15 @@ if [ ! -f "$ENV_FILE" ]; then
         echo "CAMERA_HUB_VOICE_STATUS_FILE='/home/android/.config/camera-hub-voice-status.json'"
         echo "CAMERA_HUB_VOICE_EVENTS_FILE='/home/android/camera-data/voice/events.jsonl'"
         echo "CAMERA_HUB_VOICE_COMMAND_FILE='/home/android/.config/camera-hub-voice-command.json'"
+        echo "CAMERA_HUB_VOICE_MODEL_DIR='/home/android/camera-voice/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01'"
+        echo "CAMERA_HUB_TTS_BIND='127.0.0.1:39081'"
+        echo "CAMERA_HUB_TTS_URL='http://127.0.0.1:39081'"
+        echo "CAMERA_HUB_TTS_TOKEN='$(openssl rand -hex 32)'"
+        echo "CAMERA_HUB_TTS_MODEL_DIR='/home/android/camera-voice/models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia'"
+        echo "CAMERA_HUB_TTS_VOCODER='/home/android/camera-voice/models/vocos_24khz.onnx'"
+        echo "CAMERA_HUB_TTS_DATA_DIR='/home/android/camera-data/voice/tts'"
+        echo "CAMERA_HUB_TTS_THREADS='2'"
+        echo "CAMERA_HUB_TTS_MAX_DATA_BYTES='536870912'"
         echo "CAMERA_HUB_SEGMENT_SECONDS='600'"
         echo "CAMERA_HUB_MAX_BYTES='8589934592'"
         echo "CAMERA_HUB_RETAIN_DAYS='7'"
@@ -134,7 +157,9 @@ grep -q '^CAMERA_HUB_AI_SNAPSHOT_QUALITY=' "$ENV_FILE" ||
 sed -i \
     "/^CAMERA_HUB_SPEECH_TRANSCRIBE=/d;
      /^CAMERA_HUB_SPEECH_SUMMARIZE=/d;
-     /^CAMERA_HUB_AI_SNAPSHOT_RETAIN_DAYS=/d" \
+     /^CAMERA_HUB_AI_SNAPSHOT_RETAIN_DAYS=/d;
+     /^CAMERA_HUB_VOICE_STUDIO_ENABLED=/d;
+     /^CAMERA_HUB_VOICE_STUDIO_TOKEN=/d" \
     "$ENV_FILE"
 grep -q '^CAMERA_HUB_TLS_BIND=' "$ENV_FILE" ||
     echo "CAMERA_HUB_TLS_BIND='[::]:443'" >> "$ENV_FILE"
@@ -154,6 +179,24 @@ grep -q '^CAMERA_HUB_VOICE_EVENTS_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_VOICE_EVENTS_FILE='/home/android/camera-data/voice/events.jsonl'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_VOICE_COMMAND_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_VOICE_COMMAND_FILE='/home/android/.config/camera-hub-voice-command.json'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_VOICE_MODEL_DIR=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_VOICE_MODEL_DIR='/home/android/camera-voice/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_BIND=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_BIND='127.0.0.1:39081'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_URL=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_URL='http://127.0.0.1:39081'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_TOKEN=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_TOKEN='$(openssl rand -hex 32)'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_MODEL_DIR=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_MODEL_DIR='/home/android/camera-voice/models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_VOCODER=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_VOCODER='/home/android/camera-voice/models/vocos_24khz.onnx'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_DATA_DIR=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_DATA_DIR='/home/android/camera-data/voice/tts'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_THREADS=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_THREADS='2'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_TTS_MAX_DATA_BYTES=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_TTS_MAX_DATA_BYTES='536870912'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_MOQ_ENABLED=' "$ENV_FILE" ||
     echo "CAMERA_HUB_MOQ_ENABLED='true'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_MOQ_BIND=' "$ENV_FILE" ||
@@ -176,6 +219,8 @@ grep -q '^CAMERA_HUB_EDGE_SSH_KEY=' "$ENV_FILE" ||
     echo "CAMERA_HUB_EDGE_SSH_KEY='$EDGE_ACME_KEY'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_EDGE_RUNTIME_DIR=' "$ENV_FILE" ||
     echo "CAMERA_HUB_EDGE_RUNTIME_DIR='/root/maix_dist'" >> "$ENV_FILE"
+chown android:android "$ENV_FILE"
+chmod 0600 "$ENV_FILE"
 
 if [ ! -s "$EDGE_ACME_KEY" ] || [ ! -s "${EDGE_ACME_KEY}.pub" ]; then
     su -s /bin/sh android -c \
@@ -225,6 +270,26 @@ exec /usr/local/bin/camera-hub-ddns
 EOF
 chmod 0755 "$DDNS_STARTER"
 
+if [ -n "$TTS_BINARY" ]; then
+    cat > "$TTS_STARTER" <<'EOF'
+#!/bin/sh
+set -u
+while :; do
+    status=0
+    su -s /bin/sh android -c '
+        set -a
+        . /home/android/.config/camera-hub.env
+        set +a
+        LD_LIBRARY_PATH=/usr/local/lib/camera-hub-voice \
+            exec /usr/local/bin/camera-hub-tts
+    ' || status=$?
+    echo "camera-hub-tts exited with status ${status}; restarting in 2 seconds" >&2
+    sleep 2
+done
+EOF
+    chmod 0755 "$TTS_STARTER"
+fi
+
 if [ -n "$VOICE_BINARY" ]; then
     if ! command -v espeak-ng >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive apt-get update
@@ -232,10 +297,29 @@ if [ -n "$VOICE_BINARY" ]; then
     fi
     cat > "$VOICE_STARTER" <<'EOF'
 #!/bin/sh
-set -eu
-/usr/local/bin/camera-hub-mi6-audio setup
-exec su -s /bin/sh android -c \
-    'LD_LIBRARY_PATH=/usr/local/lib/camera-hub-voice exec /usr/local/bin/camera-hub-voice'
+set -u
+/usr/local/bin/camera-hub-mi6-audio setup || exit $?
+set -a
+. /home/android/.config/camera-hub.env
+set +a
+if [ -x /usr/local/bin/camera-hub-tts-start ]; then
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+        curl -fsS "${CAMERA_HUB_TTS_URL%/}/health" >/dev/null 2>&1 && break
+        sleep 1
+    done
+fi
+while :; do
+    status=0
+    su -s /bin/sh android -c '
+        set -a
+        . /home/android/.config/camera-hub.env
+        set +a
+        LD_LIBRARY_PATH=/usr/local/lib/camera-hub-voice \
+            exec /usr/local/bin/camera-hub-voice
+    ' || status=$?
+    echo "camera-hub-voice exited with status ${status}; restarting in 2 seconds" >&2
+    sleep 2
+done
 EOF
     chmod 0755 "$VOICE_STARTER"
 fi
@@ -253,7 +337,10 @@ awk '
         print "if ! pgrep -x \"camera-hub\" > /dev/null; then"
         print "    su -s /bin/sh android -c '\''nohup /usr/local/bin/camera-hub-start > /home/android/camera-hub.log 2>&1 &'\''"
         print "fi"
-        print "if [ -x /usr/local/bin/camera-hub-voice-start ] && ! pgrep -f \042^/usr/local/bin/camera-hub-voice( |$)\042 > /dev/null; then"
+        print "if [ -x /usr/local/bin/camera-hub-tts-start ] && ! pgrep -f \042[c]amera-hub-tts-start\042 > /dev/null; then"
+        print "    nohup /usr/local/bin/camera-hub-tts-start > /home/android/camera-hub-tts.log 2>&1 &"
+        print "fi"
+        print "if [ -x /usr/local/bin/camera-hub-voice-start ] && ! pgrep -f \042[c]amera-hub-voice-start\042 > /dev/null; then"
         print "    nohup /usr/local/bin/camera-hub-voice-start > /home/android/camera-hub-voice.log 2>&1 &"
         print "fi"
         print "if ! pgrep -f \042[c]amera-hub-acme-loop\042 > /dev/null; then"
@@ -284,11 +371,54 @@ pkill -9 -f '[c]amera-hub-mux' 2>/dev/null || true
 pkill -9 -f '[c]amera-hub-opus' 2>/dev/null || true
 su -s /bin/sh android -c \
     'nohup /usr/local/bin/camera-hub-start > /home/android/camera-hub.log 2>&1 &'
+if [ -x "$TTS_STARTER" ]; then
+    pkill -f '[c]amera-hub-tts-start' 2>/dev/null || true
+    pkill -f '^/usr/local/bin/camera-hub-tts( |$)' 2>/dev/null || true
+    nohup "$TTS_STARTER" > /home/android/camera-hub-tts.log 2>&1 &
+fi
 if [ -x "$VOICE_STARTER" ]; then
+    pkill -f '[c]amera-hub-voice-start' 2>/dev/null || true
     pkill -f '^/usr/local/bin/camera-hub-voice( |$)' 2>/dev/null || true
     nohup "$VOICE_STARTER" > /home/android/camera-hub-voice.log 2>&1 &
 fi
 sleep 2
+if [ -x "$TTS_STARTER" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+    tts_ready=0
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+        21 22 23 24 25 26 27 28 29 30; do
+        if curl -fsS "${CAMERA_HUB_TTS_URL%/}/health" >/dev/null 2>&1; then
+            tts_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$tts_ready" -ne 1 ]; then
+        echo "camera-hub-tts failed to become ready" >&2
+        tail -n 80 /home/android/camera-hub-tts.log >&2 || true
+        exit 1
+    fi
+fi
+if [ -x "$VOICE_STARTER" ]; then
+    voice_ready=0
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+        21 22 23 24 25 26 27 28 29 30; do
+        if pgrep -f '^/usr/local/bin/camera-hub-voice( |$)' >/dev/null 2>&1 &&
+            grep -Eq '"available"[[:space:]]*:[[:space:]]*true' \
+                /home/android/.config/camera-hub-voice-status.json 2>/dev/null; then
+            voice_ready=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$voice_ready" -ne 1 ]; then
+        echo "camera-hub-voice failed to become ready" >&2
+        tail -n 80 /home/android/camera-hub-voice.log >&2 || true
+        exit 1
+    fi
+fi
 curl -g -fsS 'http://[::1]/health'
 echo
 if "$ACME_SCRIPT" > /home/android/camera-hub-acme.log 2>&1; then
