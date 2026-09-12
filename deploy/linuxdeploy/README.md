@@ -28,13 +28,15 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android \
     bash deploy/linuxdeploy/deploy.sh push
 ```
 
-部署脚本构建全部二进制，并把 DDNS 配置安装到：
+部署脚本构建全部二进制，并把 DDNS 配置和状态安装到：
 
 ```text
-/home/android/.config/camera-hub-ddns.env
+/home/android/.config/camera-hub-ddns.json
+/home/android/.config/camera-hub-ddns-status.json
 ```
 
-配置归属为 `android:android`，权限为 `0600`。已有配置不会被安装器覆盖。
+文件归属为 `android:android`，权限为 `0600`。已有 JSON 配置不会被安装器覆盖；
+旧版 `camera-hub-ddns.env` 会在首次升级时自动迁移。
 
 ## 语音控制
 
@@ -83,20 +85,20 @@ QQ Gateway 客户端运行在 `camera-hub` 主进程中。Web 配置写入：
 
 ## DNSPod DDNS
 
-DDNS 默认关闭：
+`camera-hub-ddns` 作为独立 sidecar 随系统启动，通过 camera-hub Web 的“DDNS”
+页面配置。DDNS 默认关闭；关闭时进程只等待配置变化，不会调用 DNSPod API。
 
-```text
-CAMERA_HUB_DDNS_ENABLED='false'
-```
+页面支持配置 DNSPod SecretId、只写 SecretKey、主域名、网卡、TTL、检查周期以及
+结构化 AAAA 记录列表。保存后 sidecar 自动热加载，不需要重启。也可以先在页面
+预览本机稳定 IPv6、运营商 `/64` 前缀和各设备固定后 64 位的合成结果。
 
-关闭时不会启动 DDNS 进程，不会调用 DNSPod API，也不会生成状态文件。可以先验证
-本机稳定 IPv6、运营商 `/64` 前缀和各设备固定后 64 位的合成结果：
+命令行预览仍然可用：
 
 ```bash
 bash deploy/linuxdeploy/deploy.sh ddns-dry-run
 ```
 
-默认管理：
+默认配置包含：
 
 ```text
 gwghome.site
@@ -111,19 +113,11 @@ huawei.gwghome.site
 稳定的公网 `/64` IPv6。它只修改 DNSPod 中已经存在且唯一的默认线路 AAAA 记录，
 不会自动创建记录。目标地址或 TTL 未变化时不会调用 `ModifyRecord`。
 
-在腾讯云创建只用于 DNSPod 的 CAM API 密钥后，编辑远端配置：
-
-```text
-CAMERA_HUB_DDNS_ENABLED='true'
-CAMERA_HUB_DDNS_SECRET_ID='...'
-CAMERA_HUB_DDNS_SECRET_KEY='...'
-```
-
-先执行一次前台对账，确认 API 权限和记录匹配，再启动常驻进程：
+在腾讯云创建只用于 DNSPod 的 CAM API 密钥后，通过 Web 保存凭据并启用。SecretKey
+不会通过 API 回读。页面可以请求立即对账，也可以使用命令行执行一次前台对账：
 
 ```bash
 bash deploy/linuxdeploy/deploy.sh ddns-once
-bash deploy/linuxdeploy/deploy.sh ddns-start
 ```
 
 查看日志：
@@ -134,4 +128,4 @@ bash deploy/linuxdeploy/deploy.sh ddns-log
 
 常驻进程每 60 秒检查前缀，前缀变化时更新目标记录；前缀未变化时每 6 小时强制
 对账一次。失败时指数退避，最长 15 分钟。状态文件使用原子替换，部分更新失败时
-不会提交新状态，下次运行会继续对账。
+不会提交新状态，下次运行会继续对账。Web 页面每 5 秒读取一次 worker 状态。

@@ -215,9 +215,9 @@ select {
     top: 84px;
     z-index: 15;
     display: grid;
-    grid-template-columns: repeat(8, minmax(0, 1fr));
+    grid-template-columns: repeat(9, minmax(0, 1fr));
     gap: 6px;
-    max-width: 980px;
+    max-width: 1100px;
     margin: 0 0 38px;
     padding: 6px;
     border: 1px solid var(--line);
@@ -1348,6 +1348,164 @@ textarea:focus {
     resize: vertical;
 }
 
+.ddns-panel form {
+    padding-top: 20px;
+}
+
+.ddns-runtime {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1px;
+    margin: 20px 0 0;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--line);
+}
+
+.ddns-runtime div {
+    min-width: 0;
+    padding: 13px;
+    background: #0b0e20;
+}
+
+.ddns-runtime .ddns-error-row {
+    grid-column: span 3;
+}
+
+.ddns-runtime dt,
+.ddns-runtime dd {
+    margin: 0;
+}
+
+.ddns-runtime dt {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.ddns-runtime dd {
+    margin-top: 7px;
+    overflow-wrap: anywhere;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+}
+
+.ddns-runtime dd.error {
+    color: var(--danger);
+}
+
+.ddns-config-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+}
+
+.ddns-config-grid fieldset {
+    display: grid;
+    align-content: start;
+    gap: 14px;
+    min-width: 0;
+    margin: 0;
+    padding: 18px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.ddns-config-grid legend {
+    padding: 0 7px;
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.ddns-config-grid label:not(.toggle),
+.ddns-record-row label {
+    display: grid;
+    gap: 7px;
+}
+
+.ddns-config-grid label > span,
+.ddns-config-grid small,
+.ddns-record-row label > span,
+.ddns-record-heading small {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.ddns-config-grid input:not([type="checkbox"]),
+.ddns-record-row input {
+    width: 100%;
+    padding: 0 11px;
+}
+
+.ddns-record-heading {
+    display: flex;
+    gap: 16px;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin-top: 20px;
+}
+
+.ddns-record-heading h3 {
+    margin: 0 0 5px;
+    font-size: 14px;
+}
+
+.ddns-record-list {
+    margin-top: 10px;
+    border-top: 1px solid var(--line);
+}
+
+.ddns-record-list .empty {
+    margin-top: 10px;
+}
+
+.ddns-record-row {
+    display: grid;
+    grid-template-columns: minmax(120px, 1fr) minmax(220px, 2fr) auto;
+    gap: 12px;
+    align-items: end;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.ddns-config-actions {
+    justify-content: space-between;
+}
+
+.ddns-preview {
+    padding-top: 18px;
+}
+
+.ddns-preview-summary {
+    display: flex;
+    gap: 12px 24px;
+    flex-wrap: wrap;
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.ddns-preview-summary code,
+.ddns-preview-records code {
+    overflow-wrap: anywhere;
+    color: var(--text);
+}
+
+.ddns-preview-records {
+    display: grid;
+    margin-top: 14px;
+    border-top: 1px solid var(--line);
+}
+
+.ddns-preview-records div {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) minmax(260px, 2fr);
+    gap: 12px;
+    padding: 11px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 11px;
+}
+
 .button.primary {
     color: #090b18;
     background: var(--accent);
@@ -1617,6 +1775,10 @@ td.file-name {
         grid-template-columns: 1fr;
     }
 
+    .ddns-config-grid {
+        grid-template-columns: 1fr;
+    }
+
     .records-heading {
         align-items: flex-start;
         flex-direction: column;
@@ -1650,7 +1812,7 @@ td.file-name {
     .section-nav {
         top: 70px;
         width: 100%;
-        grid-template-columns: repeat(8, minmax(108px, 1fr));
+        grid-template-columns: repeat(9, minmax(108px, 1fr));
         margin-bottom: 28px;
         overflow-x: auto;
         scrollbar-width: none;
@@ -1755,8 +1917,13 @@ td.file-name {
     .qq-runtime,
     .qq-config-grid,
     .qq-push-grid,
-    .qq-test-form {
+    .qq-test-form,
+    .ddns-runtime {
         grid-template-columns: 1fr;
+    }
+
+    .ddns-runtime .ddns-error-row {
+        grid-column: auto;
     }
 
     .voice-runtime {
@@ -1783,9 +1950,15 @@ td.file-name {
     .voice-command > header,
     .voice-command-heading,
     .voice-command-actions,
-    .qq-token-actions {
+    .qq-token-actions,
+    .ddns-record-heading {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .ddns-record-row,
+    .ddns-preview-records div {
+        grid-template-columns: 1fr;
     }
 
     .settings-actions,

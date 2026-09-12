@@ -89,6 +89,32 @@
         qqTestTarget: $("qqTestTarget"),
         qqTestMessage: $("qqTestMessage"),
         sendQqTest: $("sendQqTest"),
+        ddnsStatus: $("ddnsStatus"),
+        ddnsState: $("ddnsState"),
+        ddnsStableIpv6: $("ddnsStableIpv6"),
+        ddnsPrefix: $("ddnsPrefix"),
+        ddnsLastSuccess: $("ddnsLastSuccess"),
+        ddnsNextAttempt: $("ddnsNextAttempt"),
+        ddnsChangedCount: $("ddnsChangedCount"),
+        ddnsLastError: $("ddnsLastError"),
+        ddnsForm: $("ddnsForm"),
+        ddnsEnabled: $("ddnsEnabled"),
+        ddnsDomain: $("ddnsDomain"),
+        ddnsSecretId: $("ddnsSecretId"),
+        ddnsSecretKey: $("ddnsSecretKey"),
+        ddnsSecretState: $("ddnsSecretState"),
+        ddnsInterface: $("ddnsInterface"),
+        ddnsTtl: $("ddnsTtl"),
+        ddnsInterval: $("ddnsInterval"),
+        ddnsForceInterval: $("ddnsForceInterval"),
+        ddnsRecordList: $("ddnsRecordList"),
+        addDdnsRecord: $("addDdnsRecord"),
+        reloadDdns: $("reloadDdns"),
+        clearDdnsSecret: $("clearDdnsSecret"),
+        previewDdns: $("previewDdns"),
+        saveDdns: $("saveDdns"),
+        reconcileDdns: $("reconcileDdns"),
+        ddnsPreview: $("ddnsPreview"),
         liveDeviceSelect: $("liveDeviceSelect"),
         livePlayer: $("livePlayer"),
         liveStatus: $("liveStatus"),
@@ -154,6 +180,10 @@
         qqConfig: null,
         qqDirty: false,
         qqBusy: false,
+        ddnsConfig: null,
+        ddnsDirty: false,
+        ddnsBusy: false,
+        ddnsWorkerOnline: false,
         busy: false,
         settingsDirty: false,
         toastTimer: 0,
@@ -990,6 +1020,229 @@
             handleError(error);
         } finally {
             ui.sendQqTest.disabled = false;
+        }
+    }
+
+    async function loadDdns(silent = false) {
+        if (state.ddnsBusy) return;
+        state.ddnsBusy = true;
+        try {
+            const body = await api("/api/v1/ddns");
+            renderDdns(body && body.ddns || {});
+        } catch (error) {
+            if (!silent) handleError(error);
+        } finally {
+            state.ddnsBusy = false;
+        }
+    }
+
+    function renderDdns(body) {
+        const config = body.config || {};
+        const status = body.status || {};
+        const workerOnline = !!body.worker_online;
+        state.ddnsWorkerOnline = workerOnline;
+        const labels = {
+            disabled: "已关闭",
+            incomplete: "配置不完整",
+            synchronizing: "同步中",
+            online: "运行中",
+            retrying: "正在重试",
+            config_error: "配置错误",
+            stopped: "已停止",
+            not_started: "未启动",
+        };
+        ui.ddnsStatus.textContent = workerOnline
+            ? labels[status.state] || status.state || "未知"
+            : "进程离线";
+        ui.ddnsStatus.className = `chip ${
+            workerOnline && ["online", "synchronizing"].includes(status.state)
+                ? "active" : "offline"
+        }`;
+        ui.ddnsState.textContent = workerOnline
+            ? status.detail || status.state || "--"
+            : "未收到 DDNS worker 心跳";
+        ui.ddnsStableIpv6.textContent = status.stable_ipv6 || "--";
+        ui.ddnsPrefix.textContent = status.prefix || "--";
+        ui.ddnsLastSuccess.textContent = formatTimestamp(status.last_success_epoch);
+        ui.ddnsNextAttempt.textContent = formatTimestamp(status.next_attempt_epoch);
+        ui.ddnsChangedCount.textContent = `${Number(status.changed_count || 0)} 条`;
+        ui.ddnsLastError.textContent = status.last_error || "--";
+        ui.ddnsLastError.classList.toggle("error", !!status.last_error);
+        ui.reconcileDdns.disabled = !workerOnline || !config.enabled || state.ddnsDirty;
+
+        if (!state.ddnsDirty) {
+            state.ddnsConfig = structuredClone(config);
+            ui.ddnsEnabled.checked = !!config.enabled;
+            ui.ddnsDomain.value = config.domain || "";
+            ui.ddnsSecretId.value = config.secret_id || "";
+            ui.ddnsSecretKey.value = "";
+            ui.ddnsInterface.value = config.interface || "wlan0";
+            ui.ddnsTtl.value = config.ttl || 600;
+            ui.ddnsInterval.value = config.interval_seconds || 60;
+            ui.ddnsForceInterval.value = config.force_seconds || 21600;
+            ui.ddnsSecretState.textContent = config.secret_key_configured
+                ? "SecretKey 已配置，留空不会修改"
+                : "尚未配置 SecretKey";
+            ui.clearDdnsSecret.disabled = !config.secret_key_configured;
+            renderDdnsRecords(Array.isArray(config.records) ? config.records : []);
+        }
+        updateDdnsCredentialRequirements();
+    }
+
+    function renderDdnsRecords(records) {
+        if (!records.length) {
+            ui.ddnsRecordList.innerHTML =
+                '<div class="empty">尚未配置 AAAA 记录</div>';
+            return;
+        }
+        ui.ddnsRecordList.innerHTML = records.map((record) => `
+            <div class="ddns-record-row">
+                <label>
+                    <span>记录名</span>
+                    <input data-ddns-field="name" type="text" maxlength="253"
+                           value="${esc(record.name || "")}" placeholder="@ 或 mi6" required>
+                </label>
+                <label>
+                    <span>IPv6 后 64 位</span>
+                    <input data-ddns-field="iid" type="text" maxlength="39"
+                           value="${esc(record.iid || "")}"
+                           placeholder="528f:4cff:feef:dd90" required>
+                </label>
+                <button class="button danger" data-ddns-action="delete"
+                        type="button">删除</button>
+            </div>`).join("");
+    }
+
+    function addDdnsRecord(record = {}) {
+        const empty = ui.ddnsRecordList.querySelector(".empty");
+        if (empty) empty.remove();
+        ui.ddnsRecordList.insertAdjacentHTML("beforeend", `
+            <div class="ddns-record-row">
+                <label>
+                    <span>记录名</span>
+                    <input data-ddns-field="name" type="text" maxlength="253"
+                           value="${esc(record.name || "")}" placeholder="@ 或 mi6" required>
+                </label>
+                <label>
+                    <span>IPv6 后 64 位</span>
+                    <input data-ddns-field="iid" type="text" maxlength="39"
+                           value="${esc(record.iid || "")}"
+                           placeholder="528f:4cff:feef:dd90" required>
+                </label>
+                <button class="button danger" data-ddns-action="delete"
+                        type="button">删除</button>
+            </div>`);
+        state.ddnsDirty = true;
+        ui.reconcileDdns.disabled = true;
+        ui.ddnsRecordList.lastElementChild
+            ?.querySelector('[data-ddns-field="name"]')?.focus();
+    }
+
+    function collectDdnsRecords() {
+        return Array.from(ui.ddnsRecordList.querySelectorAll(".ddns-record-row"))
+            .map((row) => ({
+                name: row.querySelector('[data-ddns-field="name"]').value.trim(),
+                iid: row.querySelector('[data-ddns-field="iid"]').value.trim(),
+            }));
+    }
+
+    function collectDdnsConfig(clearSecret = false) {
+        return {
+            revision: Number(state.ddnsConfig?.revision || 0),
+            enabled: clearSecret ? false : ui.ddnsEnabled.checked,
+            domain: ui.ddnsDomain.value.trim(),
+            secret_id: ui.ddnsSecretId.value.trim(),
+            secret_key: clearSecret ? "" : ui.ddnsSecretKey.value.trim(),
+            clear_secret: clearSecret,
+            interface: ui.ddnsInterface.value.trim(),
+            ttl: Number(ui.ddnsTtl.value),
+            interval_seconds: Number(ui.ddnsInterval.value),
+            force_seconds: Number(ui.ddnsForceInterval.value),
+            records: collectDdnsRecords(),
+        };
+    }
+
+    function updateDdnsCredentialRequirements() {
+        const configured = !!state.ddnsConfig?.secret_key_configured;
+        const idChanged =
+            ui.ddnsSecretId.value.trim() !== (state.ddnsConfig?.secret_id || "");
+        ui.ddnsSecretId.required = ui.ddnsEnabled.checked;
+        ui.ddnsSecretKey.required =
+            ui.ddnsEnabled.checked && (!configured || idChanged);
+    }
+
+    async function saveDdnsConfig(event, clearSecret = false) {
+        if (event) event.preventDefault();
+        if (!clearSecret && !ui.ddnsForm.reportValidity()) return;
+        ui.saveDdns.disabled = true;
+        ui.clearDdnsSecret.disabled = true;
+        try {
+            await api("/api/v1/ddns", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(collectDdnsConfig(clearSecret)),
+            });
+            state.ddnsDirty = false;
+            ui.ddnsSecretKey.value = "";
+            showToast(clearSecret ? "DNSPod SecretKey 已清除" : "DDNS 配置已保存");
+            await loadDdns(true);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.saveDdns.disabled = false;
+            ui.clearDdnsSecret.disabled = !state.ddnsConfig?.secret_key_configured;
+        }
+    }
+
+    async function previewDdns() {
+        ui.previewDdns.disabled = true;
+        try {
+            const body = await api("/api/v1/ddns/preview", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    domain: ui.ddnsDomain.value.trim(),
+                    interface: ui.ddnsInterface.value.trim(),
+                    records: collectDdnsRecords(),
+                }),
+            });
+            const result = body.preview || {};
+            const records = Array.isArray(result.records) ? result.records : [];
+            ui.ddnsPreview.innerHTML = `
+                <div class="ddns-preview-summary">
+                    <span>稳定地址 <code>${esc(result.stable_ipv6 || "--")}</code></span>
+                    <span>公网前缀 <code>${esc(result.prefix || "--")}</code></span>
+                </div>
+                <div class="ddns-preview-records">
+                    ${records.map((record) => `
+                        <div>
+                            <strong>${esc(record.fqdn || record.name)}</strong>
+                            <code>${esc(record.address)}</code>
+                        </div>`).join("")}
+                </div>`;
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.previewDdns.disabled = false;
+        }
+    }
+
+    async function reconcileDdns() {
+        if (state.ddnsDirty) {
+            showToast("请先保存 DDNS 配置", true);
+            return;
+        }
+        if (!window.confirm("立即读取并对账 DNSPod AAAA 记录？")) return;
+        ui.reconcileDdns.disabled = true;
+        try {
+            await api("/api/v1/ddns/reconcile", { method: "POST" });
+            showToast("已请求 DDNS 立即对账");
+            window.setTimeout(() => loadDdns(true), 1200);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.reconcileDdns.disabled =
+                !state.ddnsWorkerOnline || !state.ddnsConfig?.enabled || state.ddnsDirty;
         }
     }
 
@@ -2401,6 +2654,32 @@
     ui.rotateQqPushToken.addEventListener("click", rotateQqPushToken);
     ui.copyQqPushToken.addEventListener("click", copyQqPushToken);
     ui.qqTestForm.addEventListener("submit", sendQqTest);
+    ui.ddnsForm.addEventListener("input", () => {
+        state.ddnsDirty = true;
+        ui.reconcileDdns.disabled = true;
+        updateDdnsCredentialRequirements();
+    });
+    ui.ddnsForm.addEventListener("submit", (event) => saveDdnsConfig(event));
+    ui.reloadDdns.addEventListener("click", async () => {
+        state.ddnsDirty = false;
+        await loadDdns();
+    });
+    ui.addDdnsRecord.addEventListener("click", () => addDdnsRecord());
+    ui.ddnsRecordList.addEventListener("click", (event) => {
+        const button = event.target.closest('[data-ddns-action="delete"]');
+        if (!button) return;
+        button.closest(".ddns-record-row")?.remove();
+        state.ddnsDirty = true;
+        ui.reconcileDdns.disabled = true;
+        if (!ui.ddnsRecordList.children.length) renderDdnsRecords([]);
+    });
+    ui.clearDdnsSecret.addEventListener("click", async () => {
+        if (!state.ddnsConfig?.secret_key_configured) return;
+        if (!window.confirm("清除 SecretKey 后 DDNS 会立即停用。继续？")) return;
+        await saveDdnsConfig(null, true);
+    });
+    ui.previewDdns.addEventListener("click", previewDdns);
+    ui.reconcileDdns.addEventListener("click", reconcileDdns);
     ui.deviceSelect.addEventListener("change", () => selectDevice(ui.deviceSelect.value));
     ui.liveDeviceSelect.addEventListener("change", () => {
         selectDevice(ui.liveDeviceSelect.value);
@@ -2492,6 +2771,7 @@
             "evaluation",
             "voice",
             "qq",
+            "ddns",
             "playback",
             "photos",
             "settings",
@@ -2525,6 +2805,7 @@
         if (target === "photos") loadPhotos();
         if (target === "voice") loadVoice(true);
         if (target === "qq") loadQq(true);
+        if (target === "ddns") loadDdns(true);
         if (target === "evaluation") window.CameraHubEvaluation?.refreshDevices();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -2545,6 +2826,7 @@
     setInterval(() => {
         if (state.view === "voice") loadVoice(true);
         if (state.view === "qq" && !state.qqDirty) loadQq(true);
+        if (state.view === "ddns" && !state.ddnsDirty) loadDdns(true);
     }, 5_000);
     refreshAll(true);
 })();

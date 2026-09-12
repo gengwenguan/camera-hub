@@ -9,6 +9,8 @@ TTS_BINARY="${5:-}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 ENV_FILE="/home/android/.config/camera-hub.env"
 DDNS_ENV_FILE="/home/android/.config/camera-hub-ddns.env"
+DDNS_CONFIG_FILE="/home/android/.config/camera-hub-ddns.json"
+DDNS_STATUS_FILE="/home/android/.config/camera-hub-ddns-status.json"
 STARTER="/usr/local/bin/camera-hub-start"
 DDNS_STARTER="/usr/local/bin/camera-hub-ddns-start"
 VOICE_STARTER="/usr/local/bin/camera-hub-voice-start"
@@ -72,12 +74,25 @@ install -d -o android -g android "$ACME_WEBROOT/.well-known/acme-challenge"
 install -m 0755 "$SCRIPT_DIR/acme-ip.sh" "$ACME_SCRIPT"
 install -m 0755 "$SCRIPT_DIR/acme-edge.sh" "$EDGE_ACME_SCRIPT"
 
-if [ ! -f "$DDNS_ENV_FILE" ]; then
-    install -m 0600 -o android -g android \
-        "$SCRIPT_DIR/camera-hub-ddns.env.example" "$DDNS_ENV_FILE"
-else
-    chown android:android "$DDNS_ENV_FILE"
-    chmod 0600 "$DDNS_ENV_FILE"
+if [ ! -f "$DDNS_CONFIG_FILE" ]; then
+    if [ -f "$DDNS_ENV_FILE" ] && [ -n "$DDNS_BINARY" ]; then
+        su -s /bin/sh android -c "
+            set -a
+            . '$DDNS_ENV_FILE'
+            set +a
+            /usr/local/bin/camera-hub-ddns \
+                --config-file '$DDNS_CONFIG_FILE' --write-config
+        "
+    else
+        install -m 0600 -o android -g android \
+            "$SCRIPT_DIR/camera-hub-ddns.json.example" "$DDNS_CONFIG_FILE"
+    fi
+fi
+chown android:android "$DDNS_CONFIG_FILE"
+chmod 0600 "$DDNS_CONFIG_FILE"
+if [ -f "$DDNS_STATUS_FILE" ]; then
+    chown android:android "$DDNS_STATUS_FILE"
+    chmod 0600 "$DDNS_STATUS_FILE"
 fi
 
 if [ ! -f "$ENV_FILE" ]; then
@@ -102,6 +117,9 @@ if [ ! -f "$ENV_FILE" ]; then
         echo "CAMERA_HUB_DATA_DIR='/home/android/camera-data'"
         echo "CAMERA_HUB_SETTINGS_FILE='/home/android/.config/camera-hub.json'"
         echo "CAMERA_HUB_QQ_CONFIG_FILE='/home/android/.config/camera-hub-qq.json'"
+        echo "CAMERA_HUB_DDNS_CONFIG_FILE='$DDNS_CONFIG_FILE'"
+        echo "CAMERA_HUB_DDNS_STATUS_FILE='$DDNS_STATUS_FILE'"
+        echo "CAMERA_HUB_DDNS_STATE_FILE='/home/android/.config/camera-hub-ddns.state'"
         echo "CAMERA_HUB_VOICE_CONFIG_FILE='/home/android/.config/camera-hub-voice.json'"
         echo "CAMERA_HUB_VOICE_STATUS_FILE='/home/android/.config/camera-hub-voice-status.json'"
         echo "CAMERA_HUB_VOICE_EVENTS_FILE='/home/android/camera-data/voice/events.jsonl'"
@@ -171,6 +189,12 @@ grep -q '^CAMERA_HUB_SETTINGS_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_SETTINGS_FILE='/home/android/.config/camera-hub.json'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_QQ_CONFIG_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_QQ_CONFIG_FILE='/home/android/.config/camera-hub-qq.json'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_DDNS_CONFIG_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_DDNS_CONFIG_FILE='$DDNS_CONFIG_FILE'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_DDNS_STATUS_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_DDNS_STATUS_FILE='$DDNS_STATUS_FILE'" >> "$ENV_FILE"
+grep -q '^CAMERA_HUB_DDNS_STATE_FILE=' "$ENV_FILE" ||
+    echo "CAMERA_HUB_DDNS_STATE_FILE='/home/android/.config/camera-hub-ddns.state'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_VOICE_CONFIG_FILE=' "$ENV_FILE" ||
     echo "CAMERA_HUB_VOICE_CONFIG_FILE='/home/android/.config/camera-hub-voice.json'" >> "$ENV_FILE"
 grep -q '^CAMERA_HUB_VOICE_STATUS_FILE=' "$ENV_FILE" ||
@@ -264,7 +288,7 @@ cat > "$DDNS_STARTER" <<'EOF'
 #!/bin/sh
 set -eu
 set -a
-. /home/android/.config/camera-hub-ddns.env
+. /home/android/.config/camera-hub.env
 set +a
 exec /usr/local/bin/camera-hub-ddns
 EOF
@@ -349,7 +373,7 @@ awk '
         print "if ! pgrep -f \042[c]amera-hub-acme-edge-loop\042 > /dev/null; then"
         print "    su -s /bin/sh android -c '\''nohup sh -c \"sleep 60; while :; do /usr/local/bin/camera-hub-acme-edge >> /home/android/camera-hub-acme-edge.log 2>&1 || true; sleep 43200; done\" camera-hub-acme-edge-loop > /dev/null 2>&1 &'\''"
         print "fi"
-        print "if grep -q \"^CAMERA_HUB_DDNS_ENABLED='\''true'\''\" /home/android/.config/camera-hub-ddns.env && ! pgrep -x \"camera-hub-ddns\" > /dev/null; then"
+        print "if [ -x /usr/local/bin/camera-hub-ddns ] && ! pgrep -x \"camera-hub-ddns\" > /dev/null; then"
         print "    su -s /bin/sh android -c '\''nohup /usr/local/bin/camera-hub-ddns-start > /home/android/camera-hub-ddns.log 2>&1 &'\''"
         print "fi"
         print "# END CAMERA HUB"
@@ -436,9 +460,12 @@ if ! pgrep -f '[c]amera-hub-acme-edge-loop' > /dev/null; then
     su -s /bin/sh android -c \
         'nohup sh -c "sleep 60; while :; do /usr/local/bin/camera-hub-acme-edge >> /home/android/camera-hub-acme-edge.log 2>&1 || true; sleep 43200; done" camera-hub-acme-edge-loop > /dev/null 2>&1 &'
 fi
-if grep -q "^CAMERA_HUB_DDNS_ENABLED='true'" "$DDNS_ENV_FILE" &&
-    [ -x /usr/local/bin/camera-hub-ddns ] &&
-    ! pgrep -x camera-hub-ddns > /dev/null; then
+if [ -x /usr/local/bin/camera-hub-ddns ]; then
+    pkill -x camera-hub-ddns 2>/dev/null || true
+    for _ in 1 2 3 4 5; do
+        pgrep -x camera-hub-ddns > /dev/null 2>&1 || break
+        sleep 1
+    done
     su -s /bin/sh android -c \
         'nohup /usr/local/bin/camera-hub-ddns-start > /home/android/camera-hub-ddns.log 2>&1 &'
 fi

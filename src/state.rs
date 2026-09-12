@@ -1,6 +1,7 @@
 use crate::ai::AiService;
 use crate::benchmark::BenchmarkRegistry;
 use crate::config::Config;
+use crate::ddns_control::DdnsControl;
 use crate::flv_live::FlvLive;
 use crate::frames::FrameHub;
 use crate::live::LiveStreams;
@@ -59,6 +60,7 @@ pub struct AppState {
     pub muxers: Arc<MediaMuxers>,
     pub moq: Arc<MoqLive>,
     pub qq: Arc<QqService>,
+    pub ddns: Arc<DdnsControl>,
     pub ai: Arc<AiService>,
     pub settings: Arc<HubSettingsStore>,
     pub voice: Arc<VoiceService>,
@@ -76,6 +78,7 @@ pub struct AppServices {
     pub media: Arc<MediaStore>,
     pub ai: Arc<AiService>,
     pub qq: Arc<QqService>,
+    pub ddns: Arc<DdnsControl>,
     pub voice: Arc<VoiceService>,
     pub voice_studio: Arc<VoiceStudio>,
     pub frames: Arc<FrameHub>,
@@ -88,6 +91,7 @@ impl AppState {
             media,
             ai,
             qq,
+            ddns,
             voice,
             voice_studio,
             frames,
@@ -106,6 +110,7 @@ impl AppState {
             muxers: Arc::new(MediaMuxers::new(frames.clone(), media, live)),
             moq,
             qq,
+            ddns,
             frames,
             ai,
             settings,

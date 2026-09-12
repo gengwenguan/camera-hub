@@ -62,6 +62,20 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_DDNS_CONFIG_FILE",
+        default_value = "camera-hub-state/ddns.json"
+    )]
+    pub ddns_config_file: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_DDNS_STATUS_FILE",
+        default_value = "camera-hub-state/ddns-status.json"
+    )]
+    pub ddns_status_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_VOICE_CONFIG_FILE",
         default_value = "camera-hub-state/voice.json"
     )]

@@ -2,6 +2,7 @@ mod ai;
 mod auth;
 mod benchmark;
 mod config;
+mod ddns_control;
 mod flv_live;
 mod frames;
 mod inference_lock;
@@ -23,6 +24,7 @@ mod webrtc_live;
 
 use crate::ai::AiService;
 use crate::config::Config;
+use crate::ddns_control::DdnsControl;
 use crate::frames::FrameHub;
 use crate::media::MediaStore;
 use crate::qq::{QqConfigUpdate, QqNotifyError, QqNotifyRequest, QqService};
@@ -44,6 +46,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router, middleware};
 use axum_server::tls_rustls::RustlsConfig;
+use camera_hub::ddns::{DdnsConfigUpdate, DdnsPreviewRequest};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -82,6 +85,10 @@ async fn main() -> Result<()> {
     let frames = Arc::new(FrameHub::default());
     let ai = AiService::start(&config, settings.clone(), frames.clone())?;
     let qq = QqService::start(&config)?;
+    let ddns = Arc::new(DdnsControl::load(
+        config.ddns_config_file.clone(),
+        config.ddns_status_file.clone(),
+    )?);
     let voice = Arc::new(VoiceService::load(&config)?);
     let voice_studio = Arc::new(VoiceStudio::new(&config)?);
     let state = Arc::new(AppState::new(
@@ -91,6 +98,7 @@ async fn main() -> Result<()> {
             media: media.clone(),
             ai: ai.clone(),
             qq,
+            ddns,
             voice,
             voice_studio,
             frames,
@@ -129,6 +137,9 @@ async fn main() -> Result<()> {
         .route("/api/v1/qq", get(qq_overview).put(update_qq))
         .route("/api/v1/qq/push-token", post(rotate_qq_push_token))
         .route("/api/v1/qq/test", post(test_qq))
+        .route("/api/v1/ddns", get(ddns_overview).put(update_ddns))
+        .route("/api/v1/ddns/preview", post(preview_ddns))
+        .route("/api/v1/ddns/reconcile", post(reconcile_ddns))
         .route("/api/v1/integrations/qq/notify", post(qq_notify_external))
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
@@ -830,6 +841,33 @@ async fn test_qq(
     Ok(Json(json!({"ok":true,"delivery":receipt})))
 }
 
+async fn ddns_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({"ddns":state.ddns.overview()}))
+}
+
+async fn update_ddns(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<DdnsConfigUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let config = state.ddns.update(update)?;
+    Ok(Json(json!({"ok":true,"config":config})))
+}
+
+async fn preview_ddns(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<DdnsPreviewRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let preview = state.ddns.preview(request)?;
+    Ok(Json(json!({"ok":true,"preview":preview})))
+}
+
+async fn reconcile_ddns(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let revision = state.ddns.request_reconcile()?;
+    Ok(Json(json!({"ok":true,"revision":revision})))
+}
+
 async fn qq_notify_external(
     State(state): State<Arc<AppState>>,
     Extension(transport): Extension<auth::TransportSecurity>,
@@ -1038,6 +1076,8 @@ async fn hub_settings(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
             "ai_runtime": state.config.ai_runtime,
             "ai_model": state.config.ai_model,
             "qq_config_file": state.config.qq_config_file,
+            "ddns_config_file": state.config.ddns_config_file,
+            "ddns_status_file": state.ddns.status_path(),
             "voice_config_file": state.config.voice_config_file,
             "voice_status_file": state.config.voice_status_file,
             "voice_events_file": state.config.voice_events_file,

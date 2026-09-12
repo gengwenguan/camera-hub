@@ -192,8 +192,7 @@ case "${ACTION}" in
             curl -g -fsS 'http://[::1]/health'; echo
             curl -fsS \"\${CAMERA_HUB_TTS_URL%/}/health\"; echo
             pgrep -af camera-hub || true
-            grep -E '^CAMERA_HUB_DDNS_(ENABLED|DOMAIN|INTERFACE|RECORDS)=' \
-                /home/android/.config/camera-hub-ddns.env 2>/dev/null || true"
+            cat \"\${CAMERA_HUB_DDNS_STATUS_FILE}\" 2>/dev/null || true"
         ;;
     log)
         remote "tail -n 200 -f /home/android/camera-hub.log"
@@ -206,20 +205,18 @@ case "${ACTION}" in
         ;;
     ddns-dry-run)
         remote "set -a
-            . /home/android/.config/camera-hub-ddns.env
+            . /home/android/.config/camera-hub.env
             set +a
             /usr/local/bin/camera-hub-ddns --dry-run"
         ;;
     ddns-once)
         remote "set -a
-            . /home/android/.config/camera-hub-ddns.env
+            . /home/android/.config/camera-hub.env
             set +a
             /usr/local/bin/camera-hub-ddns --once"
         ;;
     ddns-start)
         remote "set -e
-            grep -q \"^CAMERA_HUB_DDNS_ENABLED='true'\" \
-                /home/android/.config/camera-hub-ddns.env
             if ! pgrep -x camera-hub-ddns >/dev/null; then
                 nohup /usr/local/bin/camera-hub-ddns-start \
                     >/home/android/camera-hub-ddns.log 2>&1 </dev/null &

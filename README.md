@@ -499,43 +499,35 @@ CAMERA_HUB_EDGE_RUNTIME_DIR=/root/maix_dist
 
 #### DNSPod 多设备 DDNS
 
-LinuxDeploy 适配器同时安装独立进程 `camera-hub-ddns`。它从指定网卡选择稳定的
-公网 `/64` IPv6 地址，保留每台设备配置的后 64 位，并对账 DNSPod 中已存在的
-默认线路 AAAA 记录。临时、deprecated、tentative 和 DAD 失败地址不会被选中。
+LinuxDeploy 适配器安装独立 sidecar `camera-hub-ddns`。它从指定网卡选择稳定的公网
+`/64` IPv6 地址，保留每台设备配置的后 64 位，并对账 DNSPod 中已存在的默认线路
+AAAA 记录。临时、deprecated、tentative 和 DAD 失败地址不会被选中。
 
-配置文件为 `/home/android/.config/camera-hub-ddns.env`，归属
-`android:android`，权限固定为 `0600`。安装后默认
-`CAMERA_HUB_DDNS_ENABLED='false'`，不会启动进程，也不会访问 DNSPod。
+DDNS 在 camera-hub Web 的“DDNS”页面配置。配置和状态分别保存到：
 
-先在 Mi6 上验证地址合成：
+```text
+/home/android/.config/camera-hub-ddns.json
+/home/android/.config/camera-hub-ddns-status.json
+```
+
+配置文件包含 DNSPod SecretKey，由服务原子写入并固定为 `0600`；Web 只显示密钥
+是否已配置，不会回读。旧版 `camera-hub-ddns.env` 会在首次部署新版时自动迁移。
+
+sidecar 始终随系统启动。Web 中关闭 DDNS 后，它只等待配置变化，不访问 DNSPod；
+保存配置或点击“立即对账”后会立即重新加载，无需 SSH 或重启进程。页面还可以在
+写入 DNSPod 前预览当前公网前缀和各条目标地址。
+
+命令行诊断入口继续保留：
 
 ```bash
 bash deploy/linuxdeploy/deploy.sh ddns-dry-run
-```
-
-预期管理以下记录：
-
-```text
-gwghome.site         = 当前 /64 + 528f:4cff:feef:dd90
-mi6.gwghome.site     = 当前 /64 + 528f:4cff:feef:dd90
-v831.gwghome.site    = 当前 /64 + a22c:36ff:febd:4feb
-lecoo.gwghome.site   = 当前 /64 + 8647:09ff:fe45:35a0
-lecoo-wifi.gwghome.site = 当前 /64 + 72c9:12ff:fe1c:2f67
-huawei.gwghome.site  = 当前 /64 + 1a56:80ff:fe82:816a
-```
-
-确认结果后，在腾讯云创建只用于 DNSPod 的 CAM API 密钥，将
-`CAMERA_HUB_DDNS_SECRET_ID`、`CAMERA_HUB_DDNS_SECRET_KEY` 写入配置，并把
-`CAMERA_HUB_DDNS_ENABLED` 改为 `true`。先执行一次前台对账，再启动常驻进程：
-
-```bash
 bash deploy/linuxdeploy/deploy.sh ddns-once
-bash deploy/linuxdeploy/deploy.sh ddns-start
+bash deploy/linuxdeploy/deploy.sh ddns-log
 ```
 
-常驻进程每 60 秒检查本机前缀，前缀变化时更新所有目标记录；即使前缀未变，也会
-每 6 小时强制与 DNSPod 对账。它只修改已存在且唯一的默认线路 AAAA 记录，不会
-自动创建记录；查询失败或发现重复记录时不会写入状态文件。
+常驻进程默认每 60 秒检查本机前缀，前缀变化时更新所有目标记录；即使前缀未变，
+也会每 6 小时强制与 DNSPod 对账。它只修改已存在且唯一的默认线路 AAAA 记录，
+不会自动创建记录；查询失败或发现重复记录时不会提交新状态。
 
 ### Termux
 
