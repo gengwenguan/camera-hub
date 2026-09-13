@@ -505,6 +505,9 @@ CAMERA_HUB_DATA_DIR=/srv/camera-hub/data ./target/release/camera-hub server
 需要内置 TTS/Voice worker 时使用 `--features voice-workers` 构建。无论启用哪些
 组件，发布产物都只有一个 `camera-hub` 可执行文件。
 
+平台安装器可调用 `camera-hub setup mi6 --home /home/android` 原子初始化用户级
+目录和环境文件；该命令保留已有配置和密钥，只补充缺失默认值。
+
 ### 小米 6 / LinuxDeploy
 
 设备安装适配器位于 `deploy/mi6`，说明见

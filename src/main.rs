@@ -17,6 +17,7 @@ mod mux;
 mod qq;
 mod record_file;
 mod settings;
+mod setup;
 mod state;
 mod system;
 mod voice;
@@ -84,6 +85,12 @@ struct ComponentAutostartUpdate {
 #[tokio::main]
 async fn main() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
+    if arguments.get(1).and_then(|value| value.to_str()) == Some("setup") {
+        let setup_arguments = std::iter::once(OsString::from("camera-hub setup"))
+            .chain(arguments.iter().skip(2).cloned())
+            .collect();
+        return setup::run(setup_arguments);
+    }
     if arguments.get(1).and_then(|value| value.to_str()) == Some("worker") {
         return run_worker_command(&arguments).await;
     }

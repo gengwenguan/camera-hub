@@ -12,10 +12,6 @@ STARTER="/usr/local/bin/camera-hub-start"
 VOICE_AUDIO="/usr/local/bin/camera-hub-mi6-audio"
 VOICE_LIB_DIR="/usr/local/lib/camera-hub-voice"
 VOICE_LD_CONFIG="/etc/ld.so.conf.d/camera-hub-voice.conf"
-ASSET_CACHE_DIR="/home/android/camera-voice"
-COMPONENTS_FILE="/home/android/.config/camera-hub-components.json"
-AI_RUNTIME="/home/android/camera-ai/runtime/lib/libonnxruntime.so"
-AI_MODEL="/home/android/camera-ai/models/yolox_nano.onnx"
 ACME_SCRIPT="/usr/local/bin/camera-hub-acme"
 EDGE_ACME_SCRIPT="/usr/local/bin/camera-hub-acme-edge"
 RC_LOCAL="/etc/rc.local"
@@ -23,13 +19,6 @@ TLS_CERT="/home/android/.config/camera-hub-cert.pem"
 TLS_KEY="/home/android/.config/camera-hub-key.pem"
 ACME_WEBROOT="/home/android/.config/camera-hub-acme-webroot"
 EDGE_ACME_KEY="/home/android/.ssh/camera-hub-edge-acme-rsa"
-
-ensure_env() {
-    key="$1"
-    value="$2"
-    grep -q "^${key}=" "$ENV_FILE" ||
-        printf "%s='%s'\n" "$key" "$value" >> "$ENV_FILE"
-}
 
 [ -x "$BINARY" ] || {
     echo "camera-hub binary not found: $BINARY" >&2
@@ -56,14 +45,8 @@ if ! command -v espeak-ng >/dev/null 2>&1; then
     DEBIAN_FRONTEND=noninteractive apt-get update
     DEBIAN_FRONTEND=noninteractive apt-get install -y espeak-ng
 fi
-install -d -o android -g android /home/android/camera-data
-install -d -o android -g android /home/android/camera-data/voice
-install -d -m 0700 -o android -g android /home/android/camera-data/voice/tts
-install -d -o android -g android "$ASSET_CACHE_DIR"
-install -d -o android -g android /home/android/camera-voice/models
 install -d -o android -g android /home/android/.config
 install -d -m 0700 -o android -g android /home/android/.ssh
-install -d -o android -g android "$ACME_WEBROOT/.well-known/acme-challenge"
 for log_file in \
     /home/android/camera-hub.log \
     /home/android/camera-hub-ddns.log \
@@ -86,12 +69,11 @@ if [ ! -f "$DDNS_CONFIG_FILE" ]; then
             /usr/local/bin/camera-hub worker ddns \
                 --config-file '$DDNS_CONFIG_FILE' --write-config
         "
-    else
-        su -s /bin/sh android -c \
-            "/usr/local/bin/camera-hub worker ddns \
-                --config-file '$DDNS_CONFIG_FILE' --write-config"
     fi
 fi
+
+su -s /bin/sh android -c \
+    "/usr/local/bin/camera-hub setup mi6 --home /home/android"
 chown android:android "$DDNS_CONFIG_FILE"
 chmod 0600 "$DDNS_CONFIG_FILE"
 if [ -f "$DDNS_STATUS_FILE" ]; then
@@ -99,79 +81,6 @@ if [ -f "$DDNS_STATUS_FILE" ]; then
     chmod 0600 "$DDNS_STATUS_FILE"
 fi
 
-if [ ! -f "$ENV_FILE" ]; then
-    install -m 0600 -o android -g android /dev/null "$ENV_FILE"
-fi
-
-ensure_env CAMERA_HUB_WEB_USERNAME admin
-ensure_env CAMERA_HUB_WEB_PASSWORD 12345
-ensure_env CAMERA_HUB_BIND '[::]:80'
-ensure_env CAMERA_HUB_TLS_BIND '[::]:443'
-ensure_env CAMERA_HUB_TLS_CERT "$TLS_CERT"
-ensure_env CAMERA_HUB_TLS_KEY "$TLS_KEY"
-ensure_env CAMERA_HUB_MOQ_ENABLED true
-ensure_env CAMERA_HUB_MOQ_BIND '[::]:443'
-ensure_env CAMERA_HUB_ACME_WEBROOT "$ACME_WEBROOT"
-ensure_env CAMERA_HUB_PUBLIC_INTERFACE wlan0
-ensure_env CAMERA_HUB_PUBLIC_DOMAIN mi6.gwghome.site
-ensure_env CAMERA_HUB_EDGE_ACME_ENABLED false
-ensure_env CAMERA_HUB_EDGE_DEVICE_ID v831cam
-ensure_env CAMERA_HUB_EDGE_DOMAIN v831.gwghome.site
-ensure_env CAMERA_HUB_EDGE_SSH_USER root
-ensure_env CAMERA_HUB_EDGE_SSH_KEY "$EDGE_ACME_KEY"
-ensure_env CAMERA_HUB_EDGE_RUNTIME_DIR /root/maix_dist
-ensure_env CAMERA_HUB_DATA_DIR /home/android/camera-data
-ensure_env CAMERA_HUB_SETTINGS_FILE /home/android/.config/camera-hub.json
-ensure_env CAMERA_HUB_QQ_CONFIG_FILE /home/android/.config/camera-hub-qq.json
-ensure_env CAMERA_HUB_DDNS_CONFIG_FILE "$DDNS_CONFIG_FILE"
-ensure_env CAMERA_HUB_DDNS_STATUS_FILE "$DDNS_STATUS_FILE"
-ensure_env CAMERA_HUB_DDNS_STATE_FILE /home/android/.config/camera-hub-ddns.state
-ensure_env CAMERA_HUB_COMPONENT_MANAGER_ENABLED true
-ensure_env CAMERA_HUB_COMPONENTS_FILE "$COMPONENTS_FILE"
-ensure_env CAMERA_HUB_LOG_DIR /home/android
-ensure_env CAMERA_HUB_IR_BIND 127.0.0.1:39182
-ensure_env CAMERA_HUB_IR_URL http://127.0.0.1:39182
-ensure_env CAMERA_HUB_IR_DEVICE /dev/peel_ir
-ensure_env CAMERA_HUB_ASSET_CACHE_DIR "$ASSET_CACHE_DIR"
-ensure_env CAMERA_HUB_VOICE_CONFIG_FILE /home/android/.config/camera-hub-voice.json
-ensure_env CAMERA_HUB_VOICE_STATUS_FILE /home/android/.config/camera-hub-voice-status.json
-ensure_env CAMERA_HUB_VOICE_EVENTS_FILE /home/android/camera-data/voice/events.jsonl
-ensure_env CAMERA_HUB_VOICE_COMMAND_FILE /home/android/.config/camera-hub-voice-command.json
-ensure_env CAMERA_HUB_VOICE_LIB_DIR "$VOICE_LIB_DIR"
-ensure_env CAMERA_HUB_VOICE_MODEL_DIR /home/android/camera-voice/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01
-ensure_env CAMERA_HUB_TTS_BIND 127.0.0.1:39081
-ensure_env CAMERA_HUB_TTS_URL http://127.0.0.1:39081
-if ! grep -q '^CAMERA_HUB_TTS_TOKEN=' "$ENV_FILE"; then
-    ensure_env CAMERA_HUB_TTS_TOKEN "$(openssl rand -hex 32)"
-fi
-ensure_env CAMERA_HUB_TTS_MODEL_DIR /home/android/camera-voice/models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia
-ensure_env CAMERA_HUB_TTS_VOCODER /home/android/camera-voice/models/vocos_24khz.onnx
-ensure_env CAMERA_HUB_TTS_DATA_DIR /home/android/camera-data/voice/tts
-ensure_env CAMERA_HUB_TTS_THREADS 2
-ensure_env CAMERA_HUB_TTS_MAX_DATA_BYTES 536870912
-ensure_env CAMERA_HUB_SEGMENT_SECONDS 600
-ensure_env CAMERA_HUB_MAX_BYTES 8589934592
-ensure_env CAMERA_HUB_RETAIN_DAYS 7
-ai_enabled=false
-if [ -s "$AI_RUNTIME" ] && [ -s "$AI_MODEL" ]; then
-    ai_enabled=true
-fi
-ensure_env CAMERA_HUB_AI_ENABLED "$ai_enabled"
-ensure_env CAMERA_HUB_AI_RUNTIME "$AI_RUNTIME"
-ensure_env CAMERA_HUB_AI_MODEL "$AI_MODEL"
-ensure_env CAMERA_HUB_AI_INTERVAL_MS 1000
-ensure_env CAMERA_HUB_AI_THRESHOLD 0.30
-ensure_env CAMERA_HUB_AI_MIN_PERSON_AREA_RATIO 0.02
-ensure_env CAMERA_HUB_AI_MIN_SNAPSHOT_SECONDS 10
-ensure_env CAMERA_HUB_AI_SNAPSHOT_MAX_COUNT 500
-ensure_env CAMERA_HUB_AI_SNAPSHOT_QUALITY 95
-sed -i \
-    "/^CAMERA_HUB_SPEECH_TRANSCRIBE=/d;
-     /^CAMERA_HUB_SPEECH_SUMMARIZE=/d;
-     /^CAMERA_HUB_AI_SNAPSHOT_RETAIN_DAYS=/d;
-     /^CAMERA_HUB_VOICE_STUDIO_ENABLED=/d;
-     /^CAMERA_HUB_VOICE_STUDIO_TOKEN=/d" \
-    "$ENV_FILE"
 chown android:android "$ENV_FILE"
 chmod 0600 "$ENV_FILE"
 
