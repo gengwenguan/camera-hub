@@ -146,6 +146,13 @@ pub struct VoiceStudioError {
 }
 
 impl VoiceStudioError {
+    pub fn disabled() -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message: "公共语音工作室未启用".to_owned(),
+        }
+    }
+
     fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,

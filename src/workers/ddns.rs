@@ -5,12 +5,13 @@ use camera_hub::ddns::{
 };
 use chrono::Utc;
 use clap::Parser;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(
-    name = "camera-hub-ddns",
+    name = "camera-hub worker ddns",
     about = "Synchronize one IPv6 /64 prefix to multiple DNSPod AAAA records"
 )]
 struct Args {
@@ -79,10 +80,9 @@ struct Args {
     endpoint: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run(args: Vec<OsString>) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let args = Args::parse();
+    let args = Args::parse_from(args);
 
     if args.write_config {
         let config = legacy_config(&args)?;

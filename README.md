@@ -189,6 +189,13 @@ CAMERA_HUB_TLS_KEY=/srv/camera-hub/state/key.pem
 CAMERA_HUB_DATA_DIR=/srv/camera-hub/data
 CAMERA_HUB_SETTINGS_FILE=/srv/camera-hub/state/settings.json
 CAMERA_HUB_QQ_CONFIG_FILE=/srv/camera-hub/state/qq.json
+CAMERA_HUB_COMPONENT_MANAGER_ENABLED=true
+CAMERA_HUB_COMPONENTS_FILE=/srv/camera-hub/state/components.json
+CAMERA_HUB_LOG_DIR=/srv/camera-hub/log
+CAMERA_HUB_ASSET_CACHE_DIR=/srv/camera-hub/assets
+CAMERA_HUB_IR_BIND=127.0.0.1:39182
+CAMERA_HUB_IR_URL=http://127.0.0.1:39182
+CAMERA_HUB_IR_DEVICE=/dev/peel_ir
 CAMERA_HUB_VOICE_CONFIG_FILE=/srv/camera-hub/state/voice.json
 CAMERA_HUB_VOICE_STATUS_FILE=/srv/camera-hub/state/voice-status.json
 CAMERA_HUB_VOICE_EVENTS_FILE=/srv/camera-hub/data/voice/events.jsonl
@@ -253,6 +260,13 @@ PUT  /api/v1/voice
 POST /api/v1/voice/test
 PUT  /api/v1/voice/reference
 DELETE /api/v1/voice/reference
+GET  /api/v1/assets
+POST /api/v1/assets/:asset/install
+GET  /api/v1/components
+POST /api/v1/components/:component/:action
+PUT  /api/v1/components/:component/autostart
+GET  /api/v1/ir
+POST /api/v1/ir/actions/:action
 POST /api/v1/public/voice-studio/session
 PUT  /api/v1/public/voice-studio/reference
 POST /api/v1/public/voice-studio/synthesize
@@ -306,17 +320,17 @@ CAMERA_HUB_AI_SNAPSHOT_QUALITY=95
 
 ## 本机语音控制
 
-LinuxDeploy 适配器可运行独立的 `camera-hub-voice` 进程。它使用 sherpa-onnx
+LinuxDeploy 适配器通过 `camera-hub worker voice` 运行语音识别组件。它使用 sherpa-onnx
 中文 Zipformer KWS INT8 模型持续读取 48 kHz 单声道 PCM，并在内部重采样到
-16 kHz。主服务只负责 Web 配置、状态和测试请求；关键词模型异常不会影响直播和
-录像。
+16 kHz。主服务内置组件管理器，负责 Web 配置、状态、启停、自启和异常拉起；
+关键词模型异常不会影响直播和录像。
 
 Web 的“语音控制”页面支持配置命令短语、成功回复、GET/POST URL、JSON 请求体、
 boosting score、触发阈值、冷却时间和 0–100 的播报音量。播报音量只调整
 `espeak-ng` 生成的回复，不修改系统全局播放音量。配置保存在
 `CAMERA_HUB_VOICE_CONFIG_FILE`，触发记录写入
 `CAMERA_HUB_VOICE_EVENTS_FILE`。没有录入参考声音时，由 `espeak-ng` 生成中文回复并
-通过 ALSA 播放。录入后，独立 `camera-hub-tts` 进程使用 ZipVoice distill INT8
+通过 ALSA 播放。录入后，`camera-hub worker tts` 组件使用 ZipVoice distill INT8
 生成个人音色 WAV；重新录入或修改回复会重新预生成所有命令回复及统一失败回复，
 命令触发时优先播放缓存。TTS 不可用时自动回退 `espeak-ng`。
 
@@ -324,11 +338,13 @@ boosting score、触发阈值、冷却时间和 0–100 的播报音量。播报
 16-bit PCM WAV；后端限制时长为 3–20 秒、文件不超过 1 MiB。参考声音、文稿和缓存
 保存在 TTS 私有数据目录，文件权限为 `0600`。
 
-公网声纹工作室位于 `/voice-studio`，与 camera-hub Web 共用 80/443，不需要管理
-后台登录或访问口令。页面打开后自动创建 24 小时签名匿名会话，服务重启后会话仍然
-有效，各会话的声音相互隔离，不设置会话数或生成次数配额。模型推理仍按硬件约束
-全局串行；忙时立即返回 429，不保留无界等待请求。参考 WAV、文本长度和输出文件
-大小保留格式边界。模型服务默认仅监听 `127.0.0.1:39081`，不直接暴露公网。
+公网声纹工作室位于 `/voice-studio`，与 camera-hub Web 共用 80/443。管理页的
+“公共语音”子页面显示由 `CAMERA_HUB_PUBLIC_DOMAIN` 生成的规范 URL，并可随时关闭
+或重新开放匿名访问；关闭时页面和公共 API 都返回 404。页面打开后自动创建 24 小时
+签名匿名会话，服务重启后会话仍然有效，各会话的声音相互隔离，不设置会话数或生成
+次数配额。模型推理仍按硬件约束全局串行；忙时立即返回 429，不保留无界等待请求。
+参考 WAV、文本长度和输出文件大小保留格式边界。模型服务默认仅监听
+`127.0.0.1:39081`，不直接暴露公网。
 
 TTS 数据目录默认最多使用 512 MiB，可通过 `CAMERA_HUB_TTS_MAX_DATA_BYTES` 调整。
 达到预算时先清理最旧缓存，再清理最旧的公网临时 profile；默认管理声纹不会被容量
@@ -337,12 +353,33 @@ TTS 数据目录默认最多使用 512 MiB，可通过 `CAMERA_HUB_TTS_MAX_DATA_
 ZipVoice、KWS 和 YOLO 使用同一个跨进程推理锁。MI6 本机只允许一个 TTS 任务且不
 排队，忙时调用方需要稍后重试；缓存未命中时会在整个生成期间暂停 KWS/YOLO 推理，
 缓存命中不执行模型推理。面向持续公网使用时，应在独立 CPU/GPU 节点运行
-`camera-hub-tts`，通过 HTTPS 反向代理后再设置 `CAMERA_HUB_TTS_URL`；客户端会拒绝
+`camera-hub worker tts`，通过 HTTPS 反向代理后再设置 `CAMERA_HUB_TTS_URL`；客户端会拒绝
 非回环地址上的明文 HTTP，避免参考声音在网络中裸传。`/voice-studio` 在没有本地
 证书时只允许回环访问，非本机请求返回 426。
 
-语音与 TTS worker 异常退出后由 LinuxDeploy 启动器自动重启。测试请求超过 60 秒后
-不再执行；事件日志达到 4 MiB 时保留一份滚动历史，Web 查询只读取当前日志尾部。
+语音与 TTS worker 异常退出后由内置组件管理器自动重启。管理页的“服务状态”
+子页面可以设置开机自启并执行启动、停止和重启；启动 Voice 前会先等待 TTS 健康。
+测试请求超过 60 秒后不再执行；事件日志达到 4 MiB 时保留一份滚动历史，Web 查询
+只读取当前日志尾部。
+
+同一页面可按需安装 KWS 和 TTS/Vocos 模型。AssetManager 只接受程序内置的固定
+资源清单，下载时检查预期大小和 SHA-256，拒绝不安全归档路径，并在磁盘空间检查后
+使用同文件系统临时目录原子替换。下载和解压期间 worker 保持运行，仅在最终提交时
+短暂停止；安装完成后按原运行状态重新初始化。模型缓存目录由
+`CAMERA_HUB_ASSET_CACHE_DIR` 指定。sherpa 原生库、`espeak-ng`、设备音频路由和系统
+权限仍由平台安装器提供，Web 不执行 root 命令。
+
+### 红外空调控制
+
+在带 `/dev/peel_ir` 的 LinuxDeploy 设备上，内置组件管理器会运行
+`camera-hub worker ir`。该 worker 只监听 `127.0.0.1:39182`，主 Web 通过登录鉴权
+后的 `/api/v1/ir/actions/:action` 转发固定动作，不接受任意 URL、原始字节或自定义
+波形。驱动输出限制载波频率、脉冲数量、单段时长、总时长和发送频率。
+
+实机验证后，正式动作固定为 RN02S：`ac-on` 使用方案 D（制冷 26°C、自动风并开启
+ECO），`ac-off` 使用方案 B（明确关机），`ac-on-no-eco` 保留方案 C。启动时会以
+只追加方式把“`小雨打开空调`”和“`小雨关闭空调`”合并到现有语音配置，已有同 ID
+或同短语的用户配置不会被覆盖。
 
 检测照片写入 `<data-dir>/<device_id>/snapshot/YYYYMMDD/`，并经同一设备 WebSocket
 回传开发板相册。照片使用推理时的同一帧，按 YOLOX 输出执行 person 框解码和 NMS，
@@ -448,11 +485,13 @@ Termux 等无 Root 平台由适配器覆盖为 8080/8443。HTTPS 使用自签名
 ### 通用 Linux
 
 ```bash
-cargo build --release
-CAMERA_HUB_DATA_DIR=/srv/camera-hub/data ./target/release/camera-hub
+cargo build --release --bin camera-hub
+CAMERA_HUB_DATA_DIR=/srv/camera-hub/data ./target/release/camera-hub server
 ```
 
 程序运行时需要 FFmpeg；启用 AI 时还需要与当前系统 ABI 匹配的 ONNX Runtime。
+需要内置 TTS/Voice worker 时使用 `--features voice-workers` 构建。无论启用哪些
+组件，发布产物都只有一个 `camera-hub` 可执行文件。
 
 ### LinuxDeploy 参考设备
 
@@ -499,7 +538,7 @@ CAMERA_HUB_EDGE_RUNTIME_DIR=/root/maix_dist
 
 #### DNSPod 多设备 DDNS
 
-LinuxDeploy 适配器安装独立 sidecar `camera-hub-ddns`。它从指定网卡选择稳定的公网
+LinuxDeploy 适配器通过 `camera-hub worker ddns` 运行 DDNS 组件。它从指定网卡选择稳定的公网
 `/64` IPv6 地址，保留每台设备配置的后 64 位，并对账 DNSPod 中已存在的默认线路
 AAAA 记录。临时、deprecated、tentative 和 DAD 失败地址不会被选中。
 
@@ -513,9 +552,10 @@ DDNS 在 camera-hub Web 的“DDNS”页面配置。配置和状态分别保存�
 配置文件包含 DNSPod SecretKey，由服务原子写入并固定为 `0600`；Web 只显示密钥
 是否已配置，不会回读。旧版 `camera-hub-ddns.env` 会在首次部署新版时自动迁移。
 
-sidecar 始终随系统启动。Web 中关闭 DDNS 后，它只等待配置变化，不访问 DNSPod；
-保存配置或点击“立即对账”后会立即重新加载，无需 SSH 或重启进程。页面还可以在
-写入 DNSPod 前预览当前公网前缀和各条目标地址。
+组件默认随主服务启动，也可在 DDNS 页面设置自启或执行启动、停止、重启。Web 中
+关闭 DDNS 功能后，worker 只等待配置变化，不访问 DNSPod；保存配置或点击“立即
+对账”后会立即重新加载，无需 SSH 或重启进程。页面还可以在写入 DNSPod 前预览
+当前公网前缀和各条目标地址。
 
 命令行诊断入口继续保留：
 

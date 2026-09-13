@@ -3,6 +3,8 @@
 
     const $ = (id) => document.getElementById(id);
     const ui = {
+        cameraSubnav: $("cameraSubnav"),
+        voiceSubnav: $("voiceSubnav"),
         connection: $("hubConnection"),
         refresh: $("refreshButton"),
         logout: $("logoutButton"),
@@ -38,6 +40,7 @@
         reloadSettings: $("reloadSettings"),
         saveSettings: $("saveSettings"),
         voiceStatus: $("voiceStatus"),
+        voiceProfilePanel: $("voiceProfilePanel"),
         voiceState: $("voiceState"),
         voiceDetected: $("voiceDetected"),
         voiceAudioLevel: $("voiceAudioLevel"),
@@ -64,6 +67,32 @@
         addVoiceCommand: $("addVoiceCommand"),
         reloadVoice: $("reloadVoice"),
         saveVoice: $("saveVoice"),
+        voiceStudioStatus: $("voiceStudioStatus"),
+        voiceStudioForm: $("voiceStudioForm"),
+        voiceStudioEnabled: $("voiceStudioEnabled"),
+        voiceStudioUrl: $("voiceStudioUrl"),
+        openVoiceStudio: $("openVoiceStudio"),
+        copyVoiceStudioUrl: $("copyVoiceStudioUrl"),
+        voiceStudioSessionTtl: $("voiceStudioSessionTtl"),
+        voiceStudioRetention: $("voiceStudioRetention"),
+        voiceStudioReferenceLimit: $("voiceStudioReferenceLimit"),
+        voiceStudioTextLimit: $("voiceStudioTextLimit"),
+        saveVoiceStudio: $("saveVoiceStudio"),
+        voiceServiceControlStatus: $("voiceServiceControlStatus"),
+        voiceServiceControls: $("voiceServiceControls"),
+        ttsServiceState: $("ttsServiceState"),
+        ttsServiceDetail: $("ttsServiceDetail"),
+        ttsServicePid: $("ttsServicePid"),
+        voiceServiceState: $("voiceServiceState"),
+        voiceServiceDetail: $("voiceServiceDetail"),
+        voiceServicePid: $("voiceServicePid"),
+        irStatus: $("irStatus"),
+        irDetail: $("irDetail"),
+        irDevice: $("irDevice"),
+        irPid: $("irPid"),
+        irServiceControls: $("irServiceControls"),
+        irActionList: $("irActionList"),
+        irLastResult: $("irLastResult"),
         qqStatus: $("qqStatus"),
         qqState: $("qqState"),
         qqBotName: $("qqBotName"),
@@ -97,6 +126,9 @@
         ddnsNextAttempt: $("ddnsNextAttempt"),
         ddnsChangedCount: $("ddnsChangedCount"),
         ddnsLastError: $("ddnsLastError"),
+        ddnsProcessState: $("ddnsProcessState"),
+        ddnsProcessPid: $("ddnsProcessPid"),
+        ddnsServiceControls: $("ddnsServiceControls"),
         ddnsForm: $("ddnsForm"),
         ddnsEnabled: $("ddnsEnabled"),
         ddnsDomain: $("ddnsDomain"),
@@ -165,6 +197,8 @@
         device: "",
         date: "",
         view: "overview",
+        cameraView: "live",
+        voiceView: "commands",
         currentRecord: "",
         segmentSeconds: 600,
         timelinePreview: null,
@@ -177,17 +211,34 @@
         voiceRecordTimer: 0,
         voicePreviewUrl: "",
         voiceProfileBusy: false,
+        voiceStudio: null,
+        voiceStudioDirty: false,
+        voiceServicesBusy: false,
+        voiceAssets: null,
+        voiceAssetsBusy: false,
+        voiceAssetsInstalling: false,
+        irBusy: false,
         qqConfig: null,
         qqDirty: false,
         qqBusy: false,
         ddnsConfig: null,
         ddnsDirty: false,
         ddnsBusy: false,
+        ddnsComponentBusy: false,
         ddnsWorkerOnline: false,
         busy: false,
         settingsDirty: false,
         toastTimer: 0,
     };
+    const CAMERA_VIEWS = new Set([
+        "live",
+        "playback",
+        "photos",
+        "settings",
+        "evaluation",
+    ]);
+    const VOICE_VIEWS = new Set(["commands", "profile", "public", "status", "aircon"]);
+    const ROOT_VIEWS = new Set(["overview", "voice", "qq", "ddns"]);
 
     async function api(path, options = {}) {
         const response = await fetch(path, { cache: "no-store", ...options });
@@ -418,8 +469,16 @@
         if (state.voiceBusy) return;
         state.voiceBusy = true;
         try {
-            const body = await api("/api/v1/voice");
+            const [body, servicesBody, assetsBody, irBody] = await Promise.all([
+                api("/api/v1/voice"),
+                api("/api/v1/components"),
+                api("/api/v1/assets"),
+                api("/api/v1/ir"),
+            ]);
             renderVoice(body);
+            renderVoiceAssets(assetsBody && assetsBody.assets || {});
+            renderVoiceServices(servicesBody && servicesBody.components || {});
+            renderIr(irBody && irBody.ir || {}, servicesBody && servicesBody.components || {});
         } catch (error) {
             if (!silent) handleError(error);
         } finally {
@@ -476,7 +535,362 @@
             ui.voiceFailureReply.value = config.failure_reply || "操作失败，请稍后再试";
             renderVoiceCommands(Array.isArray(config.commands) ? config.commands : []);
         }
+        renderVoiceStudio(body && body.public_studio || {});
         renderVoiceEvents(Array.isArray(body.events) ? body.events : []);
+    }
+
+    function renderVoiceStudio(publicStudio) {
+        const enabled = publicStudio.enabled !== false;
+        const url = publicStudio.url || `${location.origin}/voice-studio`;
+        state.voiceStudio = structuredClone(publicStudio);
+        ui.voiceStudioStatus.textContent = enabled ? "已开放" : "已关闭";
+        ui.voiceStudioStatus.className = `chip ${enabled ? "active" : "offline"}`;
+        if (!state.voiceStudioDirty) {
+            ui.voiceStudioEnabled.checked = enabled;
+        }
+        ui.voiceStudioUrl.value = url;
+        ui.openVoiceStudio.href = enabled ? url : "#";
+        ui.openVoiceStudio.classList.toggle("disabled", !enabled);
+        ui.openVoiceStudio.setAttribute("aria-disabled", enabled ? "false" : "true");
+        ui.copyVoiceStudioUrl.disabled = !url;
+        ui.voiceStudioSessionTtl.textContent =
+            `${Number(publicStudio.session_ttl_hours || 24)} 小时`;
+        ui.voiceStudioRetention.textContent =
+            `${Number(publicStudio.profile_retention_hours || 24)} 小时`;
+        const referenceSeconds = publicStudio.reference_seconds || {};
+        ui.voiceStudioReferenceLimit.textContent =
+            `${Number(referenceSeconds.min || 3)}–${Number(referenceSeconds.max || 20)} 秒`;
+        ui.voiceStudioTextLimit.textContent =
+            `最多 ${Number(publicStudio.max_text_chars || 120)} 字`;
+    }
+
+    async function saveVoiceStudioSettings(event) {
+        event.preventDefault();
+        ui.saveVoiceStudio.disabled = true;
+        try {
+            await api("/api/v1/voice-studio/settings", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled: ui.voiceStudioEnabled.checked }),
+            });
+            state.voiceStudioDirty = false;
+            showToast(
+                ui.voiceStudioEnabled.checked
+                    ? "公共语音工作室已开放"
+                    : "公共语音工作室已关闭",
+            );
+            await loadVoice(true);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            ui.saveVoiceStudio.disabled = false;
+        }
+    }
+
+    async function copyVoiceStudioUrl() {
+        const value = ui.voiceStudioUrl.value;
+        if (!value) return;
+        try {
+            await navigator.clipboard.writeText(value);
+        } catch (_) {
+            ui.voiceStudioUrl.select();
+            document.execCommand("copy");
+        }
+        showToast("公共访问链接已复制");
+    }
+
+    function renderVoiceServices(services) {
+        const available = !!services.control_available;
+        ui.voiceServiceControlStatus.textContent = available ? "控制可用" : "仅状态";
+        ui.voiceServiceControlStatus.className = `chip ${available ? "active" : ""}`.trim();
+        renderManagedVoiceService("tts", services.tts || {}, available);
+        renderManagedVoiceService("voice", services.voice || {}, available);
+    }
+
+    function renderIr(ir, components) {
+        const service = components.ir || {};
+        const available = !!ir.available && !!service.healthy;
+        ui.irStatus.textContent = available
+            ? "发射就绪"
+            : service.installed === false ? "设备不可用" : "服务离线";
+        ui.irStatus.className = `chip ${available ? "active" : "offline"}`;
+        ui.irDetail.textContent = ir.detail || service.detail || "--";
+        ui.irDevice.textContent = ir.device || "--";
+        ui.irPid.textContent = service.pid ? String(service.pid) : "--";
+        const autostart = ui.irServiceControls
+            .querySelector('[data-service-autostart="ir"]');
+        autostart.checked = !!service.autostart;
+        autostart.disabled = state.irBusy || !components.control_available;
+        ui.irServiceControls.querySelectorAll("[data-service-control]").forEach((button) => {
+            const action = button.dataset.serviceAction;
+            button.disabled = state.irBusy ||
+                !components.control_available ||
+                !service.installed ||
+                (action === "start" ? service.running : !service.running);
+        });
+        const groups = {
+            control: ui.irActionList.querySelector('[data-ir-action-group="control"]'),
+        };
+        for (const group of Object.values(groups)) group.innerHTML = "";
+        for (const action of Array.isArray(ir.actions) ? ir.actions : []) {
+            const group = groups[action.group];
+            if (!group) continue;
+            group.insertAdjacentHTML("beforeend", `
+                <button class="button ghost ir-action-button" type="button"
+                        data-ir-action="${esc(action.id)}"${available ? "" : " disabled"}>
+                    <strong>${esc(action.label)}</strong>
+                    <small>${esc(action.detail)}</small>
+                </button>`);
+        }
+        if (!(Array.isArray(ir.actions) && ir.actions.length)) {
+            for (const group of Object.values(groups)) {
+                group.innerHTML = '<div class="empty">红外动作不可用</div>';
+            }
+        }
+    }
+
+    async function controlIrService(action) {
+        if (state.irBusy) return;
+        state.irBusy = true;
+        ui.irServiceControls.querySelectorAll("button, input").forEach((control) => {
+            control.disabled = true;
+        });
+        try {
+            await api(`/api/v1/components/ir/${action}`, { method: "POST" });
+            const label = { start: "启动", restart: "重启", stop: "停止" }[action];
+            showToast(`红外服务已${label}`);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.irBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    async function setIrAutostart(enabled) {
+        if (state.irBusy) return;
+        state.irBusy = true;
+        try {
+            await api("/api/v1/components/ir/autostart", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled }),
+            });
+            showToast("红外服务开机自启已更新");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.irBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    async function sendIrAction(action, label) {
+        if (state.irBusy) return;
+        if (!window.confirm(`执行“${label}”？请确认 MI6 红外发射口已对准空调。`)) {
+            return;
+        }
+        state.irBusy = true;
+        ui.irActionList.querySelectorAll("button").forEach((button) => {
+            button.disabled = true;
+        });
+        try {
+            const body = await api(`/api/v1/ir/actions/${action}`, { method: "POST" });
+            const transmission = body.transmission || {};
+            ui.irLastResult.textContent =
+                `${label}已发送 · ${Number(transmission.carrier_hz || 0) / 1000} kHz · ` +
+                `${Number(transmission.pulse_count || 0)} 个脉冲 · ` +
+                `${(Number(transmission.duration_us || 0) / 1000).toFixed(0)} ms`;
+            showToast(`${label}已发送`);
+        } catch (error) {
+            ui.irLastResult.textContent = `发送失败：${error.message || error}`;
+            handleError(error);
+        } finally {
+            state.irBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    function renderVoiceAssets(assets) {
+        state.voiceAssets = structuredClone(assets);
+        state.voiceAssetsInstalling = !!assets.busy;
+        const entries = [
+            ["voice-tts", assets.voice_tts || {}],
+            ["voice-kws", assets.voice_kws || {}],
+        ];
+        const stateLabels = {
+            queued: "等待下载",
+            downloading: "正在下载",
+            verifying: "正在校验",
+            installing: "正在安装",
+            reinitializing: "正在初始化服务",
+            installed: "已安装",
+            missing: "未安装",
+            failed: "安装失败",
+            unsupported: "当前版本不支持",
+        };
+        for (const [id, asset] of entries) {
+            const container = ui.voiceServiceControls
+                .querySelector(`[data-voice-asset="${id}"]`);
+            if (!container) continue;
+            const detail = container.querySelector("[data-asset-detail]");
+            const progress = container.querySelector("[data-asset-progress]");
+            const install = container.querySelector("[data-asset-install]");
+            const active = !!asset.active;
+            const phase = stateLabels[asset.state] || asset.state || "状态未知";
+            if (!asset.supported) {
+                detail.textContent = "当前 binary 未包含 voice-workers 功能";
+            } else if (asset.state === "failed") {
+                detail.textContent = asset.last_error || asset.detail || phase;
+            } else if (active) {
+                detail.textContent =
+                    `${phase} · ${formatBytes(asset.downloaded_bytes)} / ` +
+                    `${formatBytes(asset.download_bytes)}`;
+            } else if (asset.installed) {
+                detail.textContent =
+                    `${asset.version || "当前版本"} · ${formatBytes(asset.installed_bytes)}`;
+            } else {
+                detail.textContent =
+                    `下载 ${formatBytes(asset.download_bytes)} · ` +
+                    `安装需约 ${formatBytes(asset.required_available_bytes)} 可用空间`;
+            }
+            progress.hidden = !active;
+            progress.value = Number(asset.progress_percent || 0);
+            install.textContent = asset.installed ? "重新安装模型" : "安装模型";
+            install.disabled = !asset.installable;
+        }
+    }
+
+    async function loadVoiceAssets(silent = true) {
+        if (state.voiceAssetsBusy || state.voiceBusy) return;
+        state.voiceAssetsBusy = true;
+        let installationFinished = false;
+        try {
+            const body = await api("/api/v1/assets");
+            const wasInstalling = state.voiceAssetsInstalling;
+            renderVoiceAssets(body && body.assets || {});
+            installationFinished = wasInstalling && !state.voiceAssetsInstalling;
+        } catch (error) {
+            if (!silent) handleError(error);
+        } finally {
+            state.voiceAssetsBusy = false;
+        }
+        if (installationFinished) await loadVoice(true);
+    }
+
+    async function installVoiceAsset(assetId) {
+        if (state.voiceAssetsBusy || state.voiceAssetsInstalling) return;
+        const key = assetId === "voice-tts" ? "voice_tts" : "voice_kws";
+        const asset = state.voiceAssets && state.voiceAssets[key] || {};
+        const verb = asset.installed ? "重新安装" : "安装";
+        const message =
+            `${verb}${asset.label || "语音模型"}？需要下载 ` +
+            `${formatBytes(asset.download_bytes)}，安装期间对应服务会短暂停止。`;
+        if (!window.confirm(message)) return;
+        state.voiceAssetsBusy = true;
+        ui.voiceServiceControls.querySelectorAll("[data-asset-install]").forEach((button) => {
+            button.disabled = true;
+        });
+        try {
+            await api(`/api/v1/assets/${assetId}/install`, { method: "POST" });
+            showToast(`${asset.label || "语音模型"}已开始安装`);
+            await loadVoice(true);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.voiceAssetsBusy = false;
+            await loadVoiceAssets(true);
+        }
+    }
+
+    function renderManagedVoiceService(id, service, controlAvailable) {
+        const stateElement = id === "tts" ? ui.ttsServiceState : ui.voiceServiceState;
+        const detailElement = id === "tts" ? ui.ttsServiceDetail : ui.voiceServiceDetail;
+        const pidElement = id === "tts" ? ui.ttsServicePid : ui.voiceServicePid;
+        const labels = {
+            ready: "正常",
+            idle: "空闲",
+            busy: "忙碌",
+            listening: "监听中",
+            disabled: "监听关闭",
+            starting: "启动中",
+            stopped: "已停止",
+            unavailable: "未安装",
+            unhealthy: "异常",
+            "config-error": "配置错误",
+            "audio-error": "音频异常",
+            failed: "启动失败",
+        };
+        stateElement.textContent = labels[service.state] || service.state || "未知";
+        stateElement.className =
+            `chip ${service.healthy ? "active" : service.running ? "" : "offline"}`.trim();
+        detailElement.textContent = service.detail || "--";
+        pidElement.textContent = service.pid ? String(service.pid) : "--";
+        const autostart = ui.voiceServiceControls
+            .querySelector(`[data-service-autostart="${id}"]`);
+        autostart.checked = !!service.autostart;
+        autostart.disabled =
+            state.voiceServicesBusy || state.voiceAssetsInstalling || !controlAvailable;
+        ui.voiceServiceControls
+            .querySelectorAll(`[data-service-control="${id}"]`)
+            .forEach((button) => {
+                const action = button.dataset.serviceAction;
+                button.disabled = state.voiceServicesBusy ||
+                    state.voiceAssetsInstalling ||
+                    !controlAvailable ||
+                    !service.installed ||
+                    (action === "start" ? service.running : !service.running);
+            });
+    }
+
+    async function controlVoiceService(service, action) {
+        if (state.voiceServicesBusy) return;
+        if (action === "stop") {
+            const label = service === "tts" ? "TTS 声纹合成" : "语音识别";
+            const suffix = service === "tts"
+                ? "停止后本机回复会回退系统声音，公共语音也将不可用。"
+                : "停止后将不再监听语音命令。";
+            if (!window.confirm(`确认停止${label}？${suffix}`)) return;
+        }
+        state.voiceServicesBusy = true;
+        ui.voiceServiceControls.querySelectorAll("button, input").forEach((control) => {
+            control.disabled = true;
+        });
+        try {
+            const body = await api(`/api/v1/components/${service}/${action}`, {
+                method: "POST",
+            });
+            renderVoiceServices(body.components || {});
+            const actionLabel = { start: "启动", stop: "停止", restart: "重启" }[action];
+            showToast(`${service === "tts" ? "TTS" : "语音识别"}已${actionLabel}`);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.voiceServicesBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    async function setVoiceServiceAutostart(service, enabled) {
+        if (state.voiceServicesBusy) return;
+        state.voiceServicesBusy = true;
+        ui.voiceServiceControls.querySelectorAll("button, input").forEach((control) => {
+            control.disabled = true;
+        });
+        try {
+            const body = await api(`/api/v1/components/${service}/autostart`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled }),
+            });
+            renderVoiceServices(body.components || {});
+            showToast(`${service === "tts" ? "TTS" : "语音识别"}开机自启已更新`);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.voiceServicesBusy = false;
+            await loadVoice(true);
+        }
     }
 
     function renderVoiceCommands(commands) {
@@ -711,6 +1125,9 @@
     function setVoiceProfileBusy(busy) {
         state.voiceProfileBusy = busy;
         ui.voiceForm.querySelectorAll("input, select, textarea, button").forEach((control) => {
+            control.disabled = busy;
+        });
+        ui.voiceProfilePanel.querySelectorAll("button").forEach((control) => {
             control.disabled = busy;
         });
         ui.reloadVoice.disabled = busy;
@@ -1027,8 +1444,14 @@
         if (state.ddnsBusy) return;
         state.ddnsBusy = true;
         try {
-            const body = await api("/api/v1/ddns");
-            renderDdns(body && body.ddns || {});
+            const [body, componentsBody] = await Promise.all([
+                api("/api/v1/ddns"),
+                api("/api/v1/components"),
+            ]);
+            renderDdns(
+                body && body.ddns || {},
+                componentsBody && componentsBody.components || {},
+            );
         } catch (error) {
             if (!silent) handleError(error);
         } finally {
@@ -1036,7 +1459,7 @@
         }
     }
 
-    function renderDdns(body) {
+    function renderDdns(body, components = {}) {
         const config = body.config || {};
         const status = body.status || {};
         const workerOnline = !!body.worker_online;
@@ -1069,6 +1492,7 @@
         ui.ddnsLastError.textContent = status.last_error || "--";
         ui.ddnsLastError.classList.toggle("error", !!status.last_error);
         ui.reconcileDdns.disabled = !workerOnline || !config.enabled || state.ddnsDirty;
+        renderDdnsComponent(components.ddns || {}, !!components.control_available);
 
         if (!state.ddnsDirty) {
             state.ddnsConfig = structuredClone(config);
@@ -1087,6 +1511,74 @@
             renderDdnsRecords(Array.isArray(config.records) ? config.records : []);
         }
         updateDdnsCredentialRequirements();
+    }
+
+    function renderDdnsComponent(component, controlAvailable) {
+        const labels = {
+            running: "进程运行中",
+            starting: "进程启动中",
+            stopped: "进程已停止",
+            unavailable: "组件不可用",
+        };
+        ui.ddnsProcessState.textContent =
+            labels[component.state] || component.state || "进程状态未知";
+        ui.ddnsProcessState.className =
+            `chip ${component.running ? "active" : "offline"}`;
+        ui.ddnsProcessPid.textContent = component.pid ? String(component.pid) : "--";
+        const autostart = ui.ddnsServiceControls
+            .querySelector('[data-service-autostart="ddns"]');
+        autostart.checked = !!component.autostart;
+        autostart.disabled = state.ddnsComponentBusy || !controlAvailable;
+        ui.ddnsServiceControls.querySelectorAll("[data-service-control]").forEach((button) => {
+            const action = button.dataset.serviceAction;
+            button.disabled = state.ddnsComponentBusy ||
+                !controlAvailable ||
+                !component.installed ||
+                (action === "start" ? component.running : !component.running);
+        });
+    }
+
+    async function controlDdnsComponent(action) {
+        if (state.ddnsComponentBusy) return;
+        if (action === "stop" &&
+            !window.confirm("确认停止 DDNS worker？停止后将不再自动对账域名。")) {
+            return;
+        }
+        state.ddnsComponentBusy = true;
+        ui.ddnsServiceControls.querySelectorAll("button, input").forEach((control) => {
+            control.disabled = true;
+        });
+        try {
+            await api(`/api/v1/components/ddns/${action}`, { method: "POST" });
+            const actionLabel = { start: "启动", stop: "停止", restart: "重启" }[action];
+            showToast(`DDNS worker 已${actionLabel}`);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.ddnsComponentBusy = false;
+            await loadDdns(true);
+        }
+    }
+
+    async function setDdnsAutostart(enabled) {
+        if (state.ddnsComponentBusy) return;
+        state.ddnsComponentBusy = true;
+        ui.ddnsServiceControls.querySelectorAll("button, input").forEach((control) => {
+            control.disabled = true;
+        });
+        try {
+            await api("/api/v1/components/ddns/autostart", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ enabled }),
+            });
+            showToast("DDNS worker 开机自启已更新");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.ddnsComponentBusy = false;
+            await loadDdns(true);
+        }
     }
 
     function renderDdnsRecords(records) {
@@ -2614,6 +3106,47 @@
         ui.voicePlaybackVolumeValue.textContent = `${ui.voicePlaybackVolume.value}%`;
     });
     ui.voiceForm.addEventListener("submit", saveVoice);
+    ui.voiceStudioForm.addEventListener("input", () => {
+        state.voiceStudioDirty = true;
+    });
+    ui.voiceStudioForm.addEventListener("submit", saveVoiceStudioSettings);
+    ui.copyVoiceStudioUrl.addEventListener("click", copyVoiceStudioUrl);
+    ui.openVoiceStudio.addEventListener("click", (event) => {
+        if (ui.openVoiceStudio.getAttribute("aria-disabled") === "true") {
+            event.preventDefault();
+        }
+    });
+    ui.voiceServiceControls.addEventListener("click", (event) => {
+        const assetButton = event.target.closest("[data-asset-install]");
+        if (assetButton) {
+            installVoiceAsset(assetButton.dataset.assetInstall);
+            return;
+        }
+        const button = event.target.closest("[data-service-control]");
+        if (!button) return;
+        controlVoiceService(button.dataset.serviceControl, button.dataset.serviceAction);
+    });
+    ui.voiceServiceControls.addEventListener("change", (event) => {
+        const checkbox = event.target.closest("[data-service-autostart]");
+        if (!checkbox) return;
+        setVoiceServiceAutostart(checkbox.dataset.serviceAutostart, checkbox.checked);
+    });
+    ui.irServiceControls.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-service-control]");
+        if (!button) return;
+        controlIrService(button.dataset.serviceAction);
+    });
+    ui.irServiceControls.addEventListener("change", (event) => {
+        const checkbox = event.target.closest('[data-service-autostart="ir"]');
+        if (!checkbox) return;
+        setIrAutostart(checkbox.checked);
+    });
+    ui.irActionList.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-ir-action]");
+        if (!button) return;
+        const label = button.querySelector("strong")?.textContent || "红外测试";
+        sendIrAction(button.dataset.irAction, label);
+    });
     ui.reloadVoice.addEventListener("click", async () => {
         state.voiceDirty = false;
         await loadVoice();
@@ -2680,6 +3213,16 @@
     });
     ui.previewDdns.addEventListener("click", previewDdns);
     ui.reconcileDdns.addEventListener("click", reconcileDdns);
+    ui.ddnsServiceControls.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-service-control]");
+        if (!button) return;
+        controlDdnsComponent(button.dataset.serviceAction);
+    });
+    ui.ddnsServiceControls.addEventListener("change", (event) => {
+        const checkbox = event.target.closest('[data-service-autostart="ddns"]');
+        if (!checkbox) return;
+        setDdnsAutostart(checkbox.checked);
+    });
     ui.deviceSelect.addEventListener("change", () => selectDevice(ui.deviceSelect.value));
     ui.liveDeviceSelect.addEventListener("change", () => {
         selectDevice(ui.liveDeviceSelect.value);
@@ -2764,43 +3307,90 @@
         seekTimeline(Math.max(0, Math.min(86399, target)));
     });
 
+    function resolveView(view) {
+        const requested = String(view || "").replace(/^#/, "");
+        if (requested === "camera") return state.cameraView;
+        if (requested.startsWith("camera/")) {
+            const cameraView = requested.slice("camera/".length);
+            return CAMERA_VIEWS.has(cameraView) ? cameraView : state.cameraView;
+        }
+        if (requested === "voice") return "voice";
+        if (requested.startsWith("voice/")) {
+            const voiceView = requested.slice("voice/".length);
+            state.voiceView = VOICE_VIEWS.has(voiceView) ? voiceView : state.voiceView;
+            return "voice";
+        }
+        if (CAMERA_VIEWS.has(requested) || ROOT_VIEWS.has(requested)) return requested;
+        return "overview";
+    }
+
+    function canonicalViewHash(view) {
+        if (CAMERA_VIEWS.has(view)) return `camera/${view}`;
+        if (view === "voice") return `voice/${state.voiceView}`;
+        return view;
+    }
+
+    function centerNavigationButton(button) {
+        if (!button?.parentElement) return;
+        const navigation = button.parentElement;
+        navigation.scrollLeft = Math.max(
+            0,
+            button.offsetLeft - (navigation.clientWidth - button.offsetWidth) / 2,
+        );
+    }
+
     function activateView(view, updateHash = true) {
-        const target = [
-            "overview",
-            "live",
-            "evaluation",
-            "voice",
-            "qq",
-            "ddns",
-            "playback",
-            "photos",
-            "settings",
-        ].includes(view)
-            ? view : "overview";
+        const target = resolveView(view);
+        const cameraActive = CAMERA_VIEWS.has(target);
+        const voiceActive = target === "voice";
+        const topLevelTarget = cameraActive ? "camera" : target;
         if (state.view === "live" && target !== "live") stopHubLive();
         if (state.view === "evaluation" && target !== "evaluation") {
             window.CameraHubEvaluation?.stop();
         }
         if (target !== "photos") closePhoto();
         state.view = target;
+        if (cameraActive) state.cameraView = target;
         document.querySelectorAll("[data-view]").forEach((section) => {
             section.hidden = section.dataset.view !== target;
         });
         document.querySelectorAll("[data-view-target]").forEach((button) => {
-            const active = button.dataset.viewTarget === target;
+            const active = button.dataset.viewTarget === topLevelTarget;
             button.classList.toggle("active", active);
             button.setAttribute("aria-current", active ? "page" : "false");
         });
-        const activeNavigation = document.querySelector(`[data-view-target="${target}"]`);
-        if (activeNavigation && activeNavigation.parentElement) {
-            const navigation = activeNavigation.parentElement;
-            navigation.scrollLeft = Math.max(
-                0,
-                activeNavigation.offsetLeft -
-                    (navigation.clientWidth - activeNavigation.offsetWidth) / 2,
+        ui.cameraSubnav.hidden = !cameraActive;
+        ui.voiceSubnav.hidden = !voiceActive;
+        document.querySelectorAll("[data-camera-view-target]").forEach((button) => {
+            const active = button.dataset.cameraViewTarget === target;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        document.querySelectorAll("[data-voice-view]").forEach((section) => {
+            section.hidden = !voiceActive || section.dataset.voiceView !== state.voiceView;
+        });
+        document.querySelectorAll("[data-voice-view-target]").forEach((button) => {
+            const active = button.dataset.voiceViewTarget === state.voiceView;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        centerNavigationButton(
+            document.querySelector(`[data-view-target="${topLevelTarget}"]`),
+        );
+        if (cameraActive) {
+            centerNavigationButton(
+                document.querySelector(`[data-camera-view-target="${target}"]`),
             );
         }
-        if (updateHash) history.replaceState(null, "", `#${target}`);
+        if (voiceActive) {
+            centerNavigationButton(
+                document.querySelector(`[data-voice-view-target="${state.voiceView}"]`),
+            );
+        }
+        const canonicalHash = canonicalViewHash(target);
+        if (updateHash || location.hash.slice(1) !== canonicalHash) {
+            history.replaceState(null, "", `#${canonicalHash}`);
+        }
         if (target === "playback") requestAnimationFrame(resizeTimeline);
         if (target === "photos") loadPhotos();
         if (target === "voice") loadVoice(true);
@@ -2812,6 +3402,14 @@
 
     document.querySelectorAll("[data-view-target]").forEach((button) => {
         button.addEventListener("click", () => activateView(button.dataset.viewTarget));
+    });
+    document.querySelectorAll("[data-camera-view-target]").forEach((button) => {
+        button.addEventListener("click", () => activateView(button.dataset.cameraViewTarget));
+    });
+    document.querySelectorAll("[data-voice-view-target]").forEach((button) => {
+        button.addEventListener("click", () => {
+            activateView(`voice/${button.dataset.voiceViewTarget}`);
+        });
     });
     window.addEventListener("hashchange", () => {
         activateView(location.hash.slice(1), false);
@@ -2828,5 +3426,10 @@
         if (state.view === "qq" && !state.qqDirty) loadQq(true);
         if (state.view === "ddns" && !state.ddnsDirty) loadDdns(true);
     }, 5_000);
+    setInterval(() => {
+        if (state.view === "voice" && state.voiceAssetsInstalling) {
+            loadVoiceAssets(true);
+        }
+    }, 1_000);
     refreshAll(true);
 })();

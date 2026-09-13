@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <title>camera-hub</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260811-5">
-    <link rel="stylesheet" href="/style.css?v=20260911-1">
+    <link rel="stylesheet" href="/style.css?v=20260913-4">
 </head>
 <body>
     <div class="backdrop"></div>
@@ -38,14 +38,28 @@
     <main class="shell">
         <nav class="section-nav" aria-label="功能分区">
             <button type="button" class="active" data-view-target="overview">运行概览</button>
-            <button type="button" data-view-target="live">实时直播</button>
-            <button type="button" data-view-target="evaluation">协议评测</button>
+            <button type="button" data-view-target="camera">摄像头</button>
             <button type="button" data-view-target="voice">语音控制</button>
             <button type="button" data-view-target="qq">QQ 机器人</button>
             <button type="button" data-view-target="ddns">DDNS</button>
-            <button type="button" data-view-target="playback">录像回放</button>
-            <button type="button" data-view-target="photos">AI 相册</button>
-            <button type="button" data-view-target="settings">节点设置</button>
+        </nav>
+
+        <nav class="context-subnav" id="cameraSubnav"
+             aria-label="摄像头功能" role="tablist" hidden>
+            <button type="button" role="tab" data-camera-view-target="live">实时直播</button>
+            <button type="button" role="tab" data-camera-view-target="playback">录像回放</button>
+            <button type="button" role="tab" data-camera-view-target="photos">AI 相册</button>
+            <button type="button" role="tab" data-camera-view-target="settings">录像与 AI 设置</button>
+            <button type="button" role="tab" data-camera-view-target="evaluation">协议评测</button>
+        </nav>
+
+        <nav class="context-subnav" id="voiceSubnav"
+             aria-label="语音功能" role="tablist" hidden>
+            <button type="button" role="tab" data-voice-view-target="commands">语音命令</button>
+            <button type="button" role="tab" data-voice-view-target="profile">回复声纹</button>
+            <button type="button" role="tab" data-voice-view-target="public">公共语音</button>
+            <button type="button" role="tab" data-voice-view-target="status">服务状态</button>
+            <button type="button" role="tab" data-voice-view-target="aircon">空调控制</button>
         </nav>
 
         <section class="hero" data-view="overview">
@@ -282,12 +296,197 @@
         </section>
 
         <section class="view-heading" data-view="voice" hidden>
-            <p class="eyebrow">LOCAL VOICE CONTROL</p>
-            <h1>离线关键词与硬件动作</h1>
-            <p>在小米 6 本机持续识别固定中文命令，请求对应接口后通过扬声器播报结果。</p>
+            <p class="eyebrow">VOICE SERVICES</p>
+            <h1>语音与声纹服务</h1>
+            <p>管理本机离线语音控制、回复声纹和公共语音工作室。</p>
         </section>
 
-        <section class="panel voice-panel" data-view="voice" hidden>
+        <section class="panel voice-panel voice-profile" data-view="voice"
+                 data-voice-view="profile" id="voiceProfilePanel" hidden>
+            <div>
+                <p class="eyebrow">VOICE PROFILE</p>
+                <h2>回复声纹</h2>
+                <p id="voiceReferencePrompt" class="voice-reference-prompt">--</p>
+                <p id="voiceReferenceStatus" class="muted">尚未录入，继续使用系统声音</p>
+            </div>
+            <div class="voice-profile-actions">
+                <button class="button primary" id="recordVoiceReference" type="button">
+                    开始录音
+                </button>
+                <button class="button ghost" id="stopVoiceReference" type="button" disabled>
+                    停止并录入
+                </button>
+                <button class="button danger" id="deleteVoiceReference" type="button">
+                    删除声纹
+                </button>
+            </div>
+            <audio id="voiceReferencePreview" controls hidden></audio>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice"
+                 data-voice-view="public" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">PUBLIC VOICE STUDIO</p>
+                    <h2>公共语音工作室</h2>
+                </div>
+                <span class="chip" id="voiceStudioStatus">等待加载</span>
+            </div>
+            <form id="voiceStudioForm">
+                <label class="toggle">
+                    <input type="checkbox" id="voiceStudioEnabled">
+                    <span>允许匿名用户录入临时声纹并生成语音</span>
+                </label>
+                <div class="voice-studio-public-grid">
+                    <label>
+                        <span>公共访问 URL</span>
+                        <input id="voiceStudioUrl" type="url" readonly>
+                    </label>
+                    <div class="voice-studio-public-actions">
+                        <a class="button ghost" id="openVoiceStudio"
+                           href="/voice-studio" target="_blank" rel="noopener">打开页面</a>
+                        <button class="button ghost" id="copyVoiceStudioUrl"
+                                type="button">复制链接</button>
+                    </div>
+                </div>
+                <dl class="voice-studio-policy">
+                    <div><dt>访问方式</dt><dd>匿名 HTTPS</dd></div>
+                    <div><dt>会话有效期</dt><dd id="voiceStudioSessionTtl">24 小时</dd></div>
+                    <div><dt>临时声纹保留</dt><dd id="voiceStudioRetention">24 小时</dd></div>
+                    <div><dt>参考录音</dt><dd id="voiceStudioReferenceLimit">3–20 秒</dd></div>
+                    <div><dt>单次文本</dt><dd id="voiceStudioTextLimit">最多 120 字</dd></div>
+                    <div><dt>生成并发</dt><dd>单任务串行</dd></div>
+                </dl>
+                <div class="settings-actions">
+                    <button class="button primary" id="saveVoiceStudio"
+                            type="submit">保存公共访问设置</button>
+                </div>
+            </form>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice"
+                 data-voice-view="status" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">PROCESS CONTROL</p>
+                    <h2>语音服务进程</h2>
+                </div>
+                <span class="chip" id="voiceServiceControlStatus">等待加载</span>
+            </div>
+            <div class="voice-service-list" id="voiceServiceControls">
+                <article class="voice-service-row" data-voice-service="tts">
+                    <div>
+                        <span class="chip" id="ttsServiceState">等待加载</span>
+                        <h3>TTS 声纹合成</h3>
+                        <p id="ttsServiceDetail">正在读取进程状态</p>
+                        <small>PID <code id="ttsServicePid">--</code></small>
+                        <label class="toggle voice-service-autostart">
+                            <input type="checkbox" data-service-autostart="tts">
+                            <span>开机自动启动</span>
+                        </label>
+                        <div class="voice-asset" data-voice-asset="voice-tts">
+                            <div>
+                                <strong>声纹模型</strong>
+                                <small data-asset-detail>正在读取模型状态</small>
+                            </div>
+                            <progress data-asset-progress max="100" value="0" hidden></progress>
+                            <button class="button ghost" type="button"
+                                    data-asset-install="voice-tts">安装模型</button>
+                        </div>
+                    </div>
+                    <div class="voice-service-actions">
+                        <button class="button ghost" type="button"
+                                data-service-control="tts" data-service-action="start">启动</button>
+                        <button class="button ghost" type="button"
+                                data-service-control="tts" data-service-action="restart">重启</button>
+                        <button class="button danger" type="button"
+                                data-service-control="tts" data-service-action="stop">停止</button>
+                    </div>
+                </article>
+                <article class="voice-service-row" data-voice-service="voice">
+                    <div>
+                        <span class="chip" id="voiceServiceState">等待加载</span>
+                        <h3>语音识别</h3>
+                        <p id="voiceServiceDetail">正在读取进程状态</p>
+                        <small>PID <code id="voiceServicePid">--</code></small>
+                        <label class="toggle voice-service-autostart">
+                            <input type="checkbox" data-service-autostart="voice">
+                            <span>开机自动启动</span>
+                        </label>
+                        <div class="voice-asset" data-voice-asset="voice-kws">
+                            <div>
+                                <strong>关键词识别模型</strong>
+                                <small data-asset-detail>正在读取模型状态</small>
+                            </div>
+                            <progress data-asset-progress max="100" value="0" hidden></progress>
+                            <button class="button ghost" type="button"
+                                    data-asset-install="voice-kws">安装模型</button>
+                        </div>
+                    </div>
+                    <div class="voice-service-actions">
+                        <button class="button ghost" type="button"
+                                data-service-control="voice" data-service-action="start">启动</button>
+                        <button class="button ghost" type="button"
+                                data-service-control="voice" data-service-action="restart">重启</button>
+                        <button class="button danger" type="button"
+                                data-service-control="voice" data-service-action="stop">停止</button>
+                    </div>
+                </article>
+            </div>
+        </section>
+
+        <section class="panel voice-panel ir-panel" data-view="voice"
+                 data-voice-view="aircon" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">AIR CONDITIONER</p>
+                    <h2>美的空调控制</h2>
+                </div>
+                <span class="chip offline" id="irStatus">等待加载</span>
+            </div>
+            <div class="ir-runtime">
+                <div>
+                    <dt>运行信息</dt>
+                    <dd id="irDetail">正在读取红外设备状态</dd>
+                </div>
+                <div>
+                    <dt>设备</dt>
+                    <dd><code id="irDevice">--</code></dd>
+                </div>
+                <div>
+                    <dt>PID</dt>
+                    <dd><code id="irPid">--</code></dd>
+                </div>
+            </div>
+            <div class="ir-service-controls" id="irServiceControls">
+                <label class="toggle">
+                    <input type="checkbox" data-service-autostart="ir">
+                    <span>开机自动启动红外服务</span>
+                </label>
+                <div class="voice-service-actions">
+                    <button class="button ghost" type="button"
+                            data-service-control="ir" data-service-action="start">启动</button>
+                    <button class="button ghost" type="button"
+                            data-service-control="ir" data-service-action="restart">重启</button>
+                    <button class="button danger" type="button"
+                            data-service-control="ir" data-service-action="stop">停止</button>
+                </div>
+            </div>
+            <div class="ir-test-groups" id="irActionList">
+                <section class="ir-primary-actions">
+                    <h3>已验证控制</h3>
+                    <p>“打开空调”使用方案 D，“关闭空调”使用方案 B；也可仅设置制冷 26°C 而不改变 ECO。</p>
+                    <div class="ir-action-grid" data-ir-action-group="control"></div>
+                </section>
+            </div>
+            <p class="ir-voice-phrases">
+                语音命令：<code>小雨打开空调</code>、<code>小雨关闭空调</code>
+            </p>
+            <p class="ir-last-result" id="irLastResult">尚未发送控制信号</p>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice"
+                 data-voice-view="status" hidden>
             <div class="panel-heading">
                 <div>
                     <p class="eyebrow">KEYWORD WORKER</p>
@@ -305,7 +504,8 @@
             </dl>
         </section>
 
-        <section class="panel voice-panel" data-view="voice" hidden>
+        <section class="panel voice-panel" data-view="voice"
+                 data-voice-view="commands" hidden>
             <div class="panel-heading">
                 <div>
                     <p class="eyebrow">VOICE AUTOMATION</p>
@@ -314,26 +514,6 @@
                 <button class="button ghost" id="reloadVoice" type="button">重新加载</button>
             </div>
             <form id="voiceForm">
-                <section class="voice-profile">
-                    <div>
-                        <p class="eyebrow">VOICE PROFILE</p>
-                        <h3>回复声纹</h3>
-                        <p id="voiceReferencePrompt" class="voice-reference-prompt">--</p>
-                        <p id="voiceReferenceStatus" class="muted">尚未录入，继续使用系统声音</p>
-                    </div>
-                    <div class="voice-profile-actions">
-                        <button class="button primary" id="recordVoiceReference" type="button">
-                            开始录音
-                        </button>
-                        <button class="button ghost" id="stopVoiceReference" type="button" disabled>
-                            停止并录入
-                        </button>
-                        <button class="button danger" id="deleteVoiceReference" type="button">
-                            删除声纹
-                        </button>
-                    </div>
-                    <audio id="voiceReferencePreview" controls hidden></audio>
-                </section>
                 <div class="voice-global-grid">
                     <label class="toggle">
                         <input type="checkbox" id="voiceEnabled">
@@ -381,7 +561,8 @@
             </form>
         </section>
 
-        <section class="panel voice-panel" data-view="voice" hidden>
+        <section class="panel voice-panel" data-view="voice"
+                 data-voice-view="status" hidden>
             <div class="panel-heading">
                 <div>
                     <p class="eyebrow">ACTION LOG</p>
@@ -544,6 +725,24 @@
                 <div><dt>最近变更</dt><dd id="ddnsChangedCount">0 条</dd></div>
                 <div class="ddns-error-row"><dt>最近错误</dt><dd id="ddnsLastError">--</dd></div>
             </dl>
+            <div class="ddns-service-control" id="ddnsServiceControls">
+                <div class="ddns-service-meta">
+                    <span class="chip offline" id="ddnsProcessState">进程状态未知</span>
+                    <small>PID <code id="ddnsProcessPid">--</code></small>
+                    <label class="toggle">
+                        <input type="checkbox" data-service-autostart="ddns">
+                        <span>开机自动启动</span>
+                    </label>
+                </div>
+                <div class="voice-service-actions">
+                    <button class="button ghost" type="button"
+                            data-service-control="ddns" data-service-action="start">启动</button>
+                    <button class="button ghost" type="button"
+                            data-service-control="ddns" data-service-action="restart">重启</button>
+                    <button class="button danger" type="button"
+                            data-service-control="ddns" data-service-action="stop">停止</button>
+                </div>
+            </div>
         </section>
 
         <section class="panel ddns-panel" data-view="ddns" hidden>
@@ -636,16 +835,16 @@
         </section>
 
         <section class="view-heading" data-view="settings" hidden>
-            <p class="eyebrow">HUB SETTINGS</p>
-            <h1>camera-hub 服务设置</h1>
-            <p>只管理 camera-hub 自身的 ONNX AI、录像和清理策略。</p>
+            <p class="eyebrow">CAMERA POLICY</p>
+            <h1>录像与 AI 设置</h1>
+            <p>管理当前摄像头节点的 ONNX AI、录像和清理策略。</p>
         </section>
 
         <section class="panel settings-panel" data-view="settings" hidden>
             <div class="panel-heading">
                 <div>
-                    <p class="eyebrow">HUB SETTINGS</p>
-                    <h2>camera-hub 配置</h2>
+                    <p class="eyebrow">CAMERA SETTINGS</p>
+                    <h2>录像与检测策略</h2>
                 </div>
                 <span class="chip" id="settingsStatus">等待加载</span>
             </div>
@@ -845,6 +1044,6 @@
     <script type="module" src="/generated/flv-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/moq-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/evaluation.js?v=20260813-2"></script>
-    <script src="/app.js?v=20260911-1" defer></script>
+    <script src="/app.js?v=20260913-4" defer></script>
 </body>
 </html>

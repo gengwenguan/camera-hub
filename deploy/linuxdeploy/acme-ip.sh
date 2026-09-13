@@ -94,12 +94,13 @@ sed -i '/^CAMERA_HUB_PUBLIC_HOST=/d' "$ENV_FILE"
 printf "CAMERA_HUB_PUBLIC_HOST='%s'\n" "$PUBLIC_DOMAIN" >> "$ENV_FILE"
 
 if [ "$OLD_SUM" != "$NEW_SUM" ]; then
-    pkill -x camera-hub 2>/dev/null || true
+    pkill -f '^/usr/local/bin/camera-hub server( |$)' 2>/dev/null || true
     pkill -f '[c]amera-hub-mux' 2>/dev/null || true
     pkill -f '[c]amera-hub-opus' 2>/dev/null || true
-    su -s /bin/sh android -c \
-        'nohup /usr/local/bin/camera-hub-start > /home/android/camera-hub.log 2>&1 &'
-    sleep 3
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        curl -g -fsS 'http://[::1]/health' >/dev/null 2>&1 && break
+        sleep 1
+    done
 fi
 
 openssl x509 -in "$CERT_FILE" -noout -subject -issuer -dates -ext subjectAltName

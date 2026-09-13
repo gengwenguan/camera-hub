@@ -1,5 +1,7 @@
 use crate::config::Config;
-use crate::voice_config::{VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceWorkerStatus};
+use crate::voice_config::{
+    VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceWorkerStatus,
+};
 use crate::voice_tts::{
     DEFAULT_VOICE_PROFILE_ID, TtsProfileResponse, VOICE_REFERENCE_PROMPT, VoiceReferenceUpload,
     VoiceTtsClient, decode_reference_audio,
@@ -39,7 +41,7 @@ pub struct VoiceService {
 
 impl VoiceService {
     pub fn load(config: &Config) -> Result<Self> {
-        let current = match fs::read(&config.voice_config_file) {
+        let mut current = match fs::read(&config.voice_config_file) {
             Ok(data) => match serde_json::from_slice::<VoiceConfig>(&data)
                 .with_context(|| {
                     format!("parse voice config {}", config.voice_config_file.display())
@@ -64,6 +66,7 @@ impl VoiceService {
             }
             Err(error) => return Err(error.into()),
         };
+        let commands_added = merge_air_conditioner_commands(&mut current, &config.ir_url)?;
         let service = Self {
             config_path: config.voice_config_file.clone(),
             status_path: config.voice_status_file.clone(),
@@ -74,7 +77,7 @@ impl VoiceService {
             profile_update: AsyncMutex::new(()),
             tts: VoiceTtsClient::new(&config.tts_url, &config.tts_token)?,
         };
-        if !service.config_path.is_file() {
+        if !service.config_path.is_file() || commands_added {
             service.save(&service.current())?;
         }
         Ok(service)
@@ -232,6 +235,57 @@ impl VoiceService {
     }
 }
 
+fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Result<bool> {
+    let base_url = ir_url.trim_end_matches('/');
+    let candidates = [
+        VoiceCommand {
+            id: "ac-on".to_owned(),
+            enabled: true,
+            phrase: "小雨打开空调".to_owned(),
+            reply: "好的，空调已设置为制冷二十六度并开启节能模式".to_owned(),
+            method: "POST".to_owned(),
+            url: format!("{base_url}/v1/actions/ac-on"),
+            body: String::new(),
+            boosting_score: 1.5,
+            trigger_threshold: 0.45,
+            cooldown_ms: 5_000,
+        },
+        VoiceCommand {
+            id: "ac-off".to_owned(),
+            enabled: true,
+            phrase: "小雨关闭空调".to_owned(),
+            reply: "好的，空调已关闭".to_owned(),
+            method: "POST".to_owned(),
+            url: format!("{base_url}/v1/actions/ac-off"),
+            body: String::new(),
+            boosting_score: 1.5,
+            trigger_threshold: 0.45,
+            cooldown_ms: 5_000,
+        },
+    ];
+    let mut changed = false;
+    for command in candidates {
+        if config.commands.len() >= 32 {
+            warn!("voice command limit reached; skip built-in air conditioner commands");
+            break;
+        }
+        if config
+            .commands
+            .iter()
+            .any(|current| current.id == command.id || current.phrase == command.phrase)
+        {
+            continue;
+        }
+        config.commands.push(command);
+        changed = true;
+    }
+    if changed {
+        config.revision = config.revision.saturating_add(1);
+        *config = config.clone().normalize()?;
+    }
+    Ok(changed)
+}
+
 fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -350,5 +404,26 @@ mod tests {
         let stored: VoiceConfig = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(stored, fallback);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn merges_air_conditioner_commands_without_overwriting_existing_commands() {
+        let mut config = VoiceConfig::default();
+        let original = config.commands.clone();
+        assert!(merge_air_conditioner_commands(&mut config, "http://127.0.0.1:39182/").unwrap());
+        assert_eq!(&config.commands[..original.len()], original.as_slice());
+        assert!(config.commands.iter().any(|command| {
+            command.id == "ac-on"
+                && command.enabled
+                && command.url == "http://127.0.0.1:39182/v1/actions/ac-on"
+        }));
+        assert!(config.commands.iter().any(|command| {
+            command.id == "ac-off"
+                && command.enabled
+                && command.url == "http://127.0.0.1:39182/v1/actions/ac-off"
+        }));
+        let revision = config.revision;
+        assert!(!merge_air_conditioner_commands(&mut config, "http://example.invalid").unwrap());
+        assert_eq!(config.revision, revision);
     }
 }

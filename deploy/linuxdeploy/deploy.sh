@@ -142,12 +142,9 @@ build_remote() {
         . /home/android/.cargo/env
         cd '${REMOTE_DIR}'
         SHERPA_ONNX_ARCHIVE_DIR='/home/android/camera-voice/cache' \
-        cargo build --release --bins \
+        cargo build --release --bin camera-hub --features voice-workers \
             --config 'patch.\"https://github.com/gengwenguan/webrtc\".webrtc.path=\"${WEBRTC_REMOTE_DIR}/webrtc\"'
         test -x target/release/camera-hub
-        test -x target/release/camera-hub-ddns
-        test -x target/release/camera-hub-voice
-        test -x target/release/camera-hub-tts
     "
 }
 
@@ -155,10 +152,7 @@ install_remote() {
     # HUB_HOST may be a DNS name. The installer and ACME helper discover the
     # current public IPv6 locally instead of treating the SSH endpoint as an IP SAN.
     remote "sudo -n sh '${REMOTE_DIR}/deploy/linuxdeploy/install.sh' \
-        '${REMOTE_DIR}/target/release/camera-hub' '' \
-        '${REMOTE_DIR}/target/release/camera-hub-ddns' \
-        '${REMOTE_DIR}/target/release/camera-hub-voice' \
-        '${REMOTE_DIR}/target/release/camera-hub-tts'"
+        '${REMOTE_DIR}/target/release/camera-hub' ''"
 }
 
 case "${ACTION}" in
@@ -207,28 +201,19 @@ case "${ACTION}" in
         remote "set -a
             . /home/android/.config/camera-hub.env
             set +a
-            /usr/local/bin/camera-hub-ddns --dry-run"
+            /usr/local/bin/camera-hub worker ddns --dry-run"
         ;;
     ddns-once)
         remote "set -a
             . /home/android/.config/camera-hub.env
             set +a
-            /usr/local/bin/camera-hub-ddns --once"
-        ;;
-    ddns-start)
-        remote "set -e
-            if ! pgrep -x camera-hub-ddns >/dev/null; then
-                nohup /usr/local/bin/camera-hub-ddns-start \
-                    >/home/android/camera-hub-ddns.log 2>&1 </dev/null &
-            fi
-            sleep 1
-            pgrep -af camera-hub-ddns"
+            /usr/local/bin/camera-hub worker ddns --once"
         ;;
     ddns-log)
         remote "tail -n 200 -f /home/android/camera-hub-ddns.log"
         ;;
     *)
-        echo "usage: $0 [sync|build|push|ai-assets|voice-assets|status|log|voice-log|tts-log|ddns-dry-run|ddns-once|ddns-start|ddns-log]" >&2
+        echo "usage: $0 [sync|build|push|ai-assets|voice-assets|status|log|voice-log|tts-log|ddns-dry-run|ddns-once|ddns-log]" >&2
         exit 2
         ;;
 esac

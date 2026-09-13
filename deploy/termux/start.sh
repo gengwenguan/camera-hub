@@ -13,4 +13,4 @@ fi
 set -a
 . "${ENV_FILE}"
 set +a
-exec "${PREFIX}/bin/camera-hub"
+exec "${PREFIX}/bin/camera-hub" server

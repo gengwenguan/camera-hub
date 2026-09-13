@@ -655,6 +655,7 @@ mod tests {
                     max_bytes: 1024 * 1024,
                     retain_days: 7,
                     record_enabled: true,
+                    voice_studio_enabled: true,
                 },
             )
             .unwrap(),
@@ -704,6 +705,7 @@ mod tests {
                     max_bytes: 1024 * 1024 * 1024,
                     retain_days: 7,
                     record_enabled: true,
+                    voice_studio_enabled: true,
                 },
             )
             .unwrap(),

@@ -1,8 +1,8 @@
-#[path = "../inference_lock.rs"]
-mod inference_lock;
-#[path = "../voice_tts.rs"]
-mod voice_tts;
-
+use crate::inference_lock::InferenceLock;
+use crate::voice_tts::{
+    MAX_GENERATION_MILLIS, MAX_SYNTHESIZED_WAV_BYTES, TtsEnrollRequest, TtsProfileResponse,
+    TtsSynthesizeRequest, decode_reference_audio, valid_profile_id, validate_synthesis_text,
+};
 use anyhow::{Context, Result, bail};
 use axum::body::Body;
 use axum::extract::{DefaultBodyLimit, Path, State};
@@ -12,13 +12,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use clap::Parser;
-use inference_lock::InferenceLock;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use sherpa_onnx::{
     GenerationConfig, OfflineTts, OfflineTtsConfig, OfflineTtsModelConfig,
     OfflineTtsZipvoiceModelConfig, Wave,
 };
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::net::{IpAddr, SocketAddr};
@@ -30,10 +30,6 @@ use tokio::net::TcpListener;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
-use voice_tts::{
-    MAX_GENERATION_MILLIS, MAX_SYNTHESIZED_WAV_BYTES, TtsEnrollRequest, TtsProfileResponse,
-    TtsSynthesizeRequest, decode_reference_audio, valid_profile_id, validate_synthesis_text,
-};
 
 const PROFILE_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
 const MAX_CONCURRENT_GENERATIONS: usize = 1;
@@ -42,7 +38,11 @@ const MAX_CACHE_FILES_PER_PROFILE: usize = 128;
 const MIN_DATA_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Local ZipVoice synthesis service for camera-hub")]
+#[command(
+    name = "camera-hub worker tts",
+    version,
+    about = "Local ZipVoice synthesis service for camera-hub"
+)]
 struct Args {
     #[arg(long, env = "CAMERA_HUB_TTS_BIND", default_value = "127.0.0.1:39081")]
     bind: SocketAddr,
@@ -110,8 +110,7 @@ struct SynthesisTask {
     max_data_bytes: u64,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run(args: Vec<OsString>) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -119,7 +118,7 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|_| EnvFilter::new("camera_hub_tts=info")),
         )
         .init();
-    let args = Args::parse();
+    let args = Args::parse_from(args);
     if !is_loopback(args.bind.ip()) && args.token.len() < 16 {
         bail!("TTS 绑定非回环地址时必须配置至少 16 个字符的 CAMERA_HUB_TTS_TOKEN");
     }

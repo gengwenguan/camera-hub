@@ -1,11 +1,15 @@
 mod ai;
+mod asset_manager;
 mod auth;
 mod benchmark;
+mod component_manager;
 mod config;
 mod ddns_control;
 mod flv_live;
 mod frames;
 mod inference_lock;
+mod ir;
+mod ir_control;
 mod live;
 mod media;
 mod moq_live;
@@ -21,11 +25,15 @@ mod voice_studio;
 mod voice_tts;
 mod web;
 mod webrtc_live;
+mod workers;
 
 use crate::ai::AiService;
+use crate::asset_manager::AssetManager;
+use crate::component_manager::ComponentManager;
 use crate::config::Config;
 use crate::ddns_control::DdnsControl;
 use crate::frames::FrameHub;
+use crate::ir_control::IrControl;
 use crate::media::MediaStore;
 use crate::qq::{QqConfigUpdate, QqNotifyError, QqNotifyRequest, QqService};
 use crate::settings::{HubSettings, HubSettingsPatch, HubSettingsStore};
@@ -36,7 +44,7 @@ use crate::voice_studio::{VoiceStudio, VoiceStudioError};
 use crate::voice_tts::{
     VoiceReferenceUpload, VoiceStudioReferenceRequest, VoiceStudioSynthesizeRequest,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::body::{Body, Bytes};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Path, Query, State};
@@ -51,6 +59,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashSet;
+use std::ffi::OsString;
 use std::fs;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -62,8 +71,56 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
+#[derive(Deserialize)]
+struct VoiceStudioSettingsUpdate {
+    enabled: bool,
+}
+
+#[derive(Deserialize)]
+struct ComponentAutostartUpdate {
+    enabled: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    let arguments = std::env::args_os().collect::<Vec<_>>();
+    if arguments.get(1).and_then(|value| value.to_str()) == Some("worker") {
+        return run_worker_command(&arguments).await;
+    }
+    let server_arguments = if arguments.get(1).and_then(|value| value.to_str()) == Some("server") {
+        std::iter::once(arguments[0].clone())
+            .chain(arguments.iter().skip(2).cloned())
+            .collect()
+    } else {
+        arguments
+    };
+    run_server(server_arguments).await
+}
+
+async fn run_worker_command(arguments: &[OsString]) -> Result<()> {
+    let role = arguments
+        .get(2)
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| anyhow::anyhow!("usage: camera-hub worker [tts|voice|ddns|ir] [options]"))?;
+    let worker_arguments = std::iter::once(OsString::from(format!("camera-hub worker {role}")))
+        .chain(arguments.iter().skip(3).cloned())
+        .collect::<Vec<_>>();
+    match role {
+        "ddns" => workers::ddns::run(worker_arguments).await,
+        "ir" => workers::ir::run(worker_arguments).await,
+        #[cfg(feature = "voice-workers")]
+        "tts" => workers::tts::run(worker_arguments).await,
+        #[cfg(feature = "voice-workers")]
+        "voice" => workers::voice::run(worker_arguments).await,
+        #[cfg(not(feature = "voice-workers"))]
+        "tts" | "voice" => {
+            bail!("worker {role} is unavailable; rebuild camera-hub with --features voice-workers")
+        }
+        _ => bail!("unknown camera-hub worker: {role}"),
+    }
+}
+
+async fn run_server(arguments: Vec<OsString>) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -71,7 +128,7 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    let mut config = Config::parse().normalize();
+    let mut config = Config::parse_from(arguments).normalize();
     let web_auth = Arc::new(auth::WebAuth::new(
         config.web_username.clone(),
         config.web_password.clone(),
@@ -89,6 +146,9 @@ async fn main() -> Result<()> {
         config.ddns_config_file.clone(),
         config.ddns_status_file.clone(),
     )?);
+    let components = ComponentManager::start(&config)?;
+    let ir = Arc::new(IrControl::new(&config)?);
+    let assets = AssetManager::new(&config, components.clone())?;
     let voice = Arc::new(VoiceService::load(&config)?);
     let voice_studio = Arc::new(VoiceStudio::new(&config)?);
     let state = Arc::new(AppState::new(
@@ -99,6 +159,9 @@ async fn main() -> Result<()> {
             ai: ai.clone(),
             qq,
             ddns,
+            ir,
+            assets,
+            components,
             voice,
             voice_studio,
             frames,
@@ -112,7 +175,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/", get(web::index))
         .route("/app.js", get(web::app))
-        .route("/voice-studio", get(web::voice_studio))
+        .route("/voice-studio", get(voice_studio_page))
         .route("/voice-studio.js", get(web::voice_studio_app))
         .route("/voice-studio.css", get(web::voice_studio_style))
         .route("/generated/flv-player.js", get(web::flv_player))
@@ -143,9 +206,22 @@ async fn main() -> Result<()> {
         .route("/api/v1/integrations/qq/notify", post(qq_notify_external))
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
+        .route("/api/v1/ir", get(ir_overview))
+        .route("/api/v1/ir/actions/{action}", post(send_ir_action))
+        .route("/api/v1/assets", get(assets_overview))
+        .route("/api/v1/assets/{asset}/install", post(install_asset))
+        .route("/api/v1/components", get(components_overview))
+        .route(
+            "/api/v1/components/{component}/{action}",
+            post(control_component).put(update_component_autostart),
+        )
         .route(
             "/api/v1/voice/reference",
             put(enroll_voice_reference).delete(delete_voice_reference),
+        )
+        .route(
+            "/api/v1/voice-studio/settings",
+            put(update_voice_studio_settings),
         )
         .route(
             "/api/v1/public/voice-studio/session",
@@ -208,7 +284,7 @@ async fn main() -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn(auth::require_auth))
         .layer(Extension(web_auth))
-        .with_state(state);
+        .with_state(state.clone());
 
     let tls_available = config.tls_cert.is_file() && config.tls_key.is_file();
     let mut tls_task = None;
@@ -245,7 +321,7 @@ async fn main() -> Result<()> {
         data_dir = %config.data_dir.display(),
         "camera-hub started"
     );
-    axum::serve(
+    let serve_result = axum::serve(
         listener,
         app.layer(Extension(auth::TransportSecurity {
             secure: false,
@@ -254,11 +330,12 @@ async fn main() -> Result<()> {
         .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("serve camera-hub")?;
+    .await;
+    state.components.shutdown().await;
     if let Some(task) = tls_task {
         task.abort();
     }
+    serve_result.context("serve camera-hub")?;
     Ok(())
 }
 
@@ -906,18 +983,140 @@ fn qq_notify_error(error: QqNotifyError) -> ApiError {
 
 async fn voice_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     let (config_path, status_path, events_path) = state.voice.paths();
+    let settings = state.settings.current();
     Json(json!({
         "server_epoch": crate::frames::epoch_us().max(0) / 1_000_000,
         "reference_prompt": state.voice.reference_prompt(),
         "config": state.voice.current(),
         "status": state.voice.status(),
         "events": state.voice.events(50),
+        "public_studio": {
+            "enabled": settings.voice_studio_enabled,
+            "url": voice_studio_public_url(&state.config),
+            "anonymous": true,
+            "session_ttl_hours": 24,
+            "profile_retention_hours": 24,
+            "reference_seconds": {"min": 3, "max": 20},
+            "max_text_chars": 120,
+        },
         "paths": {
             "config": config_path,
             "status": status_path,
             "events": events_path,
         }
     }))
+}
+
+async fn components_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    let voice_status = state.voice.status();
+    let components = state.components.overview(&voice_status).await;
+    Json(json!({"components":components}))
+}
+
+async fn assets_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({"assets":state.assets.overview().await}))
+}
+
+async fn ir_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({"ir":state.ir.overview().await}))
+}
+
+async fn send_ir_action(
+    State(state): State<Arc<AppState>>,
+    Path(action): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let transmission =
+        state.ir.send(&action).await.map_err(|error| {
+            ApiError::status(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        })?;
+    Ok(Json(json!({"ok":true,"transmission":transmission})))
+}
+
+async fn install_asset(
+    State(state): State<Arc<AppState>>,
+    Path(asset): Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let status = state
+        .assets
+        .install(&asset)
+        .await
+        .map_err(|error| ApiError::status(StatusCode::CONFLICT, error.to_string()))?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"ok":true,"asset":status})),
+    ))
+}
+
+async fn control_component(
+    State(state): State<Arc<AppState>>,
+    Path((component, action)): Path<(String, String)>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if !matches!(component.as_str(), "tts" | "voice" | "ddns" | "ir")
+        || !matches!(action.as_str(), "start" | "stop" | "restart")
+    {
+        return Err(ApiError::status(
+            StatusCode::BAD_REQUEST,
+            "不支持的组件或操作",
+        ));
+    }
+    state
+        .components
+        .control(&component, &action)
+        .await
+        .map_err(|error| ApiError::status(StatusCode::SERVICE_UNAVAILABLE, error.to_string()))?;
+    let voice_status = state.voice.status();
+    let components = state.components.overview(&voice_status).await;
+    Ok(Json(json!({"ok":true,"components":components})))
+}
+
+async fn update_component_autostart(
+    State(state): State<Arc<AppState>>,
+    Path((component, action)): Path<(String, String)>,
+    Json(update): Json<ComponentAutostartUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    if action != "autostart" {
+        return Err(ApiError::status(
+            StatusCode::BAD_REQUEST,
+            "不支持的组件设置",
+        ));
+    }
+    state
+        .components
+        .set_autostart(&component, update.enabled)
+        .await
+        .map_err(|error| ApiError::status(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let voice_status = state.voice.status();
+    let components = state.components.overview(&voice_status).await;
+    Ok(Json(json!({"ok":true,"components":components})))
+}
+
+async fn voice_studio_page(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, ApiError> {
+    if !state.settings.current().voice_studio_enabled {
+        return Err(ApiError::status(
+            StatusCode::NOT_FOUND,
+            "公共语音工作室未启用",
+        ));
+    }
+    Ok(web::voice_studio().await)
+}
+
+async fn update_voice_studio_settings(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<VoiceStudioSettingsUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let settings = state.settings.update(HubSettingsPatch {
+        voice_studio_enabled: Some(update.enabled),
+        ..HubSettingsPatch::default()
+    })?;
+    Ok(Json(json!({
+        "ok": true,
+        "public_studio": {
+            "enabled": settings.voice_studio_enabled,
+            "url": voice_studio_public_url(&state.config),
+        }
+    })))
 }
 
 async fn update_voice(
@@ -964,6 +1163,7 @@ async fn delete_voice_reference(
 async fn create_voice_studio_session(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<crate::voice_tts::VoiceStudioSessionResponse>, VoiceStudioError> {
+    ensure_voice_studio_enabled(&state)?;
     Ok(Json(state.voice_studio.create_session()?))
 }
 
@@ -971,6 +1171,7 @@ async fn enroll_voice_studio_reference(
     State(state): State<Arc<AppState>>,
     Json(request): Json<VoiceStudioReferenceRequest>,
 ) -> Result<Json<crate::voice_tts::TtsProfileResponse>, VoiceStudioError> {
+    ensure_voice_studio_enabled(&state)?;
     Ok(Json(state.voice_studio.enroll(request).await?))
 }
 
@@ -978,6 +1179,7 @@ async fn synthesize_voice_studio(
     State(state): State<Arc<AppState>>,
     Json(request): Json<VoiceStudioSynthesizeRequest>,
 ) -> Result<Response, VoiceStudioError> {
+    ensure_voice_studio_enabled(&state)?;
     let wav = state.voice_studio.synthesize(request).await?;
     Ok((
         [
@@ -987,6 +1189,25 @@ async fn synthesize_voice_studio(
         Body::from(wav),
     )
         .into_response())
+}
+
+fn ensure_voice_studio_enabled(state: &AppState) -> Result<(), VoiceStudioError> {
+    if state.settings.current().voice_studio_enabled {
+        Ok(())
+    } else {
+        Err(VoiceStudioError::disabled())
+    }
+}
+
+fn voice_studio_public_url(config: &Config) -> String {
+    let domain = config.public_domain.trim().trim_end_matches('/');
+    if domain.is_empty() {
+        String::new()
+    } else if domain.starts_with("https://") {
+        format!("{domain}/voice-studio")
+    } else {
+        format!("https://{domain}/voice-studio")
+    }
 }
 
 async fn system_status(
@@ -1078,6 +1299,11 @@ async fn hub_settings(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
             "qq_config_file": state.config.qq_config_file,
             "ddns_config_file": state.config.ddns_config_file,
             "ddns_status_file": state.ddns.status_path(),
+            "component_manager_enabled": state.config.component_manager_enabled,
+            "components_file": state.config.components_file,
+            "asset_cache_dir": state.config.asset_cache_dir,
+            "ir_url": state.config.ir_url,
+            "ir_device": state.config.ir_device,
             "voice_config_file": state.config.voice_config_file,
             "voice_status_file": state.config.voice_status_file,
             "voice_events_file": state.config.voice_events_file,
@@ -1295,7 +1521,20 @@ fn spawn_cleaner(media: Arc<MediaStore>, ai: Arc<AiService>) {
 }
 
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
     info!("shutdown signal received");
 }
 

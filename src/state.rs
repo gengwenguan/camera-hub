@@ -1,9 +1,12 @@
 use crate::ai::AiService;
+use crate::asset_manager::AssetManager;
 use crate::benchmark::BenchmarkRegistry;
+use crate::component_manager::ComponentManager;
 use crate::config::Config;
 use crate::ddns_control::DdnsControl;
 use crate::flv_live::FlvLive;
 use crate::frames::FrameHub;
+use crate::ir_control::IrControl;
 use crate::live::LiveStreams;
 use crate::media::MediaStore;
 use crate::moq_live::MoqLive;
@@ -61,6 +64,9 @@ pub struct AppState {
     pub moq: Arc<MoqLive>,
     pub qq: Arc<QqService>,
     pub ddns: Arc<DdnsControl>,
+    pub ir: Arc<IrControl>,
+    pub assets: Arc<AssetManager>,
+    pub components: Arc<ComponentManager>,
     pub ai: Arc<AiService>,
     pub settings: Arc<HubSettingsStore>,
     pub voice: Arc<VoiceService>,
@@ -79,6 +85,9 @@ pub struct AppServices {
     pub ai: Arc<AiService>,
     pub qq: Arc<QqService>,
     pub ddns: Arc<DdnsControl>,
+    pub ir: Arc<IrControl>,
+    pub assets: Arc<AssetManager>,
+    pub components: Arc<ComponentManager>,
     pub voice: Arc<VoiceService>,
     pub voice_studio: Arc<VoiceStudio>,
     pub frames: Arc<FrameHub>,
@@ -92,6 +101,9 @@ impl AppState {
             ai,
             qq,
             ddns,
+            ir,
+            assets,
+            components,
             voice,
             voice_studio,
             frames,
@@ -111,6 +123,9 @@ impl AppState {
             moq,
             qq,
             ddns,
+            ir,
+            assets,
+            components,
             frames,
             ai,
             settings,

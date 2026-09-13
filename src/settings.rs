@@ -26,6 +26,8 @@ pub struct HubSettings {
     pub retain_days: u64,
     #[serde(default = "default_true")]
     pub record_enabled: bool,
+    #[serde(default = "default_true")]
+    pub voice_studio_enabled: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -41,6 +43,7 @@ pub struct HubSettingsPatch {
     pub max_bytes: Option<u64>,
     pub retain_days: Option<u64>,
     pub record_enabled: Option<bool>,
+    pub voice_studio_enabled: Option<bool>,
 }
 
 pub struct HubSettingsStore {
@@ -62,6 +65,7 @@ impl HubSettings {
             max_bytes: config.max_bytes,
             retain_days: config.retain_days,
             record_enabled: config.record_enabled,
+            voice_studio_enabled: true,
         }
         .normalize()
     }
@@ -118,6 +122,9 @@ impl HubSettings {
         }
         if let Some(value) = patch.record_enabled {
             self.record_enabled = value;
+        }
+        if let Some(value) = patch.voice_studio_enabled {
+            self.voice_studio_enabled = value;
         }
         *self = self.clone().normalize();
     }
@@ -210,6 +217,7 @@ mod tests {
             max_bytes: 8 * 1024 * 1024 * 1024,
             retain_days: 7,
             record_enabled: true,
+            voice_studio_enabled: true,
         }
     }
 
@@ -233,6 +241,7 @@ mod tests {
                 ai_snapshot_quality: Some(0),
                 segment_seconds: Some(1),
                 retain_days: Some(400),
+                voice_studio_enabled: Some(false),
                 ..HubSettingsPatch::default()
             })
             .unwrap();
@@ -242,6 +251,7 @@ mod tests {
         assert_eq!(updated.ai_snapshot_quality, 1);
         assert_eq!(updated.segment_seconds, 10);
         assert_eq!(updated.retain_days, 365);
+        assert!(!updated.voice_studio_enabled);
 
         let loaded = HubSettingsStore::load(path, defaults()).unwrap().current();
         assert_eq!(loaded.ai_threshold, 0.95);
@@ -249,6 +259,7 @@ mod tests {
         assert_eq!(loaded.ai_snapshot_max_count, 100_000);
         assert_eq!(loaded.ai_snapshot_quality, 1);
         assert_eq!(loaded.segment_seconds, 10);
+        assert!(!loaded.voice_studio_enabled);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -276,5 +287,6 @@ mod tests {
             DEFAULT_AI_SNAPSHOT_MAX_COUNT
         );
         assert_eq!(settings.ai_snapshot_quality, DEFAULT_AI_SNAPSHOT_QUALITY);
+        assert!(settings.voice_studio_enabled);
     }
 }

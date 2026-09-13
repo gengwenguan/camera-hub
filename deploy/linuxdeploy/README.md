@@ -2,14 +2,18 @@
 
 该目录是 camera-hub 在 LinuxDeploy 环境中的部署适配器，负责远端构建、安装、
 80/443 端口 capability、`rc.local` 自启动、证书管理、离线关键词识别和
-DNSPod DDNS。核心服务、语音 worker、TTS 服务与 DDNS 是独立进程：
+DNSPod DDNS。部署只安装一个可执行文件，通过子命令区分主服务和隔离的 worker：
 
 ```text
-/usr/local/bin/camera-hub
-/usr/local/bin/camera-hub-voice
-/usr/local/bin/camera-hub-tts
-/usr/local/bin/camera-hub-ddns
+/usr/local/bin/camera-hub server
+/usr/local/bin/camera-hub worker tts
+/usr/local/bin/camera-hub worker voice
+/usr/local/bin/camera-hub worker ddns
+/usr/local/bin/camera-hub worker ir
 ```
+
+`camera-hub server` 内置组件管理器，负责 worker 的启动、停止、异常拉起、依赖顺序
+和自启设置。`rc.local` 只负责主服务 supervisor 和证书续期任务。
 
 ## 部署
 
@@ -28,7 +32,7 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android \
     bash deploy/linuxdeploy/deploy.sh push
 ```
 
-部署脚本构建全部二进制，并把 DDNS 配置和状态安装到：
+部署脚本使用 `voice-workers` feature 构建单一 binary，并把 DDNS 配置和状态安装到：
 
 ```text
 /home/android/.config/camera-hub-ddns.json
@@ -53,23 +57,44 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android \
 /home/android/camera-voice/models/
 ```
 
-语音和 TTS 进程分别由 `/usr/local/bin/camera-hub-voice-start` 与
-`/usr/local/bin/camera-hub-tts-start` 监督，异常退出后 2 秒重启。它们与主服务
-读取同一份 `/home/android/.config/camera-hub.env`。TTS 只监听回环地址，并使用
-安装时生成的内部 Bearer token。
+语音和 TTS 以主服务的子进程运行，异常退出后由内置组件管理器拉起。它们与主服务
+读取同一份 `/home/android/.config/camera-hub.env`；自启设置保存在权限为 `0600`
+的 `/home/android/.config/camera-hub-components.json`。TTS 只监听回环地址，并
+使用安装时生成的内部 Bearer token。
 
 管理页可录入本人的参考声音；录入或修改回复后会自动重新生成缓存。没有声纹或 TTS
 异常时继续使用 `espeak-ng`，ZipVoice 模型也会保持未加载。公网 `/voice-studio`
-与 camera-hub 共用 80/443，匿名开放，不要求后台登录或访问口令；浏览器会自动创建
-24 小时签名隔离会话，主服务重启后令牌仍然有效。公网录音必须经 HTTPS，才能获得
-浏览器麦克风权限；没有可用证书时，非回环 Voice Studio 请求会被拒绝。
+与 camera-hub 共用 80/443；管理页的“公共语音”子页面显示规范访问 URL，并可关闭
+或重新开放匿名访问。浏览器会自动创建 24 小时签名隔离会话，主服务重启后令牌仍然
+有效。公网录音必须经 HTTPS，才能获得浏览器麦克风权限；没有可用证书时，非回环
+Voice Studio 请求会被拒绝。
+
+“公共语音”子页面显示 `https://mi6.gwghome.site/voice-studio`，并可关闭或重新开放
+匿名访问；关闭时公共页面和 API 都返回 404。
 
 公网使用不设置用户级会话数或生成次数配额，但推理只允许一个活动任务，忙时返回
 429，不积压等待请求。`CAMERA_HUB_TTS_MAX_DATA_BYTES` 默认是 512 MiB；达到预算时
 自动清理最旧缓存和公网临时 profile，防止匿名流量耗尽 MI6 磁盘。
 
+管理页的“服务状态”子页面直接调用内置组件管理器，可设置自启并控制 TTS 和语音
+识别进程。启动语音识别时会先确保 TTS 健康。停止 TTS 后，本机回复回退系统声音，
+公共语音工作室暂时不可用。
+
+该页面同时提供 KWS 与 TTS/Vocos 模型的安装和重新安装。下载缓存位于
+`/home/android/camera-voice`；AssetManager 校验固定 SHA-256、检查磁盘空间并原子
+替换模型，随后自动恢复原先运行的 worker。`espeak-ng`、sherpa 原生库和 MI6 音频
+路由仍由本安装器提供，Web 不执行 `apt`、`setcap`、`ldconfig` 或 root 命令。
+
 不要公开 `CAMERA_HUB_TTS_TOKEN`，也不要把 `CAMERA_HUB_TTS_BIND` 改为公网地址。
 测试请求超过 60 秒会被丢弃，事件日志达到 4 MiB 后滚动。
+
+## 红外空调测试
+
+当 `/dev/peel_ir` 存在时，组件管理器自动启动仅监听回环地址的 IR worker。语音控制
+页“空调测试”提供四种美的制冷 26°C 开机候选和两种明确关机帧，用于确认目标空调
+采用的协议。Web 测试 API 需要登录，不提供任意原始波形发送能力；连续发送至少间隔
+1 秒。MI6 的 `peel_ir` 使用 960 kHz、32-bit SPI，worker 按 38 kHz 载波生成受限
+bitstream 后通过驱动 ioctl 发射。
 
 ## QQ 机器人
 
@@ -85,8 +110,9 @@ QQ Gateway 客户端运行在 `camera-hub` 主进程中。Web 配置写入：
 
 ## DNSPod DDNS
 
-`camera-hub-ddns` 作为独立 sidecar 随系统启动，通过 camera-hub Web 的“DDNS”
-页面配置。DDNS 默认关闭；关闭时进程只等待配置变化，不会调用 DNSPod API。
+`camera-hub worker ddns` 由内置组件管理器运行，通过 camera-hub Web 的“DDNS”
+页面配置、启停并设置自启。DDNS 功能默认关闭；关闭时进程只等待配置变化，不会调用
+DNSPod API。
 
 页面支持配置 DNSPod SecretId、只写 SecretKey、主域名、网卡、TTL、检查周期以及
 结构化 AAAA 记录列表。保存后 sidecar 自动热加载，不需要重启。也可以先在页面

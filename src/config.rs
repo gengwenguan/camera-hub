@@ -76,6 +76,43 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_COMPONENT_MANAGER_ENABLED",
+        default_value_t = false
+    )]
+    pub component_manager_enabled: bool,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_COMPONENTS_FILE",
+        default_value = "camera-hub-state/components.json"
+    )]
+    pub components_file: PathBuf,
+
+    #[arg(long, env = "CAMERA_HUB_LOG_DIR", default_value = ".")]
+    pub log_dir: PathBuf,
+
+    #[arg(long, env = "CAMERA_HUB_IR_BIND", default_value = "127.0.0.1:39182")]
+    pub ir_bind: SocketAddr,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_IR_URL",
+        default_value = "http://127.0.0.1:39182"
+    )]
+    pub ir_url: String,
+
+    #[arg(long, env = "CAMERA_HUB_IR_DEVICE", default_value = "/dev/peel_ir")]
+    pub ir_device: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_ASSET_CACHE_DIR",
+        default_value = "camera-hub-assets"
+    )]
+    pub asset_cache_dir: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_VOICE_CONFIG_FILE",
         default_value = "camera-hub-state/voice.json"
     )]
@@ -104,6 +141,20 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_VOICE_LIB_DIR",
+        default_value = "/usr/local/lib/camera-hub-voice"
+    )]
+    pub voice_lib_dir: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_VOICE_MODEL_DIR",
+        default_value = "/home/android/camera-voice/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+    )]
+    pub voice_model_dir: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_TTS_URL",
         default_value = "http://127.0.0.1:39081"
     )]
@@ -114,10 +165,27 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_TTS_MODEL_DIR",
+        default_value = "/home/android/camera-voice/models/sherpa-onnx-zipvoice-distill-int8-zh-en-emilia"
+    )]
+    pub tts_model_dir: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_TTS_VOCODER",
+        default_value = "/home/android/camera-voice/models/vocos_24khz.onnx"
+    )]
+    pub tts_vocoder: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_ACME_WEBROOT",
         default_value = "camera-hub-state/acme"
     )]
     pub acme_webroot: PathBuf,
+
+    #[arg(long, env = "CAMERA_HUB_PUBLIC_DOMAIN", default_value = "")]
+    pub public_domain: String,
 
     #[arg(long, env = "CAMERA_HUB_SEGMENT_SECONDS", default_value_t = 600)]
     pub segment_seconds: u64,

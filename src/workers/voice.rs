@@ -1,16 +1,14 @@
-#[path = "../inference_lock.rs"]
-mod inference_lock;
-#[path = "../voice_config.rs"]
-mod voice_config;
-#[path = "../voice_tts.rs"]
-mod voice_tts;
-
+use crate::inference_lock::InferenceLock;
+use crate::voice_config::{
+    VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceWorkerStatus,
+};
+use crate::voice_tts::{DEFAULT_VOICE_PROFILE_ID, VoiceTtsClient};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use inference_lock::InferenceLock;
 use reqwest::Client;
 use sherpa_onnx::{KeywordSpotter, KeywordSpotterConfig};
 use std::collections::{BTreeSet, HashMap};
+use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -18,8 +16,6 @@ use std::process::Stdio;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
-use voice_config::{VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceWorkerStatus};
-use voice_tts::{DEFAULT_VOICE_PROFILE_ID, VoiceTtsClient};
 
 const MODEL_PROBE_KEYWORD: &str = "x iǎo y ǔ :1.50 #0.45 @小雨";
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
@@ -45,7 +41,11 @@ struct CaptureContext<'a> {
 }
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Local keyword-control worker for camera-hub")]
+#[command(
+    name = "camera-hub worker voice",
+    version,
+    about = "Local keyword-control worker for camera-hub"
+)]
 struct Args {
     #[arg(
         long,
@@ -93,10 +93,9 @@ struct Args {
     tts_token: String,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+pub async fn run(args: Vec<OsString>) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let args = Args::parse();
+    let args = Args::parse_from(args);
     let mut status = VoiceWorkerStatus {
         state: "starting".to_owned(),
         model: args.model_dir.display().to_string(),
@@ -895,7 +894,7 @@ mod tests {
             call_url: true,
             speak_reply: false,
             created_epoch: epoch_seconds()
-                .saturating_sub(voice_config::VOICE_TEST_REQUEST_MAX_AGE_SECS + 1),
+                .saturating_sub(crate::voice_config::VOICE_TEST_REQUEST_MAX_AGE_SECS + 1),
         };
         write_json(&path, &request).unwrap();
 

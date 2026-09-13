@@ -29,7 +29,7 @@ fi
 if [[ -n "${CAMERA_HUB_BINARY:-}" ]]; then
     BINARY="${CAMERA_HUB_BINARY}"
 else
-    cargo build --manifest-path "${ROOT_DIR}/Cargo.toml" --release
+    cargo build --manifest-path "${ROOT_DIR}/Cargo.toml" --release --bin camera-hub
     BINARY="${ROOT_DIR}/target/release/camera-hub"
 fi
 [[ -x "${BINARY}" ]] || {
@@ -107,9 +107,9 @@ if ! ffmpeg -hide_banner -encoders 2>/dev/null | grep -q 'libopus'; then
     echo "but camera-hub WebRTC audio will be unavailable" >&2
 fi
 
-pkill -f '^.*/camera-hub$' 2>/dev/null || true
+pkill -f '^.*/camera-hub server( |$)' 2>/dev/null || true
 for _ in {1..10}; do
-    pgrep -f '^.*/camera-hub$' >/dev/null 2>&1 || break
+    pgrep -f '^.*/camera-hub server( |$)' >/dev/null 2>&1 || break
     sleep 1
 done
 pkill -f '[c]amera-hub-mux' 2>/dev/null || true
