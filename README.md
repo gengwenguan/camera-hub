@@ -325,9 +325,11 @@ LinuxDeploy 适配器通过 `camera-hub worker voice` 运行语音识别组件�
 16 kHz。主服务内置组件管理器，负责 Web 配置、状态、启停、自启和异常拉起；
 关键词模型异常不会影响直播和录像。
 
-Web 的“语音控制”页面支持配置命令短语、成功回复、GET/POST URL、JSON 请求体、
-boosting score、触发阈值、冷却时间和 0–100 的播报音量。播报音量只调整
-`espeak-ng` 生成的回复，不修改系统全局播放音量。配置保存在
+Web 的“语音控制”页面支持为同一操作配置多个触发短语，并统一设置成功回复、
+GET/POST URL、JSON 请求体、boosting score、触发阈值、冷却时间和 0–100 的播报
+音量。新命令的触发阈值默认是 `0.05`，可按 `0.01` 精度在 `0.01–0.95` 间调整。
+全局和单命令冷却时间默认都是 `500ms`。播报音量只调整 `espeak-ng` 生成的回复，
+不修改系统全局播放音量。配置保存在
 `CAMERA_HUB_VOICE_CONFIG_FILE`，触发记录写入
 `CAMERA_HUB_VOICE_EVENTS_FILE`。没有录入参考声音时，由 `espeak-ng` 生成中文回复并
 通过 ALSA 播放。录入后，`camera-hub worker tts` 组件使用 ZipVoice distill INT8
@@ -376,10 +378,11 @@ ZipVoice、KWS 和 YOLO 使用同一个跨进程推理锁。MI6 本机只允许�
 后的 `/api/v1/ir/actions/:action` 转发固定动作，不接受任意 URL、原始字节或自定义
 波形。驱动输出限制载波频率、脉冲数量、单段时长、总时长和发送频率。
 
-实机验证后，正式动作固定为 RN02S：`ac-on` 使用方案 D（制冷 26°C、自动风并开启
-ECO），`ac-off` 使用方案 B（明确关机），`ac-on-no-eco` 保留方案 C。启动时会以
-只追加方式把“`小雨打开空调`”和“`小雨关闭空调`”合并到现有语音配置，已有同 ID
-或同短语的用户配置不会被覆盖。
+正式动作使用 RN02S：`ac-on` 为制冷 26°C、自动风并开启 ECO；`ac-cool` 为制冷
+26°C 并明确关闭 ECO；`ac-dry` 为抽湿 26°C 并明确关闭 ECO；`ac-off` 使用已验证
+的关机方案 B。旧 `ac-on-no-eco` URL 继续映射到 `ac-cool`。启动时会以只追加方式
+合并“开空调”“制冷模式”“抽湿/除湿模式”“关空调”等多组说法，不覆盖已有用户
+命令的 URL、回复和参数。
 
 检测照片写入 `<data-dir>/<device_id>/snapshot/YYYYMMDD/`，并经同一设备 WebSocket
 回传开发板相册。照片使用推理时的同一帧，按 YOLOX 输出执行 person 框解码和 NMS，
@@ -471,6 +474,15 @@ https://[hub-ipv6]/
 
 Termux 等无 Root 平台由适配器覆盖为 8080/8443。HTTPS 使用自签名证书时，浏览器首次访问需要确认；
 生产环境建议使用可信域名证书。
+
+## 依赖来源
+
+- Rust registry 依赖由 `Cargo.lock` 固定，构建使用 `--locked`。
+- WebRTC 直接引用公开 GitHub 仓库的固定 commit，不依赖开发机相邻目录。
+- `vendor/moq-native` 只保留上游尚未支持的 `ring` feature 补丁，来源和差异记录在
+  [`vendor/README.md`](vendor/README.md)；`web-transport-quinn` 直接来自 crates.io。
+- Web 依赖由 `package-lock.json` 固定。
+- 语音模型、AI 资源和 ACME 工具均固定版本并在使用前校验 SHA-256。
 
 ## 部署适配器
 

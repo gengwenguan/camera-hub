@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::voice_config::{
-    VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceWorkerStatus,
+    MAX_PHRASES_PER_COMMAND, VOICE_CONFIG_VERSION, VoiceCommand, VoiceConfig, VoiceEvent,
+    VoiceTestRequest, VoiceWorkerStatus,
 };
 use crate::voice_tts::{
     DEFAULT_VOICE_PROFILE_ID, TtsProfileResponse, VOICE_REFERENCE_PROMPT, VoiceReferenceUpload,
@@ -41,14 +42,13 @@ pub struct VoiceService {
 
 impl VoiceService {
     pub fn load(config: &Config) -> Result<Self> {
+        let mut config_migrated = false;
         let mut current = match fs::read(&config.voice_config_file) {
-            Ok(data) => match serde_json::from_slice::<VoiceConfig>(&data)
-                .with_context(|| {
-                    format!("parse voice config {}", config.voice_config_file.display())
-                })
-                .and_then(VoiceConfig::normalize)
-            {
-                Ok(config) => config,
+            Ok(data) => match parse_voice_config(&data, &config.voice_config_file) {
+                Ok((loaded, migrated)) => {
+                    config_migrated = migrated;
+                    loaded
+                }
                 Err(error) => {
                     let fallback = VoiceConfig::default().normalize()?;
                     let backup = replace_invalid_config(&config.voice_config_file, &fallback)?;
@@ -77,7 +77,7 @@ impl VoiceService {
             profile_update: AsyncMutex::new(()),
             tts: VoiceTtsClient::new(&config.tts_url, &config.tts_token)?,
         };
-        if !service.config_path.is_file() || commands_added {
+        if !service.config_path.is_file() || config_migrated || commands_added {
             service.save(&service.current())?;
         }
         Ok(service)
@@ -235,6 +235,21 @@ impl VoiceService {
     }
 }
 
+fn parse_voice_config(data: &[u8], path: &Path) -> Result<(VoiceConfig, bool)> {
+    let config = serde_json::from_slice::<VoiceConfig>(data)
+        .with_context(|| format!("parse voice config {}", path.display()))?;
+    let migrated = config.version < VOICE_CONFIG_VERSION
+        || config
+            .commands
+            .iter()
+            .any(|command| command.phrases.is_empty());
+    let mut config = config.normalize()?;
+    if migrated {
+        config.revision = config.revision.saturating_add(1);
+    }
+    Ok((config, migrated))
+}
+
 fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Result<bool> {
     let base_url = ir_url.trim_end_matches('/');
     let candidates = [
@@ -242,40 +257,103 @@ fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Res
             id: "ac-on".to_owned(),
             enabled: true,
             phrase: "小雨打开空调".to_owned(),
+            phrases: vec!["小雨打开空调".to_owned(), "小雨开空调".to_owned()],
             reply: "好的，空调已设置为制冷二十六度并开启节能模式".to_owned(),
             method: "POST".to_owned(),
             url: format!("{base_url}/v1/actions/ac-on"),
             body: String::new(),
             boosting_score: 1.5,
-            trigger_threshold: 0.45,
-            cooldown_ms: 5_000,
+            trigger_threshold: 0.05,
+            cooldown_ms: 500,
+        },
+        VoiceCommand {
+            id: "ac-cool".to_owned(),
+            enabled: true,
+            phrase: "小雨制冷模式".to_owned(),
+            phrases: vec![
+                "小雨制冷模式".to_owned(),
+                "小雨打开制冷".to_owned(),
+                "小雨开制冷".to_owned(),
+            ],
+            reply: "好的，空调已设置为制冷二十六度".to_owned(),
+            method: "POST".to_owned(),
+            url: format!("{base_url}/v1/actions/ac-cool"),
+            body: String::new(),
+            boosting_score: 1.5,
+            trigger_threshold: 0.05,
+            cooldown_ms: 500,
+        },
+        VoiceCommand {
+            id: "ac-dry".to_owned(),
+            enabled: true,
+            phrase: "小雨抽湿模式".to_owned(),
+            phrases: vec![
+                "小雨抽湿模式".to_owned(),
+                "小雨打开抽湿".to_owned(),
+                "小雨除湿模式".to_owned(),
+            ],
+            reply: "好的，空调已设置为抽湿模式二十六度".to_owned(),
+            method: "POST".to_owned(),
+            url: format!("{base_url}/v1/actions/ac-dry"),
+            body: String::new(),
+            boosting_score: 1.5,
+            trigger_threshold: 0.05,
+            cooldown_ms: 500,
         },
         VoiceCommand {
             id: "ac-off".to_owned(),
             enabled: true,
             phrase: "小雨关闭空调".to_owned(),
+            phrases: vec!["小雨关闭空调".to_owned(), "小雨关空调".to_owned()],
             reply: "好的，空调已关闭".to_owned(),
             method: "POST".to_owned(),
             url: format!("{base_url}/v1/actions/ac-off"),
             body: String::new(),
             boosting_score: 1.5,
-            trigger_threshold: 0.45,
-            cooldown_ms: 5_000,
+            trigger_threshold: 0.05,
+            cooldown_ms: 500,
         },
     ];
+    let mut used_phrases = config
+        .commands
+        .iter()
+        .flat_map(|command| command.phrases.iter().cloned())
+        .collect::<std::collections::HashSet<_>>();
     let mut changed = false;
-    for command in candidates {
+    for mut command in candidates {
+        if let Some(current) = config
+            .commands
+            .iter_mut()
+            .find(|current| current.id == command.id)
+        {
+            if current.url == command.url {
+                if current.trigger_threshold == 0.45 {
+                    current.trigger_threshold = command.trigger_threshold;
+                    changed = true;
+                }
+                for phrase in command.phrases {
+                    if current.phrases.len() >= MAX_PHRASES_PER_COMMAND {
+                        break;
+                    }
+                    if used_phrases.insert(phrase.clone()) {
+                        current.phrases.push(phrase);
+                        changed = true;
+                    }
+                }
+            }
+            continue;
+        }
         if config.commands.len() >= 32 {
             warn!("voice command limit reached; skip built-in air conditioner commands");
             break;
         }
-        if config
-            .commands
-            .iter()
-            .any(|current| current.id == command.id || current.phrase == command.phrase)
-        {
+        command
+            .phrases
+            .retain(|phrase| used_phrases.insert(phrase.clone()));
+        let Some(primary) = command.phrases.first().cloned() else {
             continue;
-        }
+        };
+        command.phrase = primary;
         config.commands.push(command);
         changed = true;
     }
@@ -366,6 +444,24 @@ mod tests {
     }
 
     #[test]
+    fn migrates_voice_config_and_advances_revision() {
+        let mut legacy = VoiceConfig::default();
+        legacy.version = 2;
+        legacy.revision = 17;
+        legacy.global_cooldown_ms = 2_000;
+        legacy.commands[0].cooldown_ms = 5_000;
+        let data = serde_json::to_vec(&legacy).unwrap();
+
+        let (migrated, changed) = parse_voice_config(&data, Path::new("voice.json")).unwrap();
+
+        assert!(changed);
+        assert_eq!(migrated.version, VOICE_CONFIG_VERSION);
+        assert_eq!(migrated.revision, 18);
+        assert_eq!(migrated.global_cooldown_ms, 500);
+        assert_eq!(migrated.commands[0].cooldown_ms, 500);
+    }
+
+    #[test]
     fn rejects_fresh_test_but_replaces_stale_test() {
         let root = temporary_root("voice-queue");
         let service = service(&root);
@@ -416,12 +512,42 @@ mod tests {
             command.id == "ac-on"
                 && command.enabled
                 && command.url == "http://127.0.0.1:39182/v1/actions/ac-on"
+                && command.phrases.contains(&"小雨开空调".to_owned())
+        }));
+        assert!(config.commands.iter().any(|command| {
+            command.id == "ac-cool"
+                && command.enabled
+                && command.url == "http://127.0.0.1:39182/v1/actions/ac-cool"
+                && command.phrases.contains(&"小雨制冷模式".to_owned())
+        }));
+        assert!(config.commands.iter().any(|command| {
+            command.id == "ac-dry"
+                && command.enabled
+                && command.url == "http://127.0.0.1:39182/v1/actions/ac-dry"
+                && command.phrases.contains(&"小雨抽湿模式".to_owned())
         }));
         assert!(config.commands.iter().any(|command| {
             command.id == "ac-off"
                 && command.enabled
                 && command.url == "http://127.0.0.1:39182/v1/actions/ac-off"
+                && command.phrases.contains(&"小雨关空调".to_owned())
         }));
+        let cool = config
+            .commands
+            .iter_mut()
+            .find(|command| command.id == "ac-cool")
+            .unwrap();
+        cool.trigger_threshold = 0.45;
+        assert!(merge_air_conditioner_commands(&mut config, "http://127.0.0.1:39182").unwrap());
+        assert_eq!(
+            config
+                .commands
+                .iter()
+                .find(|command| command.id == "ac-cool")
+                .unwrap()
+                .trigger_threshold,
+            0.05
+        );
         let revision = config.revision;
         assert!(!merge_air_conditioner_commands(&mut config, "http://example.invalid").unwrap());
         assert_eq!(config.revision, revision);

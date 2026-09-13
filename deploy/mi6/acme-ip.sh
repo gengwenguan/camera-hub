@@ -3,7 +3,8 @@ set -eu
 
 ENV_FILE="/home/android/.config/camera-hub.env"
 LEGO="/usr/local/bin/lego"
-LEGO_VERSION="4.32.0"
+LEGO_VERSION="4.35.2"
+LEGO_SHA256="e1f153179098d27ce044aaaa168c0e323d50ae71b0f1a147aa8ae49ac6b14d89"
 LEGO_PATH="/home/android/.config/camera-hub-acme-domain"
 
 [ -r "$ENV_FILE" ] || {
@@ -32,12 +33,18 @@ PUBLIC_IP="$(ip -6 -o addr show dev "$INTERFACE" scope global 2>/dev/null |
     exit 1
 }
 
-if [ ! -x "$LEGO" ]; then
+if [ ! -x "$LEGO" ] ||
+    ! "$LEGO" --version 2>/dev/null | grep -Fq "$LEGO_VERSION"; then
     TMP="$(mktemp -d)"
     trap 'rm -rf "$TMP"' EXIT INT TERM
     curl -L --fail --retry 3 \
         -o "$TMP/lego.tgz" \
         "https://github.com/go-acme/lego/releases/download/v${LEGO_VERSION}/lego_v${LEGO_VERSION}_linux_arm64.tar.gz"
+    ACTUAL_SHA256="$(sha256sum "$TMP/lego.tgz" | awk '{print $1}')"
+    [ "$ACTUAL_SHA256" = "$LEGO_SHA256" ] || {
+        echo "lego archive SHA-256 mismatch" >&2
+        exit 1
+    }
     tar xzf "$TMP/lego.tgz" -C "$TMP" lego
     install -m 0755 "$TMP/lego" "$LEGO"
 fi

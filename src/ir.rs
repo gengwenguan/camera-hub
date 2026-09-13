@@ -19,11 +19,15 @@ const SPI_BPW_PATH: &str =
 const MIDEA_MODERN_ON_COOL_26_AUTO: u64 = 0xA18009FFFF37;
 const MIDEA_MODERN_OFF: u64 = 0xA10009FFFFB7;
 const MIDEA_MODERN_ECO_TOGGLE: u64 = 0xA202FFFFFF7E;
+const RN02_AUTO_FAN: u8 = 0xFD;
+const RN02_COOL_26: u8 = 0x0B;
+const RN02_DRY_26: u8 = 0x2B;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrAction {
     AcOn,
-    AcOnNoEco,
+    AcCool,
+    AcDry,
     AcOff,
     OnModern,
     OnModernEco,
@@ -37,7 +41,8 @@ impl IrAction {
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "ac-on" => Ok(Self::AcOn),
-            "ac-on-no-eco" => Ok(Self::AcOnNoEco),
+            "ac-cool" | "ac-on-no-eco" => Ok(Self::AcCool),
+            "ac-dry" => Ok(Self::AcDry),
             "ac-off" => Ok(Self::AcOff),
             "on-modern" => Ok(Self::OnModern),
             "on-modern-eco" => Ok(Self::OnModernEco),
@@ -52,7 +57,8 @@ impl IrAction {
     pub fn id(self) -> &'static str {
         match self {
             Self::AcOn => "ac-on",
-            Self::AcOnNoEco => "ac-on-no-eco",
+            Self::AcCool => "ac-cool",
+            Self::AcDry => "ac-dry",
             Self::AcOff => "ac-off",
             Self::OnModern => "on-modern",
             Self::OnModernEco => "on-modern-eco",
@@ -71,10 +77,16 @@ impl IrAction {
                 detail: "已验证：制冷 26°C、自动风，并开启 ECO",
                 group: "control",
             },
-            Self::AcOnNoEco => IrActionDefinition {
+            Self::AcCool => IrActionDefinition {
                 id: self.id(),
                 label: "制冷 26°C",
-                detail: "已验证：制冷 26°C、自动风，不改变 ECO",
+                detail: "RN02S 制冷 26°C、自动风，并关闭 ECO",
+                group: "control",
+            },
+            Self::AcDry => IrActionDefinition {
+                id: self.id(),
+                label: "抽湿 26°C",
+                detail: "RN02S 抽湿 26°C，并关闭 ECO",
                 group: "control",
             },
             Self::AcOff => IrActionDefinition {
@@ -132,10 +144,15 @@ pub struct IrActionDefinition {
 }
 
 pub fn action_catalog() -> Vec<IrActionDefinition> {
-    [IrAction::AcOn, IrAction::AcOnNoEco, IrAction::AcOff]
-        .into_iter()
-        .map(IrAction::definition)
-        .collect()
+    [
+        IrAction::AcOn,
+        IrAction::AcCool,
+        IrAction::AcDry,
+        IrAction::AcOff,
+    ]
+    .into_iter()
+    .map(IrAction::definition)
+    .collect()
 }
 
 #[derive(Clone, Debug)]
@@ -198,11 +215,20 @@ impl PulsePattern {
 pub fn action_pattern(action: IrAction) -> Result<PulsePattern> {
     let pattern = match action {
         IrAction::AcOn => {
-            let mut pattern = rn02_state();
+            let mut pattern = rn02_state(RN02_COOL_26);
             pattern.append(&rn02_short(0xB9, 0xAF, 0x24), 20_000);
             pattern
         }
-        IrAction::AcOnNoEco => rn02_state(),
+        IrAction::AcCool => {
+            let mut pattern = rn02_state(RN02_COOL_26);
+            pattern.append(&rn02_short(0xB9, 0xAF, 0xA4), 20_000);
+            pattern
+        }
+        IrAction::AcDry => {
+            let mut pattern = rn02_state(RN02_DRY_26);
+            pattern.append(&rn02_short(0xB9, 0xAF, 0xA4), 20_000);
+            pattern
+        }
         IrAction::AcOff => rn02_short(0xB2, 0xDE, 0x07),
         IrAction::OnModern => modern_midea(MIDEA_MODERN_ON_COOL_26_AUTO),
         IrAction::OnModernEco => {
@@ -210,9 +236,9 @@ pub fn action_pattern(action: IrAction) -> Result<PulsePattern> {
             pattern.append(&modern_midea(MIDEA_MODERN_ECO_TOGGLE), 20_000);
             pattern
         }
-        IrAction::OnRn02 => rn02_state(),
+        IrAction::OnRn02 => rn02_state(RN02_COOL_26),
         IrAction::OnRn02Eco => {
-            let mut pattern = rn02_state();
+            let mut pattern = rn02_state(RN02_COOL_26);
             pattern.append(&rn02_short(0xB9, 0xAF, 0x24), 20_000);
             pattern
         }
@@ -239,17 +265,17 @@ fn modern_midea(state: u64) -> PulsePattern {
     pattern
 }
 
-fn rn02_state() -> PulsePattern {
+fn rn02_state(mode_and_temperature: u8) -> PulsePattern {
     let mut pattern = PulsePattern::new();
     rn02_block(
         &mut pattern,
         [
             (0xB2, true),
             (!0xB2, true),
-            (0xFD, false),
-            (!0xFD, false),
-            (0x0B, false),
-            (!0x0B, false),
+            (RN02_AUTO_FAN, false),
+            (!RN02_AUTO_FAN, false),
+            (mode_and_temperature, false),
+            (!mode_and_temperature, false),
         ],
     );
     rn02_block(
@@ -257,10 +283,10 @@ fn rn02_state() -> PulsePattern {
         [
             (0xB2, true),
             (!0xB2, true),
-            (0xFD, false),
-            (!0xFD, false),
-            (0x0B, false),
-            (!0x0B, false),
+            (RN02_AUTO_FAN, false),
+            (!RN02_AUTO_FAN, false),
+            (mode_and_temperature, false),
+            (!mode_and_temperature, false),
         ],
     );
     rn02_block(
@@ -478,6 +504,8 @@ mod tests {
     #[test]
     fn exposes_only_fixed_air_conditioner_actions() {
         assert!(IrAction::parse("ac-on").is_ok());
+        assert!(IrAction::parse("ac-cool").is_ok());
+        assert!(IrAction::parse("ac-dry").is_ok());
         assert!(IrAction::parse("ac-off").is_ok());
         assert!(IrAction::parse("on-modern").is_ok());
         assert!(IrAction::parse("on-rn02-eco").is_ok());
@@ -488,7 +516,8 @@ mod tests {
     fn builds_bounded_midea_patterns() {
         for action in [
             IrAction::AcOn,
-            IrAction::AcOnNoEco,
+            IrAction::AcCool,
+            IrAction::AcDry,
             IrAction::AcOff,
             IrAction::OnModern,
             IrAction::OnModernEco,
@@ -511,6 +540,16 @@ mod tests {
         assert_ne!(MIDEA_MODERN_ON_COOL_26_AUTO, MIDEA_MODERN_OFF);
         assert_eq!(MIDEA_MODERN_ON_COOL_26_AUTO, 0xA18009FFFF37);
         assert_eq!(MIDEA_MODERN_OFF, 0xA10009FFFFB7);
+    }
+
+    #[test]
+    fn rn02_cool_and_dry_use_distinct_mode_bytes() {
+        assert_eq!(RN02_COOL_26, 0x0B);
+        assert_eq!(RN02_DRY_26, 0x2B);
+        assert_ne!(
+            action_pattern(IrAction::AcCool).unwrap().durations_us,
+            action_pattern(IrAction::AcDry).unwrap().durations_us
+        );
     }
 
     #[test]

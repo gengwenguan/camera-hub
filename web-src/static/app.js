@@ -531,7 +531,7 @@
             ui.voicePlaybackVolume.value = playbackVolume;
             ui.voicePlaybackVolumeValue.textContent = `${playbackVolume}%`;
             ui.voiceRequestTimeout.value = config.request_timeout_ms || 3000;
-            ui.voiceGlobalCooldown.value = config.global_cooldown_ms || 2000;
+            ui.voiceGlobalCooldown.value = config.global_cooldown_ms || 500;
             ui.voiceFailureReply.value = config.failure_reply || "操作失败，请稍后再试";
             renderVoiceCommands(Array.isArray(config.commands) ? config.commands : []);
         }
@@ -893,18 +893,49 @@
         }
     }
 
+    function voiceCommandPhrases(command) {
+        const phrases = Array.isArray(command.phrases)
+            ? command.phrases.map((phrase) => String(phrase || "").trim()).filter(Boolean)
+            : [];
+        if (!phrases.length && command.phrase) phrases.push(command.phrase);
+        return phrases.length ? phrases : [""];
+    }
+
+    function voicePhraseRow(phrase, removable) {
+        return `
+            <div class="voice-phrase-row">
+                <input data-voice-phrase type="text" maxlength="24"
+                       value="${esc(phrase)}" required>
+                <button class="button ghost" type="button"
+                        data-voice-action="remove-phrase"
+                        ${removable ? "" : "disabled"}>移除</button>
+            </div>`;
+    }
+
+    function syncVoicePhraseButtons(editor) {
+        const rows = editor.querySelectorAll(".voice-phrase-row");
+        rows.forEach((row) => {
+            row.querySelector('[data-voice-action="remove-phrase"]').disabled =
+                rows.length === 1;
+        });
+        editor.querySelector('[data-voice-action="add-phrase"]').disabled =
+            rows.length >= 8;
+    }
+
     function renderVoiceCommands(commands) {
         if (!commands.length) {
             ui.voiceCommandList.innerHTML = '<div class="empty">暂无语音命令</div>';
             return;
         }
-        ui.voiceCommandList.innerHTML = commands.map((command, index) => `
-            <article class="voice-command" data-command-index="${index}">
+        ui.voiceCommandList.innerHTML = commands.map((command, index) => {
+            const phrases = voiceCommandPhrases(command);
+            return `
+                <article class="voice-command" data-command-index="${index}">
                 <header>
                     <label class="toggle">
                         <input type="checkbox" data-voice-field="enabled"
                                ${command.enabled ? "checked" : ""}>
-                        <span>${esc(command.phrase || "未命名命令")}</span>
+                        <span>${esc(phrases[0] || "未命名命令")}</span>
                     </label>
                     <div class="voice-command-actions">
                         <button class="button ghost" type="button"
@@ -916,9 +947,18 @@
                     </div>
                 </header>
                 <div class="voice-command-grid">
-                    <label><span>命令短语</span>
-                        <input data-voice-field="phrase" type="text" maxlength="24"
-                               value="${esc(command.phrase)}" required></label>
+                    <div class="voice-phrases-field">
+                        <span>触发短语</span>
+                        <div class="voice-phrase-editor" data-voice-field="phrases">
+                            <div class="voice-phrase-list">
+                                ${phrases.map((phrase) =>
+                                    voicePhraseRow(phrase, phrases.length > 1)).join("")}
+                            </div>
+                            <button class="button ghost voice-add-phrase" type="button"
+                                    data-voice-action="add-phrase"
+                                    ${phrases.length >= 8 ? "disabled" : ""}>添加说法</button>
+                        </div>
+                    </div>
                     <label><span>成功回复</span>
                         <input data-voice-field="reply" type="text" maxlength="120"
                                value="${esc(command.reply)}" required></label>
@@ -939,15 +979,16 @@
                                value="${Number(command.boosting_score ?? 1.5).toFixed(1)}" required></label>
                     <label><span>触发阈值</span>
                         <input data-voice-field="trigger_threshold" type="number"
-                               min="0.05" max="0.95" step="0.05"
-                               value="${Number(command.trigger_threshold ?? 0.45).toFixed(2)}" required></label>
+                               min="0.01" max="0.95" step="0.01"
+                               value="${Number(command.trigger_threshold ?? 0.05).toFixed(2)}" required></label>
                     <label><span>冷却（毫秒）</span>
                         <input data-voice-field="cooldown_ms" type="number"
                                min="500" max="60000" step="100"
-                               value="${Number(command.cooldown_ms || 2000)}" required></label>
+                               value="${Number(command.cooldown_ms || 500)}" required></label>
                 </div>
                 <input data-voice-field="id" type="hidden" value="${esc(command.id)}">
-            </article>`).join("");
+            </article>`;
+        }).join("");
     }
 
     function renderVoiceEvents(events) {
@@ -982,10 +1023,14 @@
             ui.voiceCommandList.querySelectorAll(".voice-command"),
         ).map((row) => {
             const field = (name) => row.querySelector(`[data-voice-field="${name}"]`);
+            const phrases = Array.from(row.querySelectorAll("[data-voice-phrase]"))
+                .map((input) => input.value.trim())
+                .filter(Boolean);
             return {
                 id: field("id").value,
                 enabled: field("enabled").checked,
-                phrase: field("phrase").value.trim(),
+                phrase: phrases[0] || "",
+                phrases,
                 reply: field("reply").value.trim(),
                 method: field("method").value,
                 url: field("url").value.trim(),
@@ -1025,18 +1070,19 @@
             id: `command-${Date.now().toString(36)}`,
             enabled: false,
             phrase: "小雨",
+            phrases: ["小雨"],
             reply: "好的",
             method: "GET",
             url: "",
             body: "",
             boosting_score: 1.5,
-            trigger_threshold: 0.45,
-            cooldown_ms: 2000,
+            trigger_threshold: 0.05,
+            cooldown_ms: 500,
         });
         state.voiceDirty = true;
         renderVoiceCommands(commands);
         ui.voiceCommandList.lastElementChild?.querySelector(
-            '[data-voice-field="phrase"]',
+            "[data-voice-phrase]",
         )?.focus();
     }
 
@@ -3163,6 +3209,20 @@
         const id = row.querySelector('[data-voice-field="id"]').value;
         if (button.dataset.voiceAction === "delete") {
             row.remove();
+            state.voiceDirty = true;
+        } else if (button.dataset.voiceAction === "add-phrase") {
+            const editor = button.closest(".voice-phrase-editor");
+            const list = editor.querySelector(".voice-phrase-list");
+            if (list.children.length >= 8) return;
+            list.insertAdjacentHTML("beforeend", voicePhraseRow("", true));
+            syncVoicePhraseButtons(editor);
+            list.lastElementChild?.querySelector("[data-voice-phrase]")?.focus();
+            state.voiceDirty = true;
+        } else if (button.dataset.voiceAction === "remove-phrase") {
+            const editor = button.closest(".voice-phrase-editor");
+            if (editor.querySelectorAll(".voice-phrase-row").length <= 1) return;
+            button.closest(".voice-phrase-row").remove();
+            syncVoicePhraseButtons(editor);
             state.voiceDirty = true;
         } else if (button.dataset.voiceAction === "reply") {
             testVoiceCommand(id, false);

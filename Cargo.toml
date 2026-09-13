@@ -56,5 +56,5 @@ panic = "abort"
 strip = "symbols"
 
 [patch.crates-io]
+# Upstream feature-only patch; provenance and removal criteria are in vendor/README.md.
 moq-native = { path = "vendor/moq-native" }
-web-transport-quinn = { path = "vendor/web-transport-quinn" }

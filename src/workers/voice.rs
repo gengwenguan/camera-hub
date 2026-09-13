@@ -17,7 +17,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
-const MODEL_PROBE_KEYWORD: &str = "x iǎo y ǔ :1.50 #0.45 @小雨";
+const MODEL_PROBE_KEYWORD: &str = "x iǎo y ǔ :1.50 #0.05 @小雨";
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 const EVENT_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const SPEAK_TTS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -369,12 +369,7 @@ async fn capture_once(
             }
             spotter.reset(&stream);
             let phrase = result.keyword.replace('_', "");
-            let Some(command) = config
-                .commands
-                .iter()
-                .find(|command| command.enabled && command.phrase == phrase)
-                .cloned()
-            else {
+            let Some(command) = command_for_phrase(config, &phrase) else {
                 continue;
             };
             if cooling_down(config, &command, cooldowns) {
@@ -411,6 +406,20 @@ async fn capture_once(
             last_status = Instant::now();
         }
     }
+}
+
+fn command_for_phrase(config: &VoiceConfig, phrase: &str) -> Option<VoiceCommand> {
+    config
+        .commands
+        .iter()
+        .find(|command| {
+            command.enabled && command.phrases.iter().any(|candidate| candidate == phrase)
+        })
+        .cloned()
+        .map(|mut command| {
+            command.phrase = phrase.to_owned();
+            command
+        })
 }
 
 fn spawn_capture(config: &VoiceConfig) -> Result<Child> {
@@ -918,5 +927,17 @@ mod tests {
             Instant::now() - Duration::from_millis(command.cooldown_ms + 1),
         );
         assert!(!cooling_down(&config, &command, &cooldowns));
+    }
+
+    #[test]
+    fn resolves_alias_to_the_same_command_and_keeps_matched_phrase() {
+        let mut config = VoiceConfig::default();
+        config.commands[0].enabled = true;
+        config.commands[0].phrases.push("小雨打开灯".to_owned());
+
+        let command = command_for_phrase(&config, "小雨打开灯").unwrap();
+
+        assert_eq!(command.id, "light-on");
+        assert_eq!(command.phrase, "小雨打开灯");
     }
 }

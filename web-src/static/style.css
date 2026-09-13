@@ -1306,7 +1306,7 @@ textarea:focus {
 
 .ir-action-grid {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
     margin-top: 14px;
 }
@@ -1416,6 +1416,7 @@ textarea:focus {
 
 .voice-global-grid label > span,
 .voice-command-grid label > span,
+.voice-phrases-field > span,
 .voice-command-heading small {
     color: var(--muted);
     font-size: 10px;
@@ -1496,6 +1497,34 @@ textarea:focus {
 .voice-command-grid .voice-url,
 .voice-command-grid .voice-body {
     grid-column: span 2;
+}
+
+.voice-phrases-field {
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 7px;
+}
+
+.voice-phrase-editor,
+.voice-phrase-list {
+    display: grid;
+    gap: 7px;
+}
+
+.voice-phrase-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 7px;
+}
+
+.voice-phrase-row .button,
+.voice-add-phrase {
+    min-height: 38px;
+    padding: 0 11px;
+}
+
+.voice-add-phrase {
+    justify-self: start;
 }
 
 .voice-event-table {

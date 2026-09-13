@@ -3,8 +3,10 @@ use pinyin::ToPinyin;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-pub const VOICE_CONFIG_VERSION: u32 = 1;
+pub const VOICE_CONFIG_VERSION: u32 = 3;
 pub const VOICE_TEST_REQUEST_MAX_AGE_SECS: u64 = 60;
+pub const MAX_PHRASES_PER_COMMAND: usize = 8;
+const MAX_TOTAL_PHRASES: usize = 96;
 
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
@@ -29,6 +31,7 @@ pub struct VoiceCommand {
     pub id: String,
     pub enabled: bool,
     pub phrase: String,
+    pub phrases: Vec<String>,
     pub reply: String,
     pub method: String,
     pub url: String,
@@ -98,14 +101,13 @@ impl Default for VoiceConfig {
             voice_profile_revision: 0,
             capture_rate: 48_000,
             request_timeout_ms: 3_000,
-            global_cooldown_ms: 2_000,
+            global_cooldown_ms: 500,
             failure_reply: "操作失败，请稍后再试".to_owned(),
             commands: vec![
                 VoiceCommand::new("light-on", "小雨开灯", "好的，已经开灯"),
                 VoiceCommand::new("light-off", "小雨关灯", "好的，已经关灯"),
                 VoiceCommand {
                     trigger_threshold: 0.60,
-                    cooldown_ms: 5_000,
                     ..VoiceCommand::new("door-open", "小雨开门", "好的，正在开门")
                 },
                 VoiceCommand::new("delivery", "小雨外卖", "好的，正在处理外卖请求"),
@@ -126,25 +128,30 @@ impl VoiceCommand {
             id: id.to_owned(),
             enabled: false,
             phrase: phrase.to_owned(),
+            phrases: vec![phrase.to_owned()],
             reply: reply.to_owned(),
             method: "GET".to_owned(),
             url: String::new(),
             body: String::new(),
             boosting_score: 1.5,
-            trigger_threshold: 0.45,
-            cooldown_ms: 2_000,
+            trigger_threshold: 0.05,
+            cooldown_ms: 500,
         }
     }
 }
 
 impl VoiceConfig {
     pub fn normalize(mut self) -> Result<Self> {
+        let previous_version = self.version;
         self.version = VOICE_CONFIG_VERSION;
         self.capture_device = self.capture_device.trim().to_owned();
         self.playback_device = self.playback_device.trim().to_owned();
         self.playback_volume = self.playback_volume.min(100);
         self.capture_rate = self.capture_rate.clamp(8_000, 192_000);
         self.request_timeout_ms = self.request_timeout_ms.clamp(500, 30_000);
+        if previous_version < 3 && self.global_cooldown_ms == 2_000 {
+            self.global_cooldown_ms = 500;
+        }
         self.global_cooldown_ms = self.global_cooldown_ms.clamp(500, 60_000);
         self.failure_reply = clean_text(&self.failure_reply, 120, "失败回复")?;
         if self.capture_device.is_empty() || self.playback_device.is_empty() {
@@ -156,6 +163,7 @@ impl VoiceConfig {
 
         let mut ids = HashSet::new();
         let mut phrases = HashSet::new();
+        let mut phrase_count = 0;
         for command in &mut self.commands {
             command.id = command.id.trim().to_owned();
             if command.id.is_empty()
@@ -170,10 +178,23 @@ impl VoiceConfig {
             if !ids.insert(command.id.clone()) {
                 bail!("命令 ID 不能重复：{}", command.id);
             }
-            command.phrase = clean_phrase(&command.phrase)?;
-            if !phrases.insert(command.phrase.clone()) {
-                bail!("命令短语不能重复：{}", command.phrase);
+            let legacy_phrase = command.phrase.trim().to_owned();
+            if command.phrases.is_empty() {
+                command.phrases.push(legacy_phrase);
+            } else if !legacy_phrase.is_empty() {
+                command.phrases[0] = legacy_phrase;
             }
+            if command.phrases.len() > MAX_PHRASES_PER_COMMAND {
+                bail!("每个命令最多支持 {MAX_PHRASES_PER_COMMAND} 个触发短语");
+            }
+            for phrase in &mut command.phrases {
+                *phrase = clean_phrase(phrase)?;
+                if !phrases.insert(phrase.clone()) {
+                    bail!("命令短语不能重复：{phrase}");
+                }
+            }
+            phrase_count += command.phrases.len();
+            command.phrase = command.phrases[0].clone();
             command.reply = clean_text(&command.reply, 120, "回复内容")?;
             command.method = command.method.trim().to_ascii_uppercase();
             if !matches!(command.method.as_str(), "GET" | "POST") {
@@ -198,8 +219,14 @@ impl VoiceConfig {
             }
             command.boosting_score = finite_or(command.boosting_score, 1.5).clamp(0.0, 10.0);
             command.trigger_threshold =
-                finite_or(command.trigger_threshold, 0.45).clamp(0.05, 0.95);
+                finite_or(command.trigger_threshold, 0.05).clamp(0.01, 0.95);
+            if previous_version < 3 && matches!(command.cooldown_ms, 2_000 | 5_000) {
+                command.cooldown_ms = 500;
+            }
             command.cooldown_ms = command.cooldown_ms.clamp(500, 60_000);
+        }
+        if phrase_count > MAX_TOTAL_PHRASES {
+            bail!("语音配置最多支持 {MAX_TOTAL_PHRASES} 个触发短语");
         }
         Ok(self)
     }
@@ -211,10 +238,10 @@ impl VoiceConfig {
     }
 
     pub fn keyword_buffer(&self) -> Result<String> {
-        let lines = self
-            .enabled_commands()
-            .map(VoiceCommand::keyword_line)
-            .collect::<Result<Vec<_>>>()?;
+        let mut lines = Vec::new();
+        for command in self.enabled_commands() {
+            lines.extend(command.keyword_lines()?);
+        }
         if lines.is_empty() {
             bail!("没有已启用且配置 URL 的语音命令");
         }
@@ -223,14 +250,21 @@ impl VoiceConfig {
 }
 
 impl VoiceCommand {
-    pub fn keyword_line(&self) -> Result<String> {
-        let tokens = partial_pinyin(&self.phrase)?;
+    pub fn keyword_lines(&self) -> Result<Vec<String>> {
+        self.phrases
+            .iter()
+            .map(|phrase| self.keyword_line_for(phrase))
+            .collect()
+    }
+
+    fn keyword_line_for(&self, phrase: &str) -> Result<String> {
+        let tokens = partial_pinyin(phrase)?;
         Ok(format!(
             "{} :{:.2} #{:.2} @{}",
             tokens.join(" "),
             self.boosting_score,
             self.trigger_threshold,
-            self.phrase.replace(' ', "_")
+            phrase.replace(' ', "_")
         ))
     }
 }
@@ -298,9 +332,13 @@ mod tests {
     fn builds_expected_chinese_keyword_tokens() {
         let command = VoiceCommand::new("light-on", "小雨开灯", "好的");
         assert_eq!(
-            command.keyword_line().unwrap(),
-            "x iǎo y ǔ k āi d ēng :1.50 #0.45 @小雨开灯"
+            command.keyword_lines().unwrap()[0],
+            "x iǎo y ǔ k āi d ēng :1.50 #0.05 @小雨开灯"
         );
+
+        let mut command = command;
+        command.phrases.push("小雨打开灯".to_owned());
+        assert_eq!(command.keyword_lines().unwrap().len(), 2);
     }
 
     #[test]
@@ -312,6 +350,26 @@ mod tests {
         let mut config = VoiceConfig::default();
         config.commands[0].phrase = "hey小雨".to_owned();
         assert!(config.normalize().is_err());
+
+        let mut config = VoiceConfig::default();
+        let duplicate = config.commands[0].phrase.clone();
+        config.commands[1].phrases.push(duplicate);
+        assert!(config.normalize().is_err());
+    }
+
+    #[test]
+    fn migrates_legacy_phrase_to_phrase_list() {
+        let mut value =
+            serde_json::to_value(VoiceCommand::new("light-on", "小雨开灯", "好的")).unwrap();
+        value.as_object_mut().unwrap().remove("phrases");
+        let command: VoiceCommand = serde_json::from_value(value).unwrap();
+        let config = VoiceConfig {
+            commands: vec![command],
+            ..VoiceConfig::default()
+        }
+        .normalize()
+        .unwrap();
+        assert_eq!(config.commands[0].phrases, ["小雨开灯"]);
     }
 
     #[test]
@@ -333,6 +391,36 @@ mod tests {
         config.commands[0].method = "POST".to_owned();
         config.commands[0].body = r#"{"enabled":true}"#.to_owned();
         assert!(config.normalize().is_ok());
+    }
+
+    #[test]
+    fn supports_one_percent_threshold_precision() {
+        let mut config = VoiceConfig::default();
+        config.commands[0].trigger_threshold = 0.056;
+        let config = config.normalize().unwrap();
+        assert_eq!(config.commands[0].trigger_threshold, 0.056);
+
+        let mut config = VoiceConfig::default();
+        config.commands[0].trigger_threshold = 0.001;
+        let config = config.normalize().unwrap();
+        assert_eq!(config.commands[0].trigger_threshold, 0.01);
+    }
+
+    #[test]
+    fn migrates_legacy_default_cooldowns_to_500_ms() {
+        let mut config = VoiceConfig::default();
+        config.version = 2;
+        config.global_cooldown_ms = 2_000;
+        config.commands[0].cooldown_ms = 2_000;
+        config.commands[1].cooldown_ms = 5_000;
+        config.commands[2].cooldown_ms = 10_000;
+
+        let config = config.normalize().unwrap();
+
+        assert_eq!(config.global_cooldown_ms, 500);
+        assert_eq!(config.commands[0].cooldown_ms, 500);
+        assert_eq!(config.commands[1].cooldown_ms, 500);
+        assert_eq!(config.commands[2].cooldown_ms, 10_000);
     }
 
     #[test]

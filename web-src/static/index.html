@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <title>camera-hub</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260811-5">
-    <link rel="stylesheet" href="/style.css?v=20260913-4">
+    <link rel="stylesheet" href="/style.css?v=20260913-5">
 </head>
 <body>
     <div class="backdrop"></div>
@@ -474,13 +474,14 @@
             </div>
             <div class="ir-test-groups" id="irActionList">
                 <section class="ir-primary-actions">
-                    <h3>已验证控制</h3>
-                    <p>“打开空调”使用方案 D，“关闭空调”使用方案 B；也可仅设置制冷 26°C 而不改变 ECO。</p>
+                    <h3>空调模式</h3>
+                    <p>默认开机使用制冷 26°C + ECO；普通制冷和抽湿模式会明确关闭 ECO。</p>
                     <div class="ir-action-grid" data-ir-action-group="control"></div>
                 </section>
             </div>
             <p class="ir-voice-phrases">
-                语音命令：<code>小雨打开空调</code>、<code>小雨关闭空调</code>
+                语音命令：<code>小雨开空调</code>、<code>小雨制冷模式</code>、
+                <code>小雨抽湿模式</code>、<code>小雨关空调</code>
             </p>
             <p class="ir-last-result" id="irLastResult">尚未发送控制信号</p>
         </section>
@@ -550,7 +551,7 @@
                 <div class="voice-command-heading">
                     <div>
                         <h3>命令列表</h3>
-                        <small>阈值越高越难触发；开门类操作建议不低于 0.60。</small>
+                        <small>新命令默认阈值 0.05，支持 0.01 步进；开门类操作建议使用更高阈值。</small>
                     </div>
                     <button class="button ghost" id="addVoiceCommand" type="button">新增命令</button>
                 </div>
@@ -1044,6 +1045,6 @@
     <script type="module" src="/generated/flv-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/moq-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/evaluation.js?v=20260813-2"></script>
-    <script src="/app.js?v=20260913-4" defer></script>
+    <script src="/app.js?v=20260913-5" defer></script>
 </body>
 </html>

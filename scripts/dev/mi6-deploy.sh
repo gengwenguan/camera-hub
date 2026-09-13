@@ -6,10 +6,9 @@ HUB_HOST="${HUB_HOST:-mi6.gwghome.site}"
 HUB_USER="${HUB_USER:-android}"
 HUB_PASSWORD="${HUB_PASSWORD:-}"
 REMOTE_DIR="${REMOTE_DIR:-/home/android/work/camera-hub}"
-REMOTE_BUILD_DIR="${REMOTE_BUILD_DIR:-/home/android/.cache/camera-hub-build}"
-WEBRTC_LOCAL_DIR="${WEBRTC_LOCAL_DIR:-${ROOT_DIR}/../github/webrtc}"
-WEBRTC_REMOTE_DIR="${WEBRTC_REMOTE_DIR:-/home/android/work/webrtc}"
-WEBRTC_REV="a91689c3dd237ea48a0ce5a827a69d3807420a5c"
+SHERPA_CACHE_DIR="${SHERPA_CACHE_DIR:-/home/android/camera-voice/cache}"
+SHERPA_RUNTIME="sherpa-onnx-v1.13.6-linux-aarch64-shared-cpu-lib.tar.bz2"
+SHERPA_RUNTIME_SHA256="3575bde0543da12fc626c814c14287455f70a22b72caa483c7398d5f20f4cb12"
 ACTION="${1:-push}"
 
 SSH_OPTIONS=(-6 -o ServerAliveInterval=20 -o ServerAliveCountMax=30 \
@@ -44,24 +43,6 @@ sync_source() {
         "${ROOT_DIR}/" "${REMOTE}:${REMOTE_DIR}/"
 }
 
-sync_webrtc() {
-    local revision
-    revision="$(git -C "${WEBRTC_LOCAL_DIR}" rev-parse HEAD)"
-    if [[ "${revision}" != "${WEBRTC_REV}" ]]; then
-        echo "webrtc-rs revision mismatch: ${revision}, expected ${WEBRTC_REV}" >&2
-        exit 1
-    fi
-    remote "mkdir -p '${WEBRTC_REMOTE_DIR}'"
-    rsync -az --delete \
-        --exclude .git \
-        --exclude target \
-        --exclude .DS_Store \
-        --exclude output.h264 \
-        --exclude output.ogg \
-        -e "${RSYNC_RSH}" \
-        "${WEBRTC_LOCAL_DIR}/" "${REMOTE}:${WEBRTC_REMOTE_DIR}/"
-}
-
 provision_ai() {
     local cache_dir="${CAMERA_HUB_AI_CACHE:-/tmp/camera-hub-ai-cache}"
     bash "${ROOT_DIR}/scripts/dev/fetch-ai-assets.sh" >/dev/null
@@ -77,17 +58,31 @@ provision_ai() {
         -C /home/android/camera-ai/runtime --strip-components=1"
 }
 
+fetch_sherpa_runtime() {
+    remote "set -e
+        cache='${SHERPA_CACHE_DIR}'
+        archive=\"\$cache/${SHERPA_RUNTIME}\"
+        mkdir -p \"\$cache\"
+        if [ ! -s \"\$archive\" ] ||
+            [ \"\$(sha256sum \"\$archive\" | awk '{print \$1}')\" != '${SHERPA_RUNTIME_SHA256}' ]; then
+            temporary=\"\${archive}.tmp\"
+            rm -f \"\$archive\" \"\$temporary\"
+            curl -fL --retry 3 --connect-timeout 20 \
+                'https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.6/${SHERPA_RUNTIME}' \
+                -o \"\$temporary\"
+            echo '${SHERPA_RUNTIME_SHA256}  '\"\$temporary\" | sha256sum -c -
+            mv \"\$temporary\" \"\$archive\"
+        fi
+    "
+}
+
 build_remote() {
     remote "set -e
         . /home/android/.cargo/env
-        mkdir -p '${REMOTE_BUILD_DIR}'
-        rsync -a --delete --exclude .git --exclude target \
-            '${REMOTE_DIR}/' '${REMOTE_BUILD_DIR}/'
-        cd '${REMOTE_BUILD_DIR}'
-        CARGO_TARGET_DIR='${REMOTE_DIR}/target' \
-        cargo build --release --bin camera-hub --features voice-workers \
-            --config 'patch.\"https://github.com/gengwenguan/webrtc\".webrtc.path=\"${WEBRTC_REMOTE_DIR}/webrtc\"'
-        test -x '${REMOTE_DIR}/target/release/camera-hub'
+        cd '${REMOTE_DIR}'
+        SHERPA_ONNX_ARCHIVE_DIR='${SHERPA_CACHE_DIR}' \
+        cargo build --locked --release --bin camera-hub --features voice-workers
+        test -x target/release/camera-hub
     "
 }
 
@@ -127,12 +122,12 @@ case "${ACTION}" in
         ;;
     build)
         sync_source
-        sync_webrtc
+        fetch_sherpa_runtime
         build_remote
         ;;
     push)
         sync_source
-        sync_webrtc
+        fetch_sherpa_runtime
         build_remote
         install_remote
         ;;
