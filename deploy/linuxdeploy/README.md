@@ -88,13 +88,14 @@ Voice Studio 请求会被拒绝。
 不要公开 `CAMERA_HUB_TTS_TOKEN`，也不要把 `CAMERA_HUB_TTS_BIND` 改为公网地址。
 测试请求超过 60 秒会被丢弃，事件日志达到 4 MiB 后滚动。
 
-## 红外空调测试
+## 红外空调控制
 
 当 `/dev/peel_ir` 存在时，组件管理器自动启动仅监听回环地址的 IR worker。语音控制
-页“空调测试”提供四种美的制冷 26°C 开机候选和两种明确关机帧，用于确认目标空调
-采用的协议。Web 测试 API 需要登录，不提供任意原始波形发送能力；连续发送至少间隔
-1 秒。MI6 的 `peel_ir` 使用 960 kHz、32-bit SPI，worker 按 38 kHz 载波生成受限
-bitstream 后通过驱动 ioctl 发射。
+页“空调控制”使用实机验证过的 RN02S 协议：方案 D 对应制冷 26°C、自动风并开启
+ECO，方案 C 作为不改变 ECO 的备用，方案 B 明确关机。Web API 需要登录，不提供
+任意原始波形发送能力；连续发送至少间隔 1 秒。启动时会无损追加“`小雨打开空调`”
+和“`小雨关闭空调`”语音命令。MI6 的 `peel_ir` 使用 960 kHz、32-bit SPI，worker
+按 38 kHz 载波生成受限 bitstream 后通过驱动 ioctl 发射。
 
 ## QQ 机器人
 
