@@ -479,7 +479,7 @@ Termux 等无 Root 平台由适配器覆盖为 8080/8443。HTTPS 使用自签名
 | 环境 | 入口 | 默认端口 | 自启动 |
 |---|---|---|---|
 | 普通 Linux | 手工环境变量或自建 systemd | 80/443 | 由发行版管理 |
-| LinuxDeploy 参考设备 | `deploy/linuxdeploy/` | 80/443 | `rc.local` |
+| 小米 6 / LinuxDeploy | `deploy/mi6/` | 80/443 | `rc.local` |
 | 无 Root Android/Termux | `deploy/termux/` | 8080/8443 | Termux:Boot |
 
 ### 通用 Linux
@@ -493,33 +493,37 @@ CAMERA_HUB_DATA_DIR=/srv/camera-hub/data ./target/release/camera-hub server
 需要内置 TTS/Voice worker 时使用 `--features voice-workers` 构建。无论启用哪些
 组件，发布产物都只有一个 `camera-hub` 可执行文件。
 
-### LinuxDeploy 参考设备
+### 小米 6 / LinuxDeploy
 
-LinuxDeploy 参考适配器位于 `deploy/linuxdeploy`，完整安装和 DNSPod DDNS 配置见
-[LinuxDeploy 部署](deploy/linuxdeploy/README.md)。连接参数使用通用名称：
+设备安装适配器位于 `deploy/mi6`，说明见
+[MI6 / LinuxDeploy 适配器](deploy/mi6/README.md)。SSH、源码同步和远端构建属于
+开发工作流，统一放在 `scripts/dev`：
 
 只将当前源码同步到目标节点，不构建或重启：
 
 ```bash
-bash deploy/linuxdeploy/deploy.sh sync
+scripts/dev/mi6-deploy.sh sync
 ```
 
 目标地址变化时可临时覆盖连接参数：
 
 ```bash
 HUB_HOST=其他主机名 HUB_USER=android \
-    bash deploy/linuxdeploy/deploy.sh sync
+    scripts/dev/mi6-deploy.sh sync
 ```
 
 完整构建、安装并重启服务：
 
 ```bash
 HUB_HOST=mi6.gwghome.site HUB_USER=android HUB_PASSWORD=... \
-    bash deploy/linuxdeploy/deploy.sh push
+    scripts/dev/mi6-deploy.sh push
 ```
 
-该适配器负责 `/home/android` 路径、80/443 capability、ONNX 资源和 `rc.local`，
-这些都不是 camera-hub 核心程序的硬依赖。
+设备适配器负责 `/home/android` 路径、80/443 capability、MI6 音频路由和
+`rc.local`，这些都不是 camera-hub 核心程序的硬依赖。KWS、ZipVoice 和 Vocos
+模型由 Web AssetManager 按需安装，不再由部署脚本预下载。AI 相册迁入
+AssetManager 前，新安装默认关闭 AI，MI6 开发环境可临时执行
+`scripts/dev/mi6-deploy.sh provision-ai` 预置固定版本资源。
 
 LinuxDeploy 适配器还可代资源受限边缘节点管理权威证书。
 `camera-hub-acme-edge` 从设备状态 API 获取指定设备的公网 IPv6，使用 Let’s
@@ -557,12 +561,14 @@ DDNS 在 camera-hub Web 的“DDNS”页面配置。配置和状态分别保存�
 对账”后会立即重新加载，无需 SSH 或重启进程。页面还可以在写入 DNSPod 前预览
 当前公网前缀和各条目标地址。
 
-命令行诊断入口继续保留：
+目标设备上的命令行诊断入口继续保留：
 
 ```bash
-bash deploy/linuxdeploy/deploy.sh ddns-dry-run
-bash deploy/linuxdeploy/deploy.sh ddns-once
-bash deploy/linuxdeploy/deploy.sh ddns-log
+set -a
+. /home/android/.config/camera-hub.env
+set +a
+camera-hub worker ddns --dry-run
+camera-hub worker ddns --once
 ```
 
 常驻进程默认每 60 秒检查本机前缀，前缀变化时更新所有目标记录；即使前缀未变，

@@ -126,11 +126,11 @@ MoQ 浏览器链路使用 QUIC/WebTransport，必须满足：
 当前项目不做 Token 鉴权时，MoQ 端点可使用匿名 broadcast namespace；但 TLS 仍是
 WebTransport 的强制条件，不能因为媒体不敏感而移除。
 
-LinuxDeploy 适配器使用 `deploy/linuxdeploy/acme-ip.sh`：自动选择 `wlan0` 稳定公网 IPv6，
+MI6 适配器使用 `deploy/mi6/acme-ip.sh`：自动选择 `wlan0` 稳定公网 IPv6，
 下载固定版本 lego，申请或续期证书，原子替换证书并重启 camera-hub。每 12 小时检查
 一次；IPv6 前缀变化后会为新地址重新申请。
 
-同一节点可通过 `deploy/linuxdeploy/acme-edge.sh` 为资源受限 Camera 节点代办 ACME。
+同一节点可通过 `deploy/mi6/acme-edge.sh` 为资源受限 Camera 节点代办 ACME。
 Camera C++/Rust 只从共享 `state/acme-webroot` 返回 challenge，并从 `state/tls`
 加载证书；challenge 与私钥均通过专用 SSH 密钥同步，不在明文媒体链路中传输。
 
