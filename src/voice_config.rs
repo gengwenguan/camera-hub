@@ -57,6 +57,11 @@ pub struct VoiceWorkerStatus {
     pub tts_state: String,
     pub last_error: String,
     pub updated_epoch: u64,
+    pub asr_available: bool,
+    pub asr_state: String,
+    pub asr_transcript: String,
+    pub asr_transcript_epoch: u64,
+    pub asr_error: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -86,6 +91,30 @@ impl VoiceTestRequest {
         self.created_epoch != 0
             && self.created_epoch <= now.saturating_add(5)
             && now.saturating_sub(self.created_epoch) <= VOICE_TEST_REQUEST_MAX_AGE_SECS
+    }
+}
+
+/// On-demand streaming ASR request dropped by the Web UI for the voice worker.
+///
+/// Phase 1 只做「唤醒 → 转写」：worker 收到请求后打开一次限时录音窗口，
+/// 用流式识别器转写整句并写回 `VoiceWorkerStatus`，不触发任何命令执行。
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct VoiceTranscribeRequest {
+    pub window_ms: u64,
+    pub created_epoch: u64,
+}
+
+impl VoiceTranscribeRequest {
+    pub fn is_fresh(&self, now: u64) -> bool {
+        self.created_epoch != 0
+            && self.created_epoch <= now.saturating_add(5)
+            && now.saturating_sub(self.created_epoch) <= VOICE_TEST_REQUEST_MAX_AGE_SECS
+    }
+
+    #[cfg_attr(not(feature = "voice-workers"), allow(dead_code))]
+    pub fn clamped_window(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.window_ms.clamp(1_000, 15_000))
     }
 }
 

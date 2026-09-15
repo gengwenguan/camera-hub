@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::voice_config::{
     MAX_PHRASES_PER_COMMAND, VOICE_CONFIG_VERSION, VoiceCommand, VoiceConfig, VoiceEvent,
-    VoiceTestRequest, VoiceWorkerStatus,
+    VoiceTestRequest, VoiceTranscribeRequest, VoiceWorkerStatus,
 };
 use crate::voice_tts::{
     DEFAULT_VOICE_PROFILE_ID, TtsProfileResponse, VOICE_REFERENCE_PROMPT, VoiceReferenceUpload,
@@ -34,6 +34,7 @@ pub struct VoiceService {
     status_path: PathBuf,
     events_path: PathBuf,
     command_path: PathBuf,
+    transcribe_path: PathBuf,
     current: RwLock<VoiceConfig>,
     test_queue: Mutex<()>,
     profile_update: AsyncMutex<()>,
@@ -72,6 +73,7 @@ impl VoiceService {
             status_path: config.voice_status_file.clone(),
             events_path: config.voice_events_file.clone(),
             command_path: config.voice_command_file.clone(),
+            transcribe_path: config.voice_transcribe_file.clone(),
             current: RwLock::new(current),
             test_queue: Mutex::new(()),
             profile_update: AsyncMutex::new(()),
@@ -183,6 +185,41 @@ impl VoiceService {
         }
         request.created_epoch = now;
         write_json(&self.command_path, &request)
+    }
+
+    /// 投递一次「唤醒 → 转写」请求（Phase 1）。worker 会在限时窗口内转写整句，
+    /// 结果写入 `VoiceWorkerStatus.asr_transcript`，不触发任何命令执行。
+    pub fn queue_transcribe(&self, window_ms: u64) -> Result<VoiceTranscribeRequest> {
+        let _queue = self
+            .test_queue
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let status = self.status();
+        if !status.asr_available {
+            bail!("自然语言识别模型尚未安装");
+        }
+        let now = epoch_seconds();
+        match fs::read(&self.transcribe_path) {
+            Ok(data) => {
+                let pending = serde_json::from_slice::<VoiceTranscribeRequest>(&data).ok();
+                if pending.is_some_and(|pending| pending.is_fresh(now)) {
+                    bail!("已有语音转写等待执行，请稍后重试");
+                }
+                match fs::remove_file(&self.transcribe_path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        let request = VoiceTranscribeRequest {
+            window_ms: window_ms.clamp(1_000, 15_000),
+            created_epoch: now,
+        };
+        write_json(&self.transcribe_path, &request)?;
+        Ok(request)
     }
 
     pub async fn enroll_reference(
@@ -413,6 +450,7 @@ mod tests {
             status_path: root.join("voice-status.json"),
             events_path: root.join("events.jsonl"),
             command_path: root.join("voice-command.json"),
+            transcribe_path: root.join("voice-transcribe.json"),
             current: RwLock::new(VoiceConfig::default()),
             test_queue: Mutex::new(()),
             profile_update: AsyncMutex::new(()),
@@ -483,6 +521,32 @@ mod tests {
         let queued: VoiceTestRequest =
             serde_json::from_slice(&fs::read(&service.command_path).unwrap()).unwrap();
         assert!(queued.is_fresh(epoch_seconds()));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn queues_transcribe_only_when_asr_available_and_replaces_stale() {
+        let root = temporary_root("voice-transcribe");
+        let service = service(&root);
+
+        assert!(service.queue_transcribe(6_000).is_err());
+
+        let status = VoiceWorkerStatus {
+            asr_available: true,
+            ..VoiceWorkerStatus::default()
+        };
+        write_json(&service.status_path, &status).unwrap();
+
+        let request = service.queue_transcribe(60_000).unwrap();
+        assert_eq!(request.window_ms, 15_000);
+        assert!(service.queue_transcribe(6_000).is_err());
+
+        let mut stale = request;
+        stale.created_epoch = epoch_seconds()
+            .saturating_sub(crate::voice_config::VOICE_TEST_REQUEST_MAX_AGE_SECS + 1);
+        write_json(&service.transcribe_path, &stale).unwrap();
+        let refreshed = service.queue_transcribe(500).unwrap();
+        assert_eq!(refreshed.window_ms, 1_000);
         let _ = fs::remove_dir_all(root);
     }
 

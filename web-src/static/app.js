@@ -47,6 +47,12 @@
         voiceLastKeyword: $("voiceLastKeyword"),
         voiceTtsState: $("voiceTtsState"),
         voiceLastError: $("voiceLastError"),
+        voiceAsrStatus: $("voiceAsrStatus"),
+        voiceAsrState: $("voiceAsrState"),
+        voiceAsrTranscript: $("voiceAsrTranscript"),
+        voiceAsrError: $("voiceAsrError"),
+        voiceTranscribeButton: $("voiceTranscribeButton"),
+        voiceTranscribeWindow: $("voiceTranscribeWindow"),
         voiceForm: $("voiceForm"),
         voiceReferencePrompt: $("voiceReferencePrompt"),
         voiceReferenceStatus: $("voiceReferenceStatus"),
@@ -199,6 +205,7 @@
         view: "overview",
         cameraView: "live",
         voiceView: "commands",
+        transcribeBusy: false,
         currentRecord: "",
         segmentSeconds: 600,
         timelinePreview: null,
@@ -486,6 +493,38 @@
         }
     }
 
+    const VOICE_ASR_STATES = {
+        missing: "模型未安装",
+        idle: "空闲",
+        loading: "正在加载模型",
+        listening: "正在聆听",
+        ready: "识别完成",
+        error: "识别异常",
+    };
+
+    function renderVoiceAsr(status, online) {
+        if (!ui.voiceAsrStatus) return;
+        const available = !!status.asr_available;
+        const asrState = status.asr_state || (available ? "idle" : "missing");
+        const listening = asrState === "listening" || asrState === "loading";
+        ui.voiceAsrStatus.textContent = !available
+            ? "模型未安装"
+            : listening
+                ? "识别中"
+                : "就绪";
+        ui.voiceAsrStatus.className = `chip ${available ? "active" : "offline"}`;
+        ui.voiceAsrState.textContent = VOICE_ASR_STATES[asrState] || asrState;
+        ui.voiceAsrTranscript.textContent = status.asr_transcript || "--";
+        ui.voiceAsrError.textContent =
+            status.asr_error || (available ? "运行正常" : "请先在服务状态中安装自然语言识别模型");
+        ui.voiceAsrError.classList.toggle("error", !!status.asr_error);
+        if (ui.voiceTranscribeButton) {
+            const busy = state.transcribeBusy || listening;
+            ui.voiceTranscribeButton.disabled = !online || !available || busy;
+            ui.voiceTranscribeButton.textContent = busy ? "识别中…" : "开始转写";
+        }
+    }
+
     function renderVoice(body) {
         const config = body && body.config || {};
         const status = body && body.status || {};
@@ -514,6 +553,7 @@
         ui.voiceLastError.textContent =
             status.last_error || (online ? "运行正常" : "等待 worker 状态");
         ui.voiceLastError.classList.toggle("error", !!status.last_error);
+        renderVoiceAsr(status, online);
         ui.voiceReferencePrompt.textContent = body.reference_prompt || "--";
         if (!state.voiceProfileBusy && !state.voiceRecorder) {
             ui.voiceReferenceStatus.textContent = profileRevision > 0
@@ -717,6 +757,7 @@
         const entries = [
             ["voice-tts", assets.voice_tts || {}],
             ["voice-kws", assets.voice_kws || {}],
+            ["voice-asr", assets.voice_asr || {}],
         ];
         const stateLabels = {
             queued: "等待下载",
@@ -1105,6 +1146,39 @@
             window.setTimeout(() => loadVoice(true), 1200);
         } catch (error) {
             handleError(error);
+        }
+    }
+
+    async function requestVoiceTranscription() {
+        if (state.transcribeBusy) return;
+        const windowMs = Number(ui.voiceTranscribeWindow?.value) || 6000;
+        state.transcribeBusy = true;
+        if (ui.voiceTranscribeButton) {
+            ui.voiceTranscribeButton.disabled = true;
+            ui.voiceTranscribeButton.textContent = "识别中…";
+        }
+        try {
+            await api("/api/v1/voice/transcribe", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ window_ms: windowMs }),
+            });
+            showToast("已开始录音，请说话");
+            const deadline = Date.now() + windowMs + 8000;
+            const poll = async () => {
+                await loadVoice(true);
+                if (Date.now() < deadline) {
+                    window.setTimeout(poll, 1200);
+                } else {
+                    state.transcribeBusy = false;
+                    await loadVoice(true);
+                }
+            };
+            window.setTimeout(poll, 1200);
+        } catch (error) {
+            state.transcribeBusy = false;
+            handleError(error);
+            await loadVoice(true);
         }
     }
 
@@ -3157,6 +3231,9 @@
     });
     ui.voiceStudioForm.addEventListener("submit", saveVoiceStudioSettings);
     ui.copyVoiceStudioUrl.addEventListener("click", copyVoiceStudioUrl);
+    if (ui.voiceTranscribeButton) {
+        ui.voiceTranscribeButton.addEventListener("click", requestVoiceTranscription);
+    }
     ui.openVoiceStudio.addEventListener("click", (event) => {
         if (ui.openVoiceStudio.getAttribute("aria-disabled") === "true") {
             event.preventDefault();

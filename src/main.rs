@@ -213,6 +213,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         .route("/api/v1/integrations/qq/notify", post(qq_notify_external))
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
+        .route("/api/v1/voice/transcribe", post(transcribe_voice))
         .route("/api/v1/ir", get(ir_overview))
         .route("/api/v1/ir/actions/{action}", post(send_ir_action))
         .route("/api/v1/assets", get(assets_overview))
@@ -1146,6 +1147,25 @@ async fn test_voice(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     state.voice.queue_test(request)?;
     Ok((StatusCode::ACCEPTED, Json(json!({"ok":true}))))
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default)]
+struct VoiceTranscribeBody {
+    window_ms: u64,
+}
+
+async fn transcribe_voice(
+    State(state): State<Arc<AppState>>,
+    body: Option<Json<VoiceTranscribeBody>>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let window_ms = body.map(|Json(body)| body.window_ms).unwrap_or(0);
+    let window_ms = if window_ms == 0 { 6_000 } else { window_ms };
+    let request = state.voice.queue_transcribe(window_ms)?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"ok":true,"window_ms":request.window_ms})),
+    ))
 }
 
 async fn enroll_voice_reference(

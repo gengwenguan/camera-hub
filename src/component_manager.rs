@@ -277,7 +277,7 @@ impl ComponentManager {
             }
         };
         match asset {
-            "voice-kws" => {
+            "voice-kws" | "voice-asr" => {
                 self.stop_component(ComponentId::Voice, false).await?;
             }
             "voice-tts" => {

@@ -4,7 +4,7 @@
 
 - 安装单一 `/usr/local/bin/camera-hub` 可执行文件和 sherpa 共享库。
 - 配置 80/443 端口 capability、MI6 音频路由和 `rc.local`。
-- 创建权限受限的运行目录、环境文件、日志和内部 TTS token。
+- 通过 `camera-hub setup mi6` 初始化用户目录、环境文件和内部 TTS token。
 - 安装本机及边缘节点 ACME 辅助脚本。
 - 迁移旧版 DDNS 环境变量配置。
 
@@ -60,6 +60,9 @@ camera-hub worker ir
 ```
 
 各组件可在对应 Web 页面启停、重启并配置自启。`rc.local` 不再直接管理 worker。
+
+`camera-hub setup mi6 --home /home/android` 可以独立重复执行。它使用原子写入补充
+缺少的默认值、清理废弃键并保留已有密码和 token，适合安装器升级和手工修复配置。
 
 KWS、ZipVoice 和 Vocos 模型不由部署脚本预装。用户在 Web 的语音服务页面按需安装，
 由 `AssetManager` 完成下载、SHA-256 校验、原子替换和 worker 重新初始化。构建期

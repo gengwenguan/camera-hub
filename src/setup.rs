@@ -151,12 +151,20 @@ fn setup_mi6(args: &Args) -> Result<()> {
             path(".config/camera-hub-voice-command.json"),
         ),
         (
+            "CAMERA_HUB_VOICE_TRANSCRIBE_FILE",
+            path(".config/camera-hub-voice-transcribe.json"),
+        ),
+        (
             "CAMERA_HUB_VOICE_LIB_DIR",
             "/usr/local/lib/camera-hub-voice".to_owned(),
         ),
         (
             "CAMERA_HUB_VOICE_MODEL_DIR",
             path("camera-voice/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"),
+        ),
+        (
+            "CAMERA_HUB_ASR_MODEL_DIR",
+            path("camera-voice/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"),
         ),
         ("CAMERA_HUB_TTS_BIND", "127.0.0.1:39081".to_owned()),
         ("CAMERA_HUB_TTS_URL", "http://127.0.0.1:39081".to_owned()),

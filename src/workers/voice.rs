@@ -1,12 +1,13 @@
 use crate::inference_lock::InferenceLock;
 use crate::voice_config::{
-    VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceWorkerStatus,
+    VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceTranscribeRequest,
+    VoiceWorkerStatus,
 };
 use crate::voice_tts::{DEFAULT_VOICE_PROFILE_ID, VoiceTtsClient};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use reqwest::Client;
-use sherpa_onnx::{KeywordSpotter, KeywordSpotterConfig};
+use sherpa_onnx::{KeywordSpotter, KeywordSpotterConfig, OnlineRecognizer, OnlineRecognizerConfig};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -84,6 +85,20 @@ struct Args {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_ASR_MODEL_DIR",
+        default_value = "/home/android/camera-voice/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"
+    )]
+    asr_model_dir: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_VOICE_TRANSCRIBE_FILE",
+        default_value = "/home/android/.config/camera-hub-voice-transcribe.json"
+    )]
+    transcribe: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_TTS_URL",
         default_value = "http://127.0.0.1:39081"
     )]
@@ -117,6 +132,13 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
     status.available = true;
     status.state = "disabled".to_owned();
     status.last_error.clear();
+    let asr_installed = args.asr_model_dir.join("tokens.txt").is_file();
+    status.asr_available = asr_installed;
+    status.asr_state = if asr_installed {
+        "idle".to_owned()
+    } else {
+        "missing".to_owned()
+    };
     write_status(&args.status, &status)?;
 
     let client = Client::builder()
@@ -130,6 +152,7 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
     let mut prewarm_retry_revision = None;
     let mut prewarm_retry_at = None;
     let mut tts_warning = String::new();
+    let mut recognizer: Option<OnlineRecognizer> = None;
 
     loop {
         let config = match load_config(&args.config) {
@@ -146,6 +169,34 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
         status.capture_device = config.capture_device.clone();
         status.playback_device = config.playback_device.clone();
         status.config_revision = config.revision;
+
+        match take_transcribe_request(&args.transcribe) {
+            Ok(Some(request)) => {
+                if let Some(recognizer) = ensure_recognizer(
+                    &mut recognizer,
+                    &args.asr_model_dir,
+                    &mut status,
+                    &args.status,
+                ) {
+                    run_transcription(
+                        recognizer,
+                        &inference_lock,
+                        &config,
+                        &request,
+                        &mut status,
+                        &args.status,
+                    )
+                    .await;
+                }
+                continue;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                status.asr_state = "error".to_owned();
+                status.asr_error = format!("{error:#}");
+                write_status(&args.status, &status)?;
+            }
+        }
 
         match take_test_request(&args.command) {
             Ok(Some(test)) => {
@@ -287,6 +338,203 @@ fn create_spotter(model_dir: &Path, keywords: &str) -> Result<KeywordSpotter> {
     config.keywords_buf = Some(keywords.to_owned());
     KeywordSpotter::create(&config)
         .ok_or_else(|| anyhow::anyhow!("无法加载 sherpa-onnx 关键词模型"))
+}
+
+fn ensure_recognizer<'a>(
+    recognizer: &'a mut Option<OnlineRecognizer>,
+    model_dir: &Path,
+    status: &mut VoiceWorkerStatus,
+    status_path: &Path,
+) -> Option<&'a OnlineRecognizer> {
+    if recognizer.is_none() {
+        status.asr_state = "loading".to_owned();
+        status.asr_error.clear();
+        let _ = write_status(status_path, status);
+        match create_recognizer(model_dir) {
+            Ok(created) => {
+                status.asr_available = true;
+                *recognizer = Some(created);
+            }
+            Err(error) => {
+                status.asr_available = false;
+                status.asr_state = "error".to_owned();
+                status.asr_error = format!("{error:#}");
+                let _ = write_status(status_path, status);
+                return None;
+            }
+        }
+    }
+    recognizer.as_ref()
+}
+
+fn create_recognizer(model_dir: &Path) -> Result<OnlineRecognizer> {
+    let mut config = OnlineRecognizerConfig::default();
+    config.model_config.transducer.encoder = Some(
+        model_dir
+            .join("encoder-epoch-99-avg-1.int8.onnx")
+            .display()
+            .to_string(),
+    );
+    config.model_config.transducer.decoder = Some(
+        model_dir
+            .join("decoder-epoch-99-avg-1.int8.onnx")
+            .display()
+            .to_string(),
+    );
+    config.model_config.transducer.joiner = Some(
+        model_dir
+            .join("joiner-epoch-99-avg-1.int8.onnx")
+            .display()
+            .to_string(),
+    );
+    config.model_config.tokens = Some(model_dir.join("tokens.txt").display().to_string());
+    config.model_config.provider = Some("cpu".to_owned());
+    config.model_config.num_threads = 1;
+    config.enable_endpoint = true;
+    config.rule1_min_trailing_silence = 2.4;
+    config.rule2_min_trailing_silence = 1.2;
+    config.rule3_min_utterance_length = 20.0;
+    OnlineRecognizer::create(&config)
+        .ok_or_else(|| anyhow::anyhow!("无法加载 sherpa-onnx 流式识别模型"))
+}
+
+fn take_transcribe_request(path: &Path) -> Result<Option<VoiceTranscribeRequest>> {
+    let claimed = path.with_extension(format!(
+        "json.processing-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    match fs::rename(path, &claimed) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let result = (|| {
+        let data = fs::read(&claimed)?;
+        let request =
+            serde_json::from_slice::<VoiceTranscribeRequest>(&data).context("解析语音转写请求")?;
+        if !request.is_fresh(epoch_seconds()) {
+            bail!("语音转写请求已过期");
+        }
+        Ok(Some(request))
+    })();
+    let _ = fs::remove_file(claimed);
+    result
+}
+
+/// Phase 1「唤醒 → 转写」：命中转写请求后打开一次限时录音窗口，
+/// 用流式识别器转写整句并写回状态，不触发任何命令执行。
+async fn run_transcription(
+    recognizer: &OnlineRecognizer,
+    inference_lock: &InferenceLock,
+    config: &VoiceConfig,
+    request: &VoiceTranscribeRequest,
+    status: &mut VoiceWorkerStatus,
+    status_path: &Path,
+) {
+    status.asr_state = "listening".to_owned();
+    status.asr_error.clear();
+    let _ = write_status(status_path, status);
+    match transcribe_once(
+        recognizer,
+        inference_lock,
+        config,
+        request,
+        status,
+        status_path,
+    )
+    .await
+    {
+        Ok(text) => {
+            status.asr_state = "ready".to_owned();
+            status.asr_transcript = text;
+            status.asr_transcript_epoch = epoch_seconds();
+            status.asr_error.clear();
+        }
+        Err(error) => {
+            status.asr_state = "error".to_owned();
+            status.asr_error = format!("{error:#}");
+        }
+    }
+    let _ = write_status(status_path, status);
+}
+
+async fn transcribe_once(
+    recognizer: &OnlineRecognizer,
+    inference_lock: &InferenceLock,
+    config: &VoiceConfig,
+    request: &VoiceTranscribeRequest,
+    status: &mut VoiceWorkerStatus,
+    status_path: &Path,
+) -> Result<String> {
+    let window = request.clamped_window();
+    let mut child = spawn_capture(config)?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("无法读取 arecord 音频输出"))?;
+    let stream = recognizer.create_stream();
+    let mut buffer = vec![0u8; 8192];
+    let mut pending_pcm_byte = None;
+    let started = Instant::now();
+    let mut last_status = Instant::now();
+
+    let outcome = loop {
+        if started.elapsed() >= window {
+            break Ok(());
+        }
+        let count = match tokio::time::timeout(Duration::from_millis(500), stdout.read(&mut buffer))
+            .await
+        {
+            Ok(result) => result.context("read arecord audio")?,
+            Err(_) => continue,
+        };
+        if count == 0 {
+            let exit = child.wait().await.context("wait for arecord")?;
+            break Err(anyhow::anyhow!("arecord 已退出：{exit}"));
+        }
+        let samples = pcm_i16_to_f32(&buffer[..count], &mut pending_pcm_byte);
+        status.audio_rms = rms(&samples);
+        stream.accept_waveform(config.capture_rate, &samples);
+        {
+            let _guard = inference_lock.lock()?;
+            while recognizer.is_ready(&stream) {
+                recognizer.decode(&stream);
+            }
+            if recognizer.is_endpoint(&stream) {
+                let partial = recognizer
+                    .get_result(&stream)
+                    .map(|result| result.text)
+                    .unwrap_or_default();
+                if !partial.trim().is_empty() {
+                    break Ok(());
+                }
+                recognizer.reset(&stream);
+            }
+        }
+        if last_status.elapsed() >= STATUS_INTERVAL {
+            let _ = write_status(status_path, status);
+            last_status = Instant::now();
+        }
+    };
+
+    stream.input_finished();
+    {
+        let _guard = inference_lock.lock()?;
+        while recognizer.is_ready(&stream) {
+            recognizer.decode(&stream);
+        }
+    }
+    let text = recognizer
+        .get_result(&stream)
+        .map(|result| result.text)
+        .unwrap_or_default();
+    stop_capture(&mut child).await;
+    outcome?;
+    Ok(text.trim().to_owned())
 }
 
 async fn capture_once(

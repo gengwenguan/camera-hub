@@ -422,6 +422,15 @@
                             <button class="button ghost" type="button"
                                     data-asset-install="voice-kws">安装模型</button>
                         </div>
+                        <div class="voice-asset" data-voice-asset="voice-asr">
+                            <div>
+                                <strong>自然语言识别模型</strong>
+                                <small data-asset-detail>正在读取模型状态</small>
+                            </div>
+                            <progress data-asset-progress max="100" value="0" hidden></progress>
+                            <button class="button ghost" type="button"
+                                    data-asset-install="voice-asr">安装模型</button>
+                        </div>
                     </div>
                     <div class="voice-service-actions">
                         <button class="button ghost" type="button"
@@ -502,6 +511,38 @@
                 <div><dt>最近命令</dt><dd id="voiceLastKeyword">--</dd></div>
                 <div><dt>回复声音</dt><dd id="voiceTtsState">--</dd></div>
                 <div><dt>运行信息</dt><dd id="voiceLastError">--</dd></div>
+            </dl>
+        </section>
+
+        <section class="panel voice-panel" data-view="voice"
+                 data-voice-view="status" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">NATURAL LANGUAGE · 阶段一</p>
+                    <h2>自然语言转写测试</h2>
+                </div>
+                <span class="chip" id="voiceAsrStatus">等待加载</span>
+            </div>
+            <p class="voice-asr-hint">
+                点击「开始转写」后，对着麦克风说一句完整的话（例如「把空调调到二十度」），
+                系统会用本地流式模型识别整句文本。此阶段仅展示识别结果，不会触发任何设备动作。
+            </p>
+            <div class="voice-asr-controls">
+                <button class="button" id="voiceTranscribeButton" type="button">开始转写</button>
+                <label>
+                    <span>录音时长</span>
+                    <select id="voiceTranscribeWindow">
+                        <option value="4000">4 秒</option>
+                        <option value="6000" selected>6 秒</option>
+                        <option value="8000">8 秒</option>
+                        <option value="10000">10 秒</option>
+                    </select>
+                </label>
+            </div>
+            <dl class="voice-runtime">
+                <div><dt>识别引擎</dt><dd id="voiceAsrState">--</dd></div>
+                <div><dt>识别结果</dt><dd id="voiceAsrTranscript">--</dd></div>
+                <div><dt>运行信息</dt><dd id="voiceAsrError">--</dd></div>
             </dl>
         </section>
 

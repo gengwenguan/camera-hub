@@ -38,6 +38,17 @@ const KWS_DOWNLOAD_BYTES: u64 = 32_654_866;
 const KWS_INSTALLED_BYTES: u64 = 37_361_991;
 
 #[cfg(feature = "voice-workers")]
+const ASR_MODEL: &str = "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23";
+#[cfg(feature = "voice-workers")]
+const ASR_ARCHIVE: &str = "sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23.tar.bz2";
+#[cfg(feature = "voice-workers")]
+const ASR_URL: &str = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23.tar.bz2";
+#[cfg(feature = "voice-workers")]
+const ASR_SHA256: &str = "2cbd71b640d9c37d3784f29367333a4577b0398b62e9deeed418170b081cba8b";
+const ASR_DOWNLOAD_BYTES: u64 = 74_004_050;
+const ASR_INSTALLED_BYTES: u64 = 81_340_658;
+
+#[cfg(feature = "voice-workers")]
 const TTS_MODEL: &str = "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia";
 #[cfg(feature = "voice-workers")]
 const TTS_ARCHIVE: &str = "sherpa-onnx-zipvoice-distill-int8-zh-en-emilia.tar.bz2";
@@ -67,6 +78,13 @@ const KWS_REQUIRED: &[RequiredPath] = &[
     RequiredPath::file("joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"),
 ];
 
+const ASR_REQUIRED: &[RequiredPath] = &[
+    RequiredPath::file("tokens.txt"),
+    RequiredPath::file("encoder-epoch-99-avg-1.int8.onnx"),
+    RequiredPath::file("decoder-epoch-99-avg-1.int8.onnx"),
+    RequiredPath::file("joiner-epoch-99-avg-1.int8.onnx"),
+];
+
 const TTS_REQUIRED: &[RequiredPath] = &[
     RequiredPath::file("tokens.txt"),
     RequiredPath::file("encoder.int8.onnx"),
@@ -81,6 +99,14 @@ const KWS_ARTIFACTS: &[Artifact] = &[Artifact {
     url: KWS_URL,
     sha256: KWS_SHA256,
     bytes: KWS_DOWNLOAD_BYTES,
+}];
+
+#[cfg(feature = "voice-workers")]
+const ASR_ARTIFACTS: &[Artifact] = &[Artifact {
+    file_name: ASR_ARCHIVE,
+    url: ASR_URL,
+    sha256: ASR_SHA256,
+    bytes: ASR_DOWNLOAD_BYTES,
 }];
 
 #[cfg(feature = "voice-workers")]
@@ -102,15 +128,17 @@ const TTS_ARTIFACTS: &[Artifact] = &[
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum AssetId {
     VoiceKws,
+    VoiceAsr,
     VoiceTts,
 }
 
 impl AssetId {
-    const ALL: [Self; 2] = [Self::VoiceKws, Self::VoiceTts];
+    const ALL: [Self; 3] = [Self::VoiceKws, Self::VoiceAsr, Self::VoiceTts];
 
     fn parse(value: &str) -> Result<Self> {
         match value {
             "voice-kws" => Ok(Self::VoiceKws),
+            "voice-asr" => Ok(Self::VoiceAsr),
             "voice-tts" => Ok(Self::VoiceTts),
             _ => bail!("不支持的资源包：{value}"),
         }
@@ -119,6 +147,7 @@ impl AssetId {
     fn as_str(self) -> &'static str {
         match self {
             Self::VoiceKws => "voice-kws",
+            Self::VoiceAsr => "voice-asr",
             Self::VoiceTts => "voice-tts",
         }
     }
@@ -132,6 +161,14 @@ impl AssetId {
                 installed_bytes: KWS_INSTALLED_BYTES,
                 #[cfg(feature = "voice-workers")]
                 artifacts: KWS_ARTIFACTS,
+            },
+            Self::VoiceAsr => AssetDefinition {
+                label: "自然语言识别模型",
+                version: "streaming-zipformer-zh-14m-2023-02-23",
+                download_bytes: ASR_DOWNLOAD_BYTES,
+                installed_bytes: ASR_INSTALLED_BYTES,
+                #[cfg(feature = "voice-workers")]
+                artifacts: ASR_ARTIFACTS,
             },
             Self::VoiceTts => AssetDefinition {
                 label: "TTS 声纹模型",
@@ -260,6 +297,7 @@ pub struct AssetStatus {
 pub struct AssetsOverview {
     pub busy: bool,
     pub voice_kws: AssetStatus,
+    pub voice_asr: AssetStatus,
     pub voice_tts: AssetStatus,
 }
 
@@ -297,6 +335,7 @@ impl AssetManager {
         AssetsOverview {
             busy: state.active.is_some(),
             voice_kws: self.status_locked(&state, AssetId::VoiceKws),
+            voice_asr: self.status_locked(&state, AssetId::VoiceAsr),
             voice_tts: self.status_locked(&state, AssetId::VoiceTts),
         }
     }
@@ -642,6 +681,7 @@ fn asset_installed(config: &Config, id: AssetId) -> bool {
     }
     match id {
         AssetId::VoiceKws => required_paths_exist(&config.voice_model_dir, KWS_REQUIRED),
+        AssetId::VoiceAsr => required_paths_exist(&config.asr_model_dir, ASR_REQUIRED),
         AssetId::VoiceTts => {
             required_paths_exist(&config.tts_model_dir, TTS_REQUIRED)
                 && config.tts_vocoder.is_file()
@@ -666,6 +706,7 @@ fn required_paths_exist(root: &Path, required: &[RequiredPath]) -> bool {
 fn install_parent(config: &Config, id: AssetId) -> Result<PathBuf> {
     let target = match id {
         AssetId::VoiceKws => &config.voice_model_dir,
+        AssetId::VoiceAsr => &config.asr_model_dir,
         AssetId::VoiceTts => &config.tts_model_dir,
     };
     target
@@ -757,6 +798,14 @@ fn prepare_install(id: AssetId, config: &Config, cached: &[PathBuf]) -> Result<P
             KWS_MODEL,
             KWS_REQUIRED,
             KWS_INSTALLED_BYTES.saturating_add(INSTALL_HEADROOM_BYTES),
+            &nonce,
+        )?],
+        AssetId::VoiceAsr => vec![prepare_archive_replacement(
+            &cached[0],
+            &config.asr_model_dir,
+            ASR_MODEL,
+            ASR_REQUIRED,
+            ASR_INSTALLED_BYTES.saturating_add(INSTALL_HEADROOM_BYTES),
             &nonce,
         )?],
         AssetId::VoiceTts => vec![

@@ -141,6 +141,13 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_VOICE_TRANSCRIBE_FILE",
+        default_value = "camera-hub-state/voice-transcribe.json"
+    )]
+    pub voice_transcribe_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_VOICE_LIB_DIR",
         default_value = "/usr/local/lib/camera-hub-voice"
     )]
@@ -152,6 +159,13 @@ pub struct Config {
         default_value = "/home/android/camera-voice/models/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
     )]
     pub voice_model_dir: PathBuf,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_ASR_MODEL_DIR",
+        default_value = "/home/android/camera-voice/models/sherpa-onnx-streaming-zipformer-zh-14M-2023-02-23"
+    )]
+    pub asr_model_dir: PathBuf,
 
     #[arg(
         long,

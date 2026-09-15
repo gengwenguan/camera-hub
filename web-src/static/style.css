@@ -1395,6 +1395,34 @@ textarea:focus {
     color: var(--accent);
 }
 
+.voice-asr-hint {
+    margin: 0 0 14px;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.voice-asr-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+}
+
+.voice-asr-controls label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+    font-size: 14px;
+}
+
+#voiceAsrTranscript {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
 .voice-global-grid,
 .voice-command-grid {
     display: grid;
