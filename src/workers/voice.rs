@@ -398,6 +398,15 @@ fn create_recognizer(model_dir: &Path) -> Result<OnlineRecognizer> {
         .ok_or_else(|| anyhow::anyhow!("无法加载 sherpa-onnx 流式识别模型"))
 }
 
+fn transcribe_request_pending(path: &Path) -> bool {
+    match fs::read(path) {
+        Ok(data) => serde_json::from_slice::<VoiceTranscribeRequest>(&data)
+            .map(|request| request.is_fresh(epoch_seconds()))
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
+
 fn take_transcribe_request(path: &Path) -> Result<Option<VoiceTranscribeRequest>> {
     let claimed = path.with_extension(format!(
         "json.processing-{}-{}",
@@ -584,6 +593,11 @@ async fn capture_once(
                 status.last_error = format!("{error:#}");
                 write_status(&context.args.status, status)?;
             }
+        }
+
+        if transcribe_request_pending(&context.args.transcribe) {
+            stop_capture(&mut child).await;
+            return Ok(());
         }
 
         let count =
@@ -1156,6 +1170,35 @@ mod tests {
         write_json(&path, &request).unwrap();
 
         assert!(take_test_request(&path).is_err());
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn detects_only_fresh_transcribe_requests() {
+        let path = std::env::temp_dir().join(format!(
+            "camera-hub-voice-transcribe-{}-{}.json",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        assert!(!transcribe_request_pending(&path));
+
+        let fresh = VoiceTranscribeRequest {
+            window_ms: 6_000,
+            created_epoch: epoch_seconds(),
+        };
+        write_json(&path, &fresh).unwrap();
+        assert!(transcribe_request_pending(&path));
+
+        let stale = VoiceTranscribeRequest {
+            window_ms: 6_000,
+            created_epoch: epoch_seconds()
+                .saturating_sub(crate::voice_config::VOICE_TEST_REQUEST_MAX_AGE_SECS + 1),
+        };
+        write_json(&path, &stale).unwrap();
+        assert!(!transcribe_request_pending(&path));
+
+        let claimed = take_transcribe_request(&path);
+        assert!(claimed.is_err());
         assert!(!path.exists());
     }
 
