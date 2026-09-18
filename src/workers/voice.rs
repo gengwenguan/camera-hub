@@ -7,8 +7,10 @@ use crate::voice_tts::{DEFAULT_VOICE_PROFILE_ID, VoiceTtsClient};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use reqwest::Client;
-use sherpa_onnx::{KeywordSpotter, KeywordSpotterConfig, OnlineRecognizer, OnlineRecognizerConfig};
-use std::collections::{BTreeSet, HashMap};
+use sherpa_onnx::{
+    KeywordSpotter, KeywordSpotterConfig, OnlineRecognizer, OnlineRecognizerConfig, OnlineStream,
+};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -19,6 +21,9 @@ use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
 
 const MODEL_PROBE_KEYWORD: &str = "x iǎo y ǔ :1.50 #0.05 @小雨";
+const WAKE_PHRASE: &str = "小雨";
+const WAKE_TRANSCRIBE_WINDOW: Duration = Duration::from_secs(6);
+const WAKE_PREROLL_MILLIS: usize = 1_200;
 const STATUS_INTERVAL: Duration = Duration::from_secs(5);
 const EVENT_LOG_MAX_BYTES: u64 = 4 * 1024 * 1024;
 const SPEAK_TTS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -39,6 +44,60 @@ struct CaptureContext<'a> {
     client: &'a Client,
     tts: &'a VoiceTtsClient,
     args: &'a Args,
+}
+
+struct AudioPreRoll {
+    samples: VecDeque<f32>,
+    capacity: usize,
+}
+
+impl AudioPreRoll {
+    fn new(sample_rate: i32) -> Self {
+        let capacity = usize::try_from(sample_rate)
+            .unwrap_or_default()
+            .saturating_mul(WAKE_PREROLL_MILLIS)
+            / 1_000;
+        Self {
+            samples: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    fn push(&mut self, samples: &[f32]) {
+        if self.capacity == 0 {
+            return;
+        }
+        if samples.len() >= self.capacity {
+            self.samples.clear();
+            self.samples
+                .extend(samples[samples.len() - self.capacity..].iter().copied());
+            return;
+        }
+        let overflow = self
+            .samples
+            .len()
+            .saturating_add(samples.len())
+            .saturating_sub(self.capacity);
+        if overflow > 0 {
+            self.samples.drain(..overflow);
+        }
+        self.samples.extend(samples.iter().copied());
+    }
+
+    fn accept_into(&self, stream: &OnlineStream, sample_rate: i32) {
+        let (first, second) = self.samples.as_slices();
+        if !first.is_empty() {
+            stream.accept_waveform(sample_rate, first);
+        }
+        if !second.is_empty() {
+            stream.accept_waveform(sample_rate, second);
+        }
+    }
+}
+
+struct ActiveTranscription {
+    stream: OnlineStream,
+    started: Instant,
 }
 
 #[derive(Debug, Parser)]
@@ -255,7 +314,7 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
             continue;
         }
 
-        let keywords = match config.keyword_buffer() {
+        let keywords = match listener_keyword_buffer(&config, asr_installed) {
             Ok(keywords) => keywords,
             Err(error) => {
                 status.running = false;
@@ -283,6 +342,15 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
             }
         }
 
+        if asr_installed && recognizer.is_none() {
+            let _ = ensure_recognizer(
+                &mut recognizer,
+                &args.asr_model_dir,
+                &mut status,
+                &args.status,
+            );
+        }
+
         status.running = true;
         status.state = "listening".to_owned();
         status.last_error.clone_from(&tts_warning);
@@ -293,16 +361,18 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
             tts: &tts,
             args: &args,
         };
-        if let Err(error) = capture_once(
+        let capture_result = capture_once(
             &spotter,
+            recognizer.as_ref(),
             &context,
             &config,
             &mut status,
             &mut cooldowns,
             prewarm_retry_at.filter(|_| prewarm_retry_revision == Some(config.revision)),
         )
-        .await
-        {
+        .await;
+        restore_asr_idle_state(&mut status);
+        if let Err(error) = capture_result {
             status.running = false;
             status.state = "audio-error".to_owned();
             status.last_error = format!("{error:#}");
@@ -340,6 +410,14 @@ fn create_spotter(model_dir: &Path, keywords: &str) -> Result<KeywordSpotter> {
         .ok_or_else(|| anyhow::anyhow!("无法加载 sherpa-onnx 关键词模型"))
 }
 
+fn listener_keyword_buffer(config: &VoiceConfig, wake_available: bool) -> Result<String> {
+    if wake_available && config.enabled_commands().next().is_none() {
+        Ok(MODEL_PROBE_KEYWORD.to_owned())
+    } else {
+        config.keyword_buffer()
+    }
+}
+
 fn ensure_recognizer<'a>(
     recognizer: &'a mut Option<OnlineRecognizer>,
     model_dir: &Path,
@@ -353,7 +431,10 @@ fn ensure_recognizer<'a>(
         match create_recognizer(model_dir) {
             Ok(created) => {
                 status.asr_available = true;
+                status.asr_state = "idle".to_owned();
+                status.asr_error.clear();
                 *recognizer = Some(created);
+                let _ = write_status(status_path, status);
             }
             Err(error) => {
                 status.asr_available = false;
@@ -398,6 +479,70 @@ fn create_recognizer(model_dir: &Path) -> Result<OnlineRecognizer> {
         .ok_or_else(|| anyhow::anyhow!("无法加载 sherpa-onnx 流式识别模型"))
 }
 
+fn decode_transcription(
+    recognizer: &OnlineRecognizer,
+    inference_lock: &InferenceLock,
+    stream: &OnlineStream,
+) -> Result<bool> {
+    let _guard = inference_lock.lock()?;
+    while recognizer.is_ready(stream) {
+        recognizer.decode(stream);
+    }
+    if !recognizer.is_endpoint(stream) {
+        return Ok(false);
+    }
+    let has_text = recognizer
+        .get_result(stream)
+        .is_some_and(|result| !result.text.trim().is_empty());
+    if !has_text {
+        recognizer.reset(stream);
+    }
+    Ok(has_text)
+}
+
+fn finish_transcription(
+    recognizer: &OnlineRecognizer,
+    inference_lock: &InferenceLock,
+    stream: &OnlineStream,
+) -> Result<String> {
+    stream.input_finished();
+    let _guard = inference_lock.lock()?;
+    while recognizer.is_ready(stream) {
+        recognizer.decode(stream);
+    }
+    Ok(recognizer
+        .get_result(stream)
+        .map(|result| result.text)
+        .unwrap_or_default()
+        .trim()
+        .to_owned())
+}
+
+fn store_transcription_result(status: &mut VoiceWorkerStatus, result: Result<String>) {
+    match result {
+        Ok(text) => {
+            status.asr_state = "ready".to_owned();
+            status.asr_transcript = text;
+            status.asr_transcript_epoch = epoch_seconds();
+            status.asr_error.clear();
+        }
+        Err(error) => {
+            status.asr_state = "error".to_owned();
+            status.asr_error = format!("{error:#}");
+        }
+    }
+}
+
+fn restore_asr_idle_state(status: &mut VoiceWorkerStatus) {
+    if status.asr_state == "listening" {
+        status.asr_state = if status.asr_transcript_epoch == 0 {
+            "idle".to_owned()
+        } else {
+            "ready".to_owned()
+        };
+    }
+}
+
 fn transcribe_request_pending(path: &Path) -> bool {
     match fs::read(path) {
         Ok(data) => serde_json::from_slice::<VoiceTranscribeRequest>(&data)
@@ -434,8 +579,7 @@ fn take_transcribe_request(path: &Path) -> Result<Option<VoiceTranscribeRequest>
     result
 }
 
-/// Phase 1「唤醒 → 转写」：命中转写请求后打开一次限时录音窗口，
-/// 用流式识别器转写整句并写回状态，不触发任何命令执行。
+/// Web 按需转写：命中请求后打开一次限时录音窗口，用流式识别器转写整句并写回状态。
 async fn run_transcription(
     recognizer: &OnlineRecognizer,
     inference_lock: &InferenceLock,
@@ -447,7 +591,7 @@ async fn run_transcription(
     status.asr_state = "listening".to_owned();
     status.asr_error.clear();
     let _ = write_status(status_path, status);
-    match transcribe_once(
+    let result = transcribe_once(
         recognizer,
         inference_lock,
         config,
@@ -455,19 +599,8 @@ async fn run_transcription(
         status,
         status_path,
     )
-    .await
-    {
-        Ok(text) => {
-            status.asr_state = "ready".to_owned();
-            status.asr_transcript = text;
-            status.asr_transcript_epoch = epoch_seconds();
-            status.asr_error.clear();
-        }
-        Err(error) => {
-            status.asr_state = "error".to_owned();
-            status.asr_error = format!("{error:#}");
-        }
-    }
+    .await;
+    store_transcription_result(status, result);
     let _ = write_status(status_path, status);
 }
 
@@ -508,21 +641,8 @@ async fn transcribe_once(
         let samples = pcm_i16_to_f32(&buffer[..count], &mut pending_pcm_byte);
         status.audio_rms = rms(&samples);
         stream.accept_waveform(config.capture_rate, &samples);
-        {
-            let _guard = inference_lock.lock()?;
-            while recognizer.is_ready(&stream) {
-                recognizer.decode(&stream);
-            }
-            if recognizer.is_endpoint(&stream) {
-                let partial = recognizer
-                    .get_result(&stream)
-                    .map(|result| result.text)
-                    .unwrap_or_default();
-                if !partial.trim().is_empty() {
-                    break Ok(());
-                }
-                recognizer.reset(&stream);
-            }
+        if decode_transcription(recognizer, inference_lock, &stream)? {
+            break Ok(());
         }
         if last_status.elapsed() >= STATUS_INTERVAL {
             let _ = write_status(status_path, status);
@@ -530,24 +650,15 @@ async fn transcribe_once(
         }
     };
 
-    stream.input_finished();
-    {
-        let _guard = inference_lock.lock()?;
-        while recognizer.is_ready(&stream) {
-            recognizer.decode(&stream);
-        }
-    }
-    let text = recognizer
-        .get_result(&stream)
-        .map(|result| result.text)
-        .unwrap_or_default();
+    let text = finish_transcription(recognizer, inference_lock, &stream);
     stop_capture(&mut child).await;
     outcome?;
-    Ok(text.trim().to_owned())
+    text
 }
 
 async fn capture_once(
     spotter: &KeywordSpotter,
+    recognizer: Option<&OnlineRecognizer>,
     context: &CaptureContext<'_>,
     config: &VoiceConfig,
     status: &mut VoiceWorkerStatus,
@@ -559,12 +670,36 @@ async fn capture_once(
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("无法读取 arecord 音频输出"))?;
-    let stream = spotter.create_stream();
+    // Without fixed commands, the model's default keyword is also 小雨. Do not
+    // create a second stream that could consume it as an unmapped command.
+    let command_stream = config
+        .enabled_commands()
+        .next()
+        .map(|_| spotter.create_stream());
+    let wake_stream = recognizer.map(|_| spotter.create_stream_with_keywords(MODEL_PROBE_KEYWORD));
+    let mut active_transcription: Option<ActiveTranscription> = None;
+    let mut pre_roll = AudioPreRoll::new(config.capture_rate);
     let mut buffer = vec![0u8; 8192];
     let mut pending_pcm_byte = None;
     let mut last_status = Instant::now();
 
     loop {
+        if active_transcription
+            .as_ref()
+            .is_some_and(|active| active.started.elapsed() >= WAKE_TRANSCRIBE_WINDOW)
+        {
+            stop_capture(&mut child).await;
+            let active = active_transcription.take().expect("checked above");
+            let result = finish_transcription(
+                recognizer.expect("active transcription requires recognizer"),
+                context.inference_lock,
+                &active.stream,
+            );
+            store_transcription_result(status, result);
+            status.state = "listening".to_owned();
+            write_status(&context.args.status, status)?;
+            return Ok(());
+        }
         if wake_at.is_some_and(|deadline| Instant::now() >= deadline) {
             stop_capture(&mut child).await;
             return Ok(());
@@ -618,46 +753,121 @@ async fn capture_once(
 
         let samples = pcm_i16_to_f32(&buffer[..count], &mut pending_pcm_byte);
         status.audio_rms = rms(&samples);
-        stream.accept_waveform(config.capture_rate, &samples);
-        while spotter.is_ready(&stream) {
-            let _guard = context.inference_lock.lock()?;
-            spotter.decode(&stream);
-            drop(_guard);
-            let Some(result) = spotter.get_result(&stream) else {
-                continue;
-            };
-            if result.keyword.is_empty() {
-                continue;
+        pre_roll.push(&samples);
+        if let Some(stream) = &command_stream {
+            stream.accept_waveform(config.capture_rate, &samples);
+        }
+        if let Some(active) = &active_transcription {
+            active.stream.accept_waveform(config.capture_rate, &samples);
+        } else if let Some(stream) = &wake_stream {
+            stream.accept_waveform(config.capture_rate, &samples);
+        }
+
+        let mut wake_detected = false;
+        loop {
+            let command_ready = command_stream
+                .as_ref()
+                .is_some_and(|stream| spotter.is_ready(stream));
+            let wake_ready = active_transcription.is_none()
+                && wake_stream
+                    .as_ref()
+                    .is_some_and(|stream| spotter.is_ready(stream));
+            if !command_ready && !wake_ready {
+                break;
             }
-            spotter.reset(&stream);
-            let phrase = result.keyword.replace('_', "");
-            let Some(command) = command_for_phrase(config, &phrase) else {
-                continue;
-            };
-            if cooling_down(config, &command, cooldowns) {
-                continue;
+            {
+                let _guard = context.inference_lock.lock()?;
+                if command_ready {
+                    spotter.decode(command_stream.as_ref().expect("checked above"));
+                }
+                if wake_ready {
+                    spotter.decode(wake_stream.as_ref().expect("checked above"));
+                }
             }
-            stop_capture(&mut child).await;
-            status.detected_count = status.detected_count.saturating_add(1);
-            status.last_keyword = command.phrase.clone();
-            status.state = "executing".to_owned();
+
+            if command_ready
+                && let Some(stream) = &command_stream
+                && let Some(result) = spotter.get_result(stream)
+                && !result.keyword.is_empty()
+            {
+                spotter.reset(stream);
+                let phrase = result.keyword.replace('_', "");
+                let Some(command) = command_for_phrase(config, &phrase) else {
+                    continue;
+                };
+                if cooling_down(config, &command, cooldowns) {
+                    continue;
+                }
+                stop_capture(&mut child).await;
+                restore_asr_idle_state(status);
+                status.detected_count = status.detected_count.saturating_add(1);
+                status.last_keyword = command.phrase.clone();
+                status.state = "executing".to_owned();
+                write_status(&context.args.status, status)?;
+                execute_with_heartbeat(
+                    context.client,
+                    context.tts,
+                    config,
+                    &command,
+                    ExecutionMode {
+                        call_url: true,
+                        speak_reply: true,
+                        voice_clone: config.voice_profile_revision > 0,
+                        source: "voice",
+                    },
+                    context.args,
+                    status,
+                )
+                .await;
+                cooldowns.insert(command.id.clone(), Instant::now());
+                status.state = "listening".to_owned();
+                write_status(&context.args.status, status)?;
+                return Ok(());
+            }
+
+            if wake_ready {
+                let wake_stream = wake_stream.as_ref().expect("checked above");
+                if spotter
+                    .get_result(wake_stream)
+                    .is_some_and(|result| result.keyword.replace('_', "") == WAKE_PHRASE)
+                {
+                    spotter.reset(wake_stream);
+                    wake_detected = true;
+                    break;
+                }
+            }
+        }
+
+        if wake_detected {
+            let recognizer = recognizer.expect("wake stream requires recognizer");
+            let stream = recognizer.create_stream();
+            pre_roll.accept_into(&stream, config.capture_rate);
+            active_transcription = Some(ActiveTranscription {
+                stream,
+                started: Instant::now(),
+            });
+            status.last_keyword = WAKE_PHRASE.to_owned();
+            status.state = "transcribing".to_owned();
+            status.asr_state = "listening".to_owned();
+            status.asr_error.clear();
             write_status(&context.args.status, status)?;
-            execute_with_heartbeat(
-                context.client,
-                context.tts,
-                config,
-                &command,
-                ExecutionMode {
-                    call_url: true,
-                    speak_reply: true,
-                    voice_clone: config.voice_profile_revision > 0,
-                    source: "voice",
-                },
-                context.args,
-                status,
-            )
-            .await;
-            cooldowns.insert(command.id.clone(), Instant::now());
+        }
+
+        if let Some(active) = &active_transcription
+            && decode_transcription(
+                recognizer.expect("active transcription requires recognizer"),
+                context.inference_lock,
+                &active.stream,
+            )?
+        {
+            stop_capture(&mut child).await;
+            let active = active_transcription.take().expect("checked above");
+            let result = finish_transcription(
+                recognizer.expect("active transcription requires recognizer"),
+                context.inference_lock,
+                &active.stream,
+            );
+            store_transcription_result(status, result);
             status.state = "listening".to_owned();
             write_status(&context.args.status, status)?;
             return Ok(());
@@ -1151,6 +1361,52 @@ mod tests {
         assert_eq!(samples.len(), 3);
         assert!(rms(&samples) > 0.8);
         assert_eq!(pending, None);
+    }
+
+    #[test]
+    fn keeps_only_the_latest_wake_preroll_samples() {
+        let mut pre_roll = AudioPreRoll {
+            samples: VecDeque::new(),
+            capacity: 4,
+        };
+        pre_roll.push(&[1.0, 2.0, 3.0]);
+        pre_roll.push(&[4.0, 5.0, 6.0]);
+
+        assert_eq!(
+            pre_roll.samples.iter().copied().collect::<Vec<_>>(),
+            vec![3.0, 4.0, 5.0, 6.0]
+        );
+
+        pre_roll.push(&[7.0, 8.0, 9.0, 10.0, 11.0]);
+        assert_eq!(
+            pre_roll.samples.iter().copied().collect::<Vec<_>>(),
+            vec![8.0, 9.0, 10.0, 11.0]
+        );
+    }
+
+    #[test]
+    fn restores_asr_state_after_an_interrupted_wake_window() {
+        let mut status = VoiceWorkerStatus {
+            asr_state: "listening".to_owned(),
+            ..VoiceWorkerStatus::default()
+        };
+        restore_asr_idle_state(&mut status);
+        assert_eq!(status.asr_state, "idle");
+
+        status.asr_state = "listening".to_owned();
+        status.asr_transcript_epoch = 1;
+        restore_asr_idle_state(&mut status);
+        assert_eq!(status.asr_state, "ready");
+    }
+
+    #[test]
+    fn keeps_wake_listener_available_without_fixed_commands() {
+        let config = VoiceConfig::default();
+        assert_eq!(
+            listener_keyword_buffer(&config, true).unwrap(),
+            MODEL_PROBE_KEYWORD
+        );
+        assert!(listener_keyword_buffer(&config, false).is_err());
     }
 
     #[test]

@@ -5,7 +5,7 @@
 
 ## 1. 现状与瓶颈
 
-当前语音链路是关键词识别（KWS），不是语音转写：
+改造前的语音链路只有关键词识别（KWS），不支持语音转写：
 
 - [`src/workers/voice.rs`](../src/workers/voice.rs) 使用 sherpa-onnx `KeywordSpotter`，
   只在音频中命中预注册的固定短语，再由 `command_for_phrase()` 做精确字符串匹配。
@@ -54,8 +54,9 @@
 
 ## 5. ASR（阶段 1 核心）
 
-- KWS 仅作唤醒门控（只认「小雨」），命中后开短窗口（约 5s）交给流式 ASR，静音或超时回待机。
-- 复用现有依赖 sherpa-onnx 1.13.6 的 `OnlineRecognizer`（`src/online_asr.rs`），
+- 独立 KWS 流只认「小雨」，命中后开启 6 秒流式 ASR 窗口，端点或超时后回待机；
+  已配置的固定命令继续通过原 KWS 流识别并优先执行。
+- 复用现有依赖 sherpa-onnx 1.13.6 的 `OnlineRecognizer`（该 crate 的 `src/online_asr.rs`），
   API 与现用 `KeywordSpotter` 几乎一致：
   `create` / `create_stream` / `accept_waveform` / `decode` / `is_ready` /
   `is_endpoint` / `get_result`（返回 `RecognizerResult { text, is_final, ... }`）。
@@ -125,7 +126,7 @@
 
 ## 8. 分阶段路线
 
-1. ASR 门控（**已实现，待 MI6 实机验证**）：KWS 唤醒 → 流式转写出文本，Web 显示转写结果，不改执行。
+1. ASR 门控（**已实现并通过 MI6 实机验证**）：KWS 唤醒 → 流式转写出文本，Web 显示转写结果，不改执行。
 2. 规则 NLU + 红外参数化：按 §6 码表实现温度/模式/风速 + fixtures 单测；定时先做单点实测校准。
 3. 小 LLM 兜底：接 llama.cpp sidecar + GBNF，仅规则失败时调用，结果缓存。
 4. 打磨：置信度、失败回复、Web 配置页、MI6 实机回归 + 提交。
@@ -141,15 +142,19 @@
   - 必需文件：`tokens.txt`、`encoder/decoder/joiner-epoch-99-avg-1.int8.onnx`
   - 来源 `https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/...`
 - 配置：`CAMERA_HUB_ASR_MODEL_DIR`、`CAMERA_HUB_VOICE_TRANSCRIBE_FILE`（`src/config.rs`、`src/setup.rs`）。
-- worker（`src/workers/voice.rs`）：唤醒后收到转写请求即打开限时窗口（1–15s），
-  流式识别整句写回 `VoiceWorkerStatus.asr_transcript`；识别器懒加载，模型缺失不影响 KWS。
-  ASR/KWS 共用 `InferenceLock` 串行，避免 MI6 过热。
+- worker（`src/workers/voice.rs`）：固定命令 KWS 与「小雨」唤醒 KWS 使用独立流并行检测，
+  固定命令优先执行；唤醒命中后复用当前 `arecord`，将 1.2 秒预卷和后续音频送入
+  6 秒 ASR 窗口，结果写回 `VoiceWorkerStatus.asr_transcript`。识别器在监听前预加载，
+  模型缺失时不影响原固定命令 KWS。ASR/KWS 共用 `InferenceLock` 串行，避免 MI6 过热。
+  没有已启用且配置 URL 的固定命令时，仅创建唤醒流。自动唤醒要求语音配置
+  `enabled=true` 且 ASR 模型加载成功；转写文本在本阶段不用于生成设备动作。
 - 服务与 API：`VoiceService::queue_transcribe()`；`POST /api/v1/voice/transcribe`（`src/main.rs`）。
 - Web：语音控制页新增「自然语言转写测试」面板（开始转写按钮 + 时长选择 + 转写结果展示），
   服务状态页新增 `voice-asr` 模型安装卡片。
-- 测试：`voice::tests::queues_transcribe_only_when_asr_available_and_replaces_stale`。
+- 测试：保留 Web 按需转写回归，并覆盖唤醒预卷边界和中断后的 ASR 状态恢复。
 
-待验证（需 MI6 实机，本地无法覆盖）：麦克风采集 + 真实中文口音下的转写质量与延迟。
+MI6 自动声学回归已验证唤醒后无需 Web 请求即可进入 ASR、写回文本并恢复 KWS 监听；
+真实中文口音下的准确率与延迟仍需持续采样评估。
 
 
 ## 9. 参考来源
