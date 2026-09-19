@@ -1,7 +1,16 @@
 # 自然语言语音控制设计
 
-本文档记录把语音控制从「固定关键词」升级为「自然语句 → 结构化意图」的方案，
-以及相关的红外协议查证结论，供后续分阶段实现直接引用。
+本文档记录自然语言控制的实现、后续方案和 RN02S13 红外协议查证结论。
+
+当前已实现：KWS 唤醒 → ASR 整句转写 → 确定性规则解析 → 参数化红外 → 状态与播报。
+开启语音配置中的 `enabled` 和 `nlu_enabled`，安装 `voice-kws` 与 `voice-asr` 模型后，
+可以说「小雨，把空调调到二十度」。模型统一由 Web 的 `AssetManager` 安装。
+默认 `nlu_enabled=false`，旧配置升级不会自动开启设备控制。
+
+支持：17–30°C 整数、制冷/抽湿/制热/自动、开关、明确开启/关闭 ECO。
+未指定温度/模式时取 26°C/制冷，风速固定自动；单说打开空调保持原先 ECO 开启行为，
+其他完整状态默认 ECO 关闭，解析结果明确展示全部默认值。ECO 与模式一起设置时只允许制冷。
+定时、半度、风速调节、相对/模糊温度、多设备、否定与条件句整体拒绝，不会执行部分内容。
 
 ## 1. 现状与瓶颈
 
@@ -14,19 +23,18 @@
 
 红外侧是第二个独立瓶颈：
 
-- [`src/ir.rs`](../src/ir.rs) 中温度/模式是写死常量（`RN02_COOL_26 = 0x0B`、
-  `RN02_DRY_26 = 0x2B`），`action_pattern()` 按枚举拼固定整帧。即使 NLU 正确解析出
-  温度，编码器目前也无法生成对应帧。
+- 原有 [`src/ir.rs`](../src/ir.rs) 仅支持写死常量（`RN02_COOL_26 = 0x0B`、
+  `RN02_DRY_26 = 0x2B`）。阶段 2 新增 `aircon_pattern()` 支持参数，旧动作波形保持不变。
 
-结论：单加语言模型无法解决温度/定时，红外必须先参数化。两件事分开推进。
+规则与红外编码分别实现、分别校验，不依赖 LLM。
 
 ## 2. 目标
 
 ```
-"小雨把空调调到20度"        → {domain:aircon, op:set, mode:cool, temp:20}
-"小雨空调定时两个小时"       → {domain:aircon, op:timer, minutes:120}
-"小雨制冷26度自动风开eco"    → {domain:aircon, op:set, mode:cool, temp:26, fan:auto, eco:on}
-"小雨关空调"                → {domain:aircon, op:power, power:off}
+"小雨把空调调到20度"        → {operation:set, mode:cool, temperature_c:20, eco:false}
+"小雨空调定时两个小时"       → 拒绝（后续阶段）
+"小雨空调制冷26度开启ECO"    → {operation:set, mode:cool, temperature_c:26, eco:true}
+"小雨关空调"                → {operation:off}
 ```
 
 ## 3. 总体架构（沿用现有进程隔离与 sidecar 模式）
@@ -37,7 +45,7 @@
             │                                        ├─ 快路径: 规则/槽位解析(确定性)
             │                                        └─ 慢路径: 本地小LLM(GBNF约束JSON)
             ↓                                        ↓
-        (超时回到待机)                        [意图执行器: 白名单 + 参数clamp]
+        (超时回到待机)                        [意图执行器: 白名单 + 参数校验]
                                                      ↓
                         参数化红外(IR worker) / HTTP动作(command.url) / TTS回复
 ```
@@ -48,7 +56,7 @@
 
 - 规则/槽位解析打底：数字词（含中文数字）、模式词、单位词表，简单指令 ~0ms、零发热、
   可 fixtures 单测。
-- 仅在规则失败或低置信时调本地小 LLM 兜底（Qwen2.5-0.5B/1.5B int4，llama.cpp
+- 后续可在规则失败或低置信时调本地小 LLM 兜底（当前未实现；Qwen2.5-0.5B/1.5B int4，llama.cpp
   `llama-server`，loopback sidecar，GBNF 语法强制只输出固定 JSON schema），结果缓存。
 - MI6 是热/算力受限设备，纯 LLM 每条 2-5s 且发热明显，故规则优先、LLM 兜底最省最稳。
 
@@ -73,61 +81,64 @@
 
 ## 6. 红外协议查证结论（美的 R05D / RN02S）
 
-已用现有三个「已验证常量」交叉验证公开码表方向（含 LSB-first 反转），温度/模式/风速
-可直接按公开码表实现，无需实机采集；仅定时需一次单点实测校准。
+使用同型号开源实现与现有固定动作交叉核验。主来源固定在 commit
+`e272202616c2348680cbd28248a7c2ed2dd533ce`：
+[RN02S13 协议实现](https://github.com/Aqamoe/IRsendMeidi_ESP8266-RN02S-Midea/blob/e272202616c2348680cbd28248a7c2ed2dd533ce/IRsendMeidi/IRsendMeidi.cpp)。
+下面统一以传入 `rn02_state` / `rn02_short` 的原生字节表示，另列线上顺序便于核验。
 
 ### 6.1 帧结构
 
 - 载波 38kHz；引导码 4400us/4400us；数据位 0 = 500/550us、1 = 500/1600us；
   分隔 500/5220us。与 [`src/ir.rs`](../src/ir.rs) 完全一致。
 - 每帧发送 `A A' B B' C C'`（各字节紧跟反码），整帧重复两次。
-- **数据字节按 LSB-first 发送**（见 `push_byte(..., msb_first=false)`），因此下面的
-  「显示字节」需按位反转才是线上字节。
+- A 与反码按 MSB-first，B、C 与其反码按 LSB-first，不能把整帧当作统一位序。
+- 完整状态额外发送第三块 `AB 66 00 00 00 DC`，该块全部按 LSB-first。
 
 ### 6.2 温度码表（17–30°C）
 
-- C 字节：高 4 位 = 温度档，bit2-3 = 模式。
-- 温度档是 4-bit 反射格雷码，按 17→30°C 顺序：
-  `{0,1,3,2,6,7,5,4,12,13,9,8,10,11,14}`（索引 = 摄氏度 − 17）。
-- 模式：制冷=0、抽湿/送风=1、自动=2、制热=3。
-- 交叉验证（26°C）：档位索引 9 → 温度档 13(0b1101)；制冷 → 显示字节
-  `0b1101_0000 = 0xD0`；LSB-first 反转 = `0x0B` = 现有 `RN02_COOL_26` ✓
-- 抽湿 26°C：显示 `0xD4` → 反转 `0x2B` = `RN02_DRY_26` ✓
+- 原生 C = 模式高半字节 OR 温度低半字节。
+- 17→30°C 共 14 项：`{0,8,C,4,6,E,A,2,3,B,9,1,5,D}`，索引 = 摄氏度 − 17。
+- 模式：制冷 `00`、抽湿 `20`、自动 `10`、制热 `30`。
+- 制冷 20°C：原生 C=`04`，线上按时间先后以 MSB 解读第一块为
+  `B2 4D BF 40 20 DF`。制冷 26°C 原生 C=`0B`，线上 C=`D0`；
+  抽湿 26°C 原生 C=`2B`，线上 C=`D4`。
 
-### 6.3 风速（B 字节高 3 位）
+### 6.3 风速与 ECO
 
-- 自动=101、低=100、中=010、高=001、固定=000。
-- 自动风显示字节高 3 位 `101` → 与现有 `RN02_AUTO_FAN = 0xFD` 一致 ✓
+- 当前只支持原生 B=`FD` 自动风，线上 B=`BF`。未把其他变体的风速位布局用于 RN02S。
+- ECO 短帧：`B9 AF 24` 开启，`B9 AF A4` 关闭，均附带反码并重复两次。
+- 完整状态后追加明确的 ECO 开/关帧，不使用 toggle，也不依赖未知的空调当前状态。
 
 ### 6.4 关机帧
 
-- 公开：`A=0xB2, B=0x7B, C=0xE0`。
-- 现有 `rn02_short(0xB2,0xDE,0x07)`：`reverse(0x7B)=0xDE`、`reverse(0xE0)=0x07` ✓
+- 原生 `B2 DE 07`，线上 `B2 4D 7B 84 E0 1F`。
 
 ### 6.5 定时（唯一待实测校准点）
 
-- 现代 48-bit Midea 变体（IRremoteESP8266 `MideaProtocol`）：On Timer 存 Byte1、
-  掩码 `0b01111110`、单位半小时；Off Timer 存 Byte2 的 6 位 `OffTimer` 字段。
-- 但本机是 RN02S 长帧变体（第三块 `0xAB,0x66,0x00,0x00,0x00,0xDC` 为其特有），
-  定时字节位置未直接印证，需发一帧「定时 1 小时」用现有 IR worker 实测确认后再固化。
+- RN02S 定时使用独立 B/C 码表，通常存放 C 反码的位置是固定 `FF`，不能复用普通
+  `rn02_short()` 或现代 Midea 48-bit 定时布局。阶段 2 拒绝定时请求，待实测校准后再实现。
 
 ## 7. 落地要点
 
-- 进程：新增 `camera-hub worker nlu`（ASR+NLU；LLM 可独立 sidecar），纳入
-  `ComponentManager` 自启/启停/健康检查/异常拉起；模型走 `AssetManager` 校验。
-- 红外参数化：`src/ir.rs` 增加状态帧生成器
-  `AcState { mode, temp(16..=30), fan, eco, timer_min }` → `PulsePattern`；
-  IR worker 增加 `POST /v1/aircon/state`，服务端 clamp 后编码，沿用 loopback + 频率限制。
-- 配置：`voice_config.rs` 递增 `VOICE_CONFIG_VERSION` 迁移，新增意图域配置
-  （可用 domain、槽位范围、温度上下限、定时上限、置信阈值、LLM 兜底开关）；固定命令保持兼容。
-- Web：语音控制页加「自然语言指令」子页，展示转写文本 → JSON → 执行结果，便于调参排错。
-- 安全：LLM/IR 仅回环、意图白名单、槽位范围 clamp；LLM/ASR/KWS 共用 `InferenceLock`
-  串行，避免 MI6 过热；唤醒门控 + 冷却限制触发频率。
+- 进程：在已有 voice worker 中执行纯规则 `src/voice_nlu.rs`，零新增依赖与守护进程。
+- IR worker：`POST /v1/aircon/state`，与 `/v1/actions/{action}` 共用发送锁和限频；
+  无效参数直接拒绝，不 clamp。失败后也保留发送间隔。
+- 服务端：认证后的 `POST /api/v1/ir/aircon/state` 代理到回环 worker，HTTP 客户端禁止重定向。
+- JSON：`{"operation":"set","temperature_c":20,"mode":"cool","eco":false}`；
+  或 `{"operation":"off"}`、`{"operation":"eco","enabled":true}`。未知字段直接拒绝。
+- 预览：认证后的 `POST /api/v1/voice/parse`，请求 `{"text":"把空调调到二十度"}`；
+  `POST /api/v1/voice/transcribe` 仍只转写与预览，两个入口都不执行设备动作。
+- 自动执行：只有唤醒后的 ASR 完成且 `nlu_enabled=true` 时执行；截止时长与端点路径共用执行器。
+  内置空调 KWS 短语在 ASR 可用时延后到整句解析，避免带参数的指令提前发默认温度。
+  自定义 URL、规则无法识别的自定义短语、非空调命令与无 ASR 时保留固定命令行为。
+- 反馈：`nlu_intent/nlu_state/nlu_message/nlu_epoch` 写入状态；事件 `source=nlu`。
+  红外成功记为 `sent`，不代表空调状态已回读。播报失败单独附加警告，不重发红外。
+- 推理：沿用 `InferenceLock`；录音结束、推理锁释放后才执行红外与回复，HTTP/TTS 均有超时。
 
 ## 8. 分阶段路线
 
 1. ASR 门控（**已实现并通过 MI6 实机验证**）：KWS 唤醒 → 流式转写出文本，Web 显示转写结果，不改执行。
-2. 规则 NLU + 红外参数化：按 §6 码表实现温度/模式/风速 + fixtures 单测；定时先做单点实测校准。
+2. 规则 NLU + 红外参数化（已实现）：温度/模式/开关/ECO + 码表与语句用例；自动风，定时后续校准。
 3. 小 LLM 兜底：接 llama.cpp sidecar + GBNF，仅规则失败时调用，结果缓存。
 4. 打磨：置信度、失败回复、Web 配置页、MI6 实机回归 + 提交。
 
@@ -156,6 +167,23 @@
 MI6 自动声学回归已验证唤醒后无需 Web 请求即可进入 ASR、写回文本并恢复 KWS 监听；
 真实中文口音下的准确率与延迟仍需持续采样评估。
 
+
+## 8.2 阶段 2 实机验收（2026-09-19）
+
+- MI6 原生 aarch64 release 构建、安装与健康检查通过，安装产物与构建产物 SHA-256 一致；
+  已通过认证配置接口启用 `nlu_enabled=true`。
+- 全量 Rust 测试 111 项通过（原有 96 + 新增 15），覆盖 56 组独立协议向量及原有四个固定动作；
+  前端类型检查、构建、桌面与 390px 移动端 Playwright 验证通过。
+- 麦克风声学回放 + 测试红外接收端确认：未唤醒与手动转写均无请求；
+  「小雨打开空调到二十度」仅产生一次参数化请求；「小雨不要打开空调」无新增请求；
+  ASR 模型不可用时原固定命令仍能执行。
+- 未认证的解析/控制 API 返回 401；认证后文本预览正确，模糊温度、否定句、多设备和定时拒绝；
+  服务端与 worker 均拒绝越界/小数温度、未知字段和非制冷模式的 ECO 组合。
+- 安装后的实际语音链路将「小雨打开空调到二十度」解析为
+  `{"operation":"set","temperature_c":20,"mode":"cool","eco":false}`，
+  完成 500 个脉冲的红外发送，状态为 `sent`，随后恢复监听。空调状态没有回读。
+- 该次测试中原声纹 profile 缺失，TTS 返回 404 并回退系统声音；此警告与红外成功分别展示，
+  不会导致红外重发。
 
 ## 9. 参考来源
 

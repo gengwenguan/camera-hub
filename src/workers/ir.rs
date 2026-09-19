@@ -1,4 +1,4 @@
-use crate::ir::{IrAction, PeelIrTransmitter, action_catalog};
+use crate::ir::{AirconCommand, IrAction, IrTransmission, PeelIrTransmitter, action_catalog};
 use anyhow::{Context, Result, bail};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -54,6 +54,7 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
     let app = Router::new()
         .route("/health", get(health))
         .route("/v1/actions/{action}", post(send_action))
+        .route("/v1/aircon/state", post(send_aircon))
         .with_state(state);
     let listener = TcpListener::bind(args.bind)
         .await
@@ -74,6 +75,24 @@ async fn send_action(
     Path(action): Path<String>,
 ) -> Result<Json<serde_json::Value>, IrError> {
     let action = IrAction::parse(&action).map_err(IrError::bad_request)?;
+    transmit(&state, move |transmitter| transmitter.transmit(action)).await
+}
+
+async fn send_aircon(
+    State(state): State<Arc<IrWorker>>,
+    Json(command): Json<AirconCommand>,
+) -> Result<Json<serde_json::Value>, IrError> {
+    command.validate().map_err(IrError::bad_request)?;
+    transmit(&state, move |transmitter| {
+        transmitter.transmit_aircon(&command)
+    })
+    .await
+}
+
+async fn transmit(
+    state: &IrWorker,
+    send: impl FnOnce(&PeelIrTransmitter) -> Result<IrTransmission> + Send + 'static,
+) -> Result<Json<serde_json::Value>, IrError> {
     let mut last = state.last_transmission.lock().await;
     if let Some(previous) = *last
         && previous.elapsed() < state.min_interval
@@ -81,7 +100,10 @@ async fn send_action(
         return Err(IrError::too_many_requests("红外发送过于频繁，请稍后重试"));
     }
     let transmitter = state.transmitter.clone();
-    let result = tokio::task::spawn_blocking(move || transmitter.transmit(action))
+    // Reserve the interval before sending: failures can still have emitted a
+    // partial waveform, and both APIs must share the same physical send gate.
+    *last = Some(Instant::now());
+    let result = tokio::task::spawn_blocking(move || send(&transmitter))
         .await
         .map_err(|error| IrError::internal(format!("红外发送任务异常退出：{error}")))?
         .map_err(IrError::internal)?;

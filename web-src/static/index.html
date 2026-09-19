@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <title>camera-hub</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260811-5">
-    <link rel="stylesheet" href="/style.css?v=20260913-5">
+    <link rel="stylesheet" href="/style.css?v=20260919-nlu">
 </head>
 <body>
     <div class="backdrop"></div>
@@ -56,6 +56,7 @@
         <nav class="context-subnav" id="voiceSubnav"
              aria-label="语音功能" role="tablist" hidden>
             <button type="button" role="tab" data-voice-view-target="commands">语音命令</button>
+            <button type="button" role="tab" data-voice-view-target="natural">自然语言</button>
             <button type="button" role="tab" data-voice-view-target="profile">回复声纹</button>
             <button type="button" role="tab" data-voice-view-target="public">公共语音</button>
             <button type="button" role="tab" data-voice-view-target="status">服务状态</button>
@@ -515,20 +516,32 @@
         </section>
 
         <section class="panel voice-panel" data-view="voice"
-                 data-voice-view="status" hidden>
+                 data-voice-view="natural" hidden>
             <div class="panel-heading">
                 <div>
-                    <p class="eyebrow">NATURAL LANGUAGE · 阶段一</p>
-                    <h2>自然语言转写测试</h2>
+                    <p class="eyebrow">NATURAL LANGUAGE</p>
+                    <h2>自然语言空调控制</h2>
                 </div>
                 <span class="chip" id="voiceAsrStatus">等待加载</span>
             </div>
             <p class="voice-asr-hint">
-                点击「开始转写」后，对着麦克风说一句完整的话（例如「把空调调到二十度」），
-                系统会用本地流式模型识别整句文本。此阶段仅展示识别结果，不会触发任何设备动作。
+                在命令配置中启用自然语言控制后，说「小雨，把空调调到二十度」即可控制空调。
+                支持 17–30°C 整数、制冷 / 抽湿 / 制热 / 自动、开关和 ECO。
+                未指定温度和模式时采用 26°C、制冷、自动风；单说打开空调会开启 ECO，其他设置默认关闭 ECO。
             </p>
+            <div class="voice-transcript">
+                <span>最近听到的内容</span>
+                <p id="voiceAsrTranscript">--</p>
+                <time id="voiceAsrTime">--</time>
+            </div>
+            <dl class="voice-runtime voice-nlu-result">
+                <div><dt>解析出的指令</dt><dd id="voiceNluIntent">--</dd></div>
+                <div><dt>执行状态</dt><dd id="voiceNluState">等待指令</dd></div>
+                <div><dt>结果 / 原因</dt><dd id="voiceNluMessage">--</dd></div>
+            </dl>
+            <p class="voice-asr-hint">下方测试只显示识别与解析结果，不控制设备。红外发送成功不代表已读回空调实际状态。</p>
             <div class="voice-asr-controls">
-                <button class="button" id="voiceTranscribeButton" type="button">开始转写</button>
+                <button class="button" id="voiceTranscribeButton" type="button">转写测试（仅预览）</button>
                 <label>
                     <span>录音时长</span>
                     <select id="voiceTranscribeWindow">
@@ -541,9 +554,15 @@
             </div>
             <dl class="voice-runtime">
                 <div><dt>识别引擎</dt><dd id="voiceAsrState">--</dd></div>
-                <div><dt>识别结果</dt><dd id="voiceAsrTranscript">--</dd></div>
                 <div><dt>运行信息</dt><dd id="voiceAsrError">--</dd></div>
             </dl>
+            <form id="voiceParseForm" class="voice-asr-controls">
+                <label for="voiceParseText">文字解析测试</label>
+                <input id="voiceParseText" type="text" maxlength="160"
+                       placeholder="把空调调到二十度" required>
+                <button class="button ghost" type="submit">预览指令</button>
+                <output id="voiceParseResult" aria-live="polite"></output>
+            </form>
         </section>
 
         <section class="panel voice-panel" data-view="voice"
@@ -560,6 +579,10 @@
                     <label class="toggle">
                         <input type="checkbox" id="voiceEnabled">
                         <span>启用本机持续语音监听</span>
+                    </label>
+                    <label class="toggle">
+                        <input type="checkbox" id="voiceNluEnabled">
+                        <span>启用自然语言空调控制（需持续监听与识别模型）</span>
                     </label>
                     <label>
                         <span>录音设备</span>
@@ -1086,6 +1109,6 @@
     <script type="module" src="/generated/flv-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/moq-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/evaluation.js?v=20260813-2"></script>
-    <script src="/app.js?v=20260913-5" defer></script>
+    <script src="/app.js?v=20260919-nlu" defer></script>
 </body>
 </html>

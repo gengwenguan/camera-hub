@@ -1,8 +1,10 @@
 use crate::inference_lock::InferenceLock;
+use crate::ir_control::IrControl;
 use crate::voice_config::{
     VoiceCommand, VoiceConfig, VoiceEvent, VoiceTestRequest, VoiceTranscribeRequest,
     VoiceWorkerStatus,
 };
+use crate::voice_nlu::{self, ExecutionState, ParseState};
 use crate::voice_tts::{DEFAULT_VOICE_PROFILE_ID, VoiceTtsClient};
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -43,6 +45,7 @@ struct CaptureContext<'a> {
     inference_lock: &'a InferenceLock,
     client: &'a Client,
     tts: &'a VoiceTtsClient,
+    ir: &'a IrControl,
     args: &'a Args,
 }
 
@@ -165,6 +168,13 @@ struct Args {
 
     #[arg(long, env = "CAMERA_HUB_TTS_TOKEN", default_value = "")]
     tts_token: String,
+
+    #[arg(
+        long,
+        env = "CAMERA_HUB_IR_URL",
+        default_value = "http://127.0.0.1:39182"
+    )]
+    ir_url: String,
 }
 
 pub async fn run(args: Vec<OsString>) -> Result<()> {
@@ -205,6 +215,7 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
         .build()
         .context("build HTTP client")?;
     let tts = VoiceTtsClient::new(&args.tts_url, &args.tts_token)?;
+    let ir = IrControl::from_url(&args.ir_url, PathBuf::from("/dev/peel_ir"))?;
     let mut cooldowns = HashMap::new();
     let mut spotter_keywords = MODEL_PROBE_KEYWORD.to_owned();
     let mut prepared_voice_config_revision = 0_u64;
@@ -359,6 +370,7 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
             inference_lock: &inference_lock,
             client: &client,
             tts: &tts,
+            ir: &ir,
             args: &args,
         };
         let capture_result = capture_once(
@@ -541,6 +553,12 @@ fn restore_asr_idle_state(status: &mut VoiceWorkerStatus) {
             "ready".to_owned()
         };
     }
+    if status.nlu_state == ExecutionState::Listening {
+        status.nlu_state = ExecutionState::Ignored;
+        status.nlu_message = "本次转写已中断，未执行自然语言指令".to_owned();
+        status.nlu_intent = None;
+        status.nlu_epoch = epoch_seconds();
+    }
 }
 
 fn transcribe_request_pending(path: &Path) -> bool {
@@ -590,6 +608,7 @@ async fn run_transcription(
 ) {
     status.asr_state = "listening".to_owned();
     status.asr_error.clear();
+    begin_nlu(status);
     let _ = write_status(status_path, status);
     let result = transcribe_once(
         recognizer,
@@ -601,6 +620,7 @@ async fn run_transcription(
     )
     .await;
     store_transcription_result(status, result);
+    preview_transcription(status);
     let _ = write_status(status_path, status);
 }
 
@@ -695,7 +715,7 @@ async fn capture_once(
                 context.inference_lock,
                 &active.stream,
             );
-            store_transcription_result(status, result);
+            complete_wake_transcription(context, config, status, cooldowns, result).await;
             status.state = "listening".to_owned();
             write_status(&context.args.status, status)?;
             return Ok(());
@@ -792,37 +812,41 @@ async fn capture_once(
             {
                 spotter.reset(stream);
                 let phrase = result.keyword.replace('_', "");
-                let Some(command) = command_for_phrase(config, &phrase) else {
-                    continue;
-                };
-                if cooling_down(config, &command, cooldowns) {
-                    continue;
+                if let Some(command) = command_for_phrase(config, &phrase)
+                    && !defer_aircon_keyword(
+                        config,
+                        &command,
+                        recognizer.is_some(),
+                        &context.args.ir_url,
+                    )
+                    && !cooling_down(config, &command, cooldowns)
+                {
+                    stop_capture(&mut child).await;
+                    restore_asr_idle_state(status);
+                    status.detected_count = status.detected_count.saturating_add(1);
+                    status.last_keyword = command.phrase.clone();
+                    status.state = "executing".to_owned();
+                    write_status(&context.args.status, status)?;
+                    execute_with_heartbeat(
+                        context.client,
+                        context.tts,
+                        config,
+                        &command,
+                        ExecutionMode {
+                            call_url: true,
+                            speak_reply: true,
+                            voice_clone: config.voice_profile_revision > 0,
+                            source: "voice",
+                        },
+                        context.args,
+                        status,
+                    )
+                    .await;
+                    cooldowns.insert(command.id.clone(), Instant::now());
+                    status.state = "listening".to_owned();
+                    write_status(&context.args.status, status)?;
+                    return Ok(());
                 }
-                stop_capture(&mut child).await;
-                restore_asr_idle_state(status);
-                status.detected_count = status.detected_count.saturating_add(1);
-                status.last_keyword = command.phrase.clone();
-                status.state = "executing".to_owned();
-                write_status(&context.args.status, status)?;
-                execute_with_heartbeat(
-                    context.client,
-                    context.tts,
-                    config,
-                    &command,
-                    ExecutionMode {
-                        call_url: true,
-                        speak_reply: true,
-                        voice_clone: config.voice_profile_revision > 0,
-                        source: "voice",
-                    },
-                    context.args,
-                    status,
-                )
-                .await;
-                cooldowns.insert(command.id.clone(), Instant::now());
-                status.state = "listening".to_owned();
-                write_status(&context.args.status, status)?;
-                return Ok(());
             }
 
             if wake_ready {
@@ -850,6 +874,7 @@ async fn capture_once(
             status.state = "transcribing".to_owned();
             status.asr_state = "listening".to_owned();
             status.asr_error.clear();
+            begin_nlu(status);
             write_status(&context.args.status, status)?;
         }
 
@@ -867,7 +892,7 @@ async fn capture_once(
                 context.inference_lock,
                 &active.stream,
             );
-            store_transcription_result(status, result);
+            complete_wake_transcription(context, config, status, cooldowns, result).await;
             status.state = "listening".to_owned();
             write_status(&context.args.status, status)?;
             return Ok(());
@@ -876,6 +901,165 @@ async fn capture_once(
         if last_status.elapsed() >= STATUS_INTERVAL {
             write_status(&context.args.status, status)?;
             last_status = Instant::now();
+        }
+    }
+}
+
+fn begin_nlu(status: &mut VoiceWorkerStatus) {
+    status.nlu_state = ExecutionState::Listening;
+    status.nlu_intent = None;
+    status.nlu_message = "正在听完整指令".to_owned();
+    status.nlu_epoch = epoch_seconds();
+}
+
+/// Used by manual transcription too: this function has no execution capability.
+fn preview_transcription(status: &mut VoiceWorkerStatus) {
+    status.nlu_epoch = epoch_seconds();
+    status.nlu_intent = None;
+    if status.asr_state == "error" {
+        status.nlu_state = ExecutionState::Failed;
+        status.nlu_message = "转写失败，未执行任何操作".to_owned();
+        return;
+    }
+    let parsed = voice_nlu::parse(&status.asr_transcript);
+    status.nlu_state = match parsed.state {
+        ParseState::Ready => ExecutionState::Preview,
+        ParseState::Rejected => ExecutionState::Rejected,
+        ParseState::Ignored => ExecutionState::Ignored,
+    };
+    status.nlu_intent = parsed.intent;
+    status.nlu_message = parsed.message;
+}
+
+fn defer_aircon_keyword(
+    config: &VoiceConfig,
+    command: &VoiceCommand,
+    asr_available: bool,
+    ir_url: &str,
+) -> bool {
+    if !config.nlu_enabled
+        || !asr_available
+        || command.method != "POST"
+        || !command.body.is_empty()
+        || !matches!(
+            command.id.as_str(),
+            "ac-on" | "ac-off" | "ac-cool" | "ac-dry"
+        )
+        || voice_nlu::parse(&command.phrase).intent.is_none()
+    {
+        return false;
+    }
+    let expected = format!("{}/v1/actions/{}", ir_url.trim_end_matches('/'), command.id);
+    matches!(
+        (reqwest::Url::parse(&command.url), reqwest::Url::parse(&expected)),
+        (Ok(actual), Ok(expected)) if actual == expected
+    )
+}
+
+async fn complete_wake_transcription(
+    context: &CaptureContext<'_>,
+    config: &VoiceConfig,
+    status: &mut VoiceWorkerStatus,
+    cooldowns: &mut HashMap<String, Instant>,
+    result: Result<String>,
+) {
+    store_transcription_result(status, result);
+    preview_transcription(status);
+    if !config.nlu_enabled {
+        if status.nlu_intent.is_some() {
+            status.nlu_state = ExecutionState::Disabled;
+            status.nlu_message = "自然语言控制未启用，仅展示解析结果".to_owned();
+        }
+        return;
+    }
+    let started = Instant::now();
+    let mut success = false;
+    if let Some(command) = status.nlu_intent.clone() {
+        if cooldowns.values().any(|last| {
+            last.elapsed() < Duration::from_millis(config.global_cooldown_ms.max(1_000))
+        }) {
+            status.nlu_state = ExecutionState::Cooldown;
+            status.nlu_message = "操作过于频繁，本次未发送红外".to_owned();
+        } else {
+            status.nlu_state = ExecutionState::Executing;
+            status.nlu_message = format!("正在发送：{}", command.label());
+            status.state = "executing".to_owned();
+            let _ = write_status(&context.args.status, status);
+            // Reserve a cooldown on failures too: an interrupted response does
+            // not prove that no infrared signal was emitted. Never retry here.
+            cooldowns.insert("nlu-aircon".to_owned(), Instant::now());
+            match context.ir.send_aircon(&command).await {
+                Ok(transmission) => {
+                    success = true;
+                    status.detected_count = status.detected_count.saturating_add(1);
+                    status.nlu_state = ExecutionState::Sent;
+                    status.nlu_message = format!(
+                        "已发送红外：{}（{} 个脉冲；空调状态无回读）",
+                        command.label(),
+                        transmission.pulse_count
+                    );
+                }
+                Err(error) => {
+                    status.nlu_state = ExecutionState::Failed;
+                    status.nlu_message = format!("红外发送失败：{error:#}");
+                }
+            }
+            cooldowns.insert("nlu-aircon".to_owned(), Instant::now());
+        }
+    }
+    status.nlu_epoch = epoch_seconds();
+    let _ = write_status(&context.args.status, status);
+    // Speak after capture stops and inference guards have been released. The
+    // action outcome is final before TTS starts; speech failure never resends IR.
+    let reply = match status.nlu_state {
+        ExecutionState::Sent => Some(format!(
+            "已发送，{}",
+            status.nlu_intent.as_ref().unwrap().label()
+        )),
+        ExecutionState::Rejected => Some("没有听懂，请说，例如，把空调调到二十度".to_owned()),
+        ExecutionState::Failed => Some("操作失败，请查看页面上的原因".to_owned()),
+        _ => None,
+    };
+    if let Some(reply) = reply {
+        let speech = tokio::time::timeout(
+            Duration::from_secs(20),
+            speak(
+                context.tts,
+                config,
+                &reply,
+                config.voice_profile_revision > 0,
+            ),
+        );
+        tokio::pin!(speech);
+        let mut heartbeat = tokio::time::interval(STATUS_INTERVAL);
+        let warning = loop {
+            tokio::select! {
+                result = &mut speech => break match result {
+                    Ok(Ok(warning)) => warning,
+                    Ok(Err(error)) => Some(format!("回复播放失败：{error:#}")),
+                    Err(_) => Some("回复播放超时".to_owned()),
+                },
+                _ = heartbeat.tick() => { let _ = write_status(&context.args.status, status); }
+            }
+        };
+        if let Some(warning) = warning {
+            status.last_error = warning.clone();
+            status.nlu_message.push_str(&format!("；{warning}"));
+        }
+    }
+    if status.nlu_state != ExecutionState::Ignored {
+        let event = VoiceEvent {
+            epoch: status.nlu_epoch,
+            command_id: "nlu-aircon".to_owned(),
+            phrase: status.asr_transcript.clone(),
+            source: "nlu".to_owned(),
+            success,
+            http_status: if success { 200 } else { 0 },
+            elapsed_ms: started.elapsed().as_millis() as u64,
+            message: status.nlu_message.clone(),
+        };
+        if let Err(error) = append_event(&context.args.events, &event) {
+            status.last_error = format!("写入语音事件失败：{error:#}");
         }
     }
 }
@@ -1158,6 +1342,7 @@ async fn speak_espeak(
             .args(["-v", "cmn", "-s", "145", "-a", &playback_volume, "-w"])
             .arg(wav)
             .arg(text)
+            .kill_on_drop(true)
             .status()
             .await
             .context("启动 espeak-ng")?;
@@ -1175,6 +1360,7 @@ async fn play_wav(wav: &Path, playback_device: &str) -> Result<()> {
     let status = Command::new("aplay")
         .args(["-q", "-D", playback_device])
         .arg(wav)
+        .kill_on_drop(true)
         .status()
         .await
         .context("启动 aplay")?;
@@ -1350,6 +1536,78 @@ fn epoch_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_parse_preview_never_marks_an_action_executed() {
+        let mut status = VoiceWorkerStatus::default();
+        begin_nlu(&mut status);
+        store_transcription_result(&mut status, Ok("空调20度".to_owned()));
+        preview_transcription(&mut status);
+        assert_eq!(status.nlu_state, ExecutionState::Preview);
+        assert_eq!(
+            status.nlu_intent,
+            Some(crate::ir::AirconCommand::Set {
+                temperature_c: 20,
+                mode: crate::ir::AcMode::Cool,
+                eco: false,
+            })
+        );
+        assert_eq!(status.detected_count, 0);
+        store_transcription_result(&mut status, Err(anyhow::anyhow!("decode failed")));
+        preview_transcription(&mut status);
+        assert_eq!(status.nlu_state, ExecutionState::Failed);
+        assert!(status.nlu_intent.is_none());
+        store_transcription_result(&mut status, Ok("不要开空调".to_owned()));
+        preview_transcription(&mut status);
+        assert_eq!(status.nlu_state, ExecutionState::Rejected);
+        assert!(status.nlu_intent.is_none());
+    }
+
+    #[test]
+    fn interrupted_wake_clears_pending_nlu_state() {
+        let mut status = VoiceWorkerStatus::default();
+        begin_nlu(&mut status);
+        status.asr_state = "listening".to_owned();
+        restore_asr_idle_state(&mut status);
+        assert_eq!(status.asr_state, "idle");
+        assert_eq!(status.nlu_state, ExecutionState::Ignored);
+        assert!(status.nlu_intent.is_none());
+    }
+
+    #[test]
+    fn defers_only_builtin_aircon_prefixes_with_usable_asr() {
+        let mut config = VoiceConfig {
+            nlu_enabled: true,
+            ..VoiceConfig::default()
+        };
+        let mut command = VoiceCommand {
+            id: "ac-on".to_owned(),
+            phrase: "小雨打开空调".to_owned(),
+            method: "POST".to_owned(),
+            url: "http://127.0.0.1:39182/v1/actions/ac-on".to_owned(),
+            ..VoiceCommand::default()
+        };
+        let base = "http://127.0.0.1:39182";
+        assert!(defer_aircon_keyword(&config, &command, true, base));
+        assert!(!defer_aircon_keyword(&config, &command, false, base));
+        config.nlu_enabled = false;
+        assert!(!defer_aircon_keyword(&config, &command, true, base));
+        config.nlu_enabled = true;
+        assert!(!defer_aircon_keyword(
+            &config,
+            &command,
+            true,
+            "http://127.0.0.1:40000"
+        ));
+        command.id = "custom-ac-on".to_owned();
+        assert!(!defer_aircon_keyword(&config, &command, true, base));
+        command.id = "ac-on".to_owned();
+        command.phrase = "小雨我要睡觉".to_owned();
+        assert!(!defer_aircon_keyword(&config, &command, true, base));
+        command.phrase = "小雨打开空调".to_owned();
+        command.url.push_str("?custom=true");
+        assert!(!defer_aircon_keyword(&config, &command, true, base));
+    }
 
     #[test]
     fn converts_pcm_and_computes_rms() {

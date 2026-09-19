@@ -22,6 +22,115 @@ const MIDEA_MODERN_ECO_TOGGLE: u64 = 0xA202FFFFFF7E;
 const RN02_AUTO_FAN: u8 = 0xFD;
 const RN02_COOL_26: u8 = 0x0B;
 const RN02_DRY_26: u8 = 0x2B;
+const RN02_TEMPERATURES: [u8; 14] = [
+    0x0, 0x8, 0xC, 0x4, 0x6, 0xE, 0xA, 0x2, 0x3, 0xB, 0x9, 0x1, 0x5, 0xD,
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AcMode {
+    Cool,
+    Dry,
+    Heat,
+    Auto,
+}
+
+impl AcMode {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cool => "制冷",
+            Self::Dry => "抽湿",
+            Self::Heat => "制热",
+            Self::Auto => "自动模式",
+        }
+    }
+
+    fn code(self) -> u8 {
+        match self {
+            Self::Cool => 0x00,
+            Self::Dry => 0x20,
+            Self::Heat => 0x30,
+            Self::Auto => 0x10,
+        }
+    }
+}
+
+/// Explicit RN02S operations. A set operation sends a complete state, not a
+/// delta against an assumed appliance state (infrared has no acknowledgement).
+#[derive(Clone, Debug, Eq, PartialEq, Deserialize, Serialize)]
+#[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AirconCommand {
+    Set {
+        temperature_c: u8,
+        mode: AcMode,
+        eco: bool,
+    },
+    Off {},
+    Eco {
+        enabled: bool,
+    },
+}
+
+impl AirconCommand {
+    pub fn validate(&self) -> Result<()> {
+        if let Self::Set {
+            temperature_c,
+            mode,
+            eco,
+        } = self
+        {
+            if !(17..=30).contains(temperature_c) {
+                bail!("空调温度仅支持 17–30°C 的整数");
+            }
+            if *eco && *mode != AcMode::Cool {
+                bail!("ECO 仅支持与制冷模式一起设置");
+            }
+        }
+        Ok(())
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::Set {
+                temperature_c,
+                mode,
+                eco,
+            } => format!(
+                "{} {}°C、自动风、ECO {}",
+                mode.label(),
+                temperature_c,
+                if *eco { "开启" } else { "关闭" }
+            ),
+            Self::Off {} => "关闭空调".to_owned(),
+            Self::Eco { enabled } => format!("{}空调 ECO", if *enabled { "开启" } else { "关闭" }),
+        }
+    }
+}
+
+pub fn aircon_pattern(command: &AirconCommand) -> Result<PulsePattern> {
+    command.validate()?;
+    let pattern = match command {
+        AirconCommand::Set {
+            temperature_c,
+            mode,
+            eco,
+        } => {
+            let c = mode.code() | RN02_TEMPERATURES[usize::from(*temperature_c - 17)];
+            let mut pattern = rn02_state(c);
+            pattern.append(
+                &rn02_short(0xB9, 0xAF, if *eco { 0x24 } else { 0xA4 }),
+                20_000,
+            );
+            pattern
+        }
+        AirconCommand::Off {} => rn02_short(0xB2, 0xDE, 0x07),
+        AirconCommand::Eco { enabled } => {
+            rn02_short(0xB9, 0xAF, if *enabled { 0x24 } else { 0xA4 })
+        }
+    };
+    pattern.validate()?;
+    Ok(pattern)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IrAction {
@@ -380,12 +489,26 @@ impl PeelIrTransmitter {
 
     pub fn transmit(&self, action: IrAction) -> Result<IrTransmission> {
         let pattern = action_pattern(action)?;
+        let definition = action.definition();
+        self.transmit_pattern(&pattern, definition.id, definition.label.to_owned())
+    }
+
+    pub fn transmit_aircon(&self, command: &AirconCommand) -> Result<IrTransmission> {
+        let pattern = aircon_pattern(command)?;
+        self.transmit_pattern(&pattern, "aircon-state", command.label())
+    }
+
+    fn transmit_pattern(
+        &self,
+        pattern: &PulsePattern,
+        action: &str,
+        label: String,
+    ) -> Result<IrTransmission> {
         let data = encode_spi(&pattern, self.sample_hz)?;
         transmit_spi(&self.device, &data, self.sample_hz, self.bits_per_word)?;
-        let definition = action.definition();
         Ok(IrTransmission {
-            action: definition.id.to_owned(),
-            label: definition.label.to_owned(),
+            action: action.to_owned(),
+            label,
             carrier_hz: pattern.carrier_hz,
             pulse_count: pattern.durations_us.len(),
             duration_us: pattern
@@ -500,6 +623,136 @@ fn transmit_spi(_device: &Path, _data: &[u8], _speed_hz: u32, _bits_per_word: u8
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wire_bytes(pattern: &PulsePattern, block: usize) -> Vec<u8> {
+        pattern.durations_us[block * 100 + 2..block * 100 + 98]
+            .chunks_exact(16)
+            .map(|byte| {
+                byte.chunks_exact(2).fold(0, |value, bit| {
+                    assert_eq!(bit[0], 500);
+                    assert!(matches!(bit[1], 550 | 1600));
+                    (value << 1) | u8::from(bit[1] == 1600)
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn parameterized_states_match_independent_rn02_wire_vectors() {
+        // Chronological MSB bytes, independently documented RN02/Coolix table.
+        let wire_temperatures = [
+            0x00, 0x10, 0x30, 0x20, 0x60, 0x70, 0x50, 0x40, 0xC0, 0xD0, 0x90, 0x80, 0xA0, 0xB0,
+        ];
+        for (mode, mode_bits) in [
+            (AcMode::Cool, 0x00),
+            (AcMode::Dry, 0x04),
+            (AcMode::Heat, 0x0C),
+            (AcMode::Auto, 0x08),
+        ] {
+            for (index, temp_bits) in wire_temperatures.into_iter().enumerate() {
+                let command = AirconCommand::Set {
+                    temperature_c: index as u8 + 17,
+                    mode,
+                    eco: false,
+                };
+                let pattern = aircon_pattern(&command).unwrap();
+                let c = temp_bits | mode_bits;
+                assert_eq!(wire_bytes(&pattern, 0), [0xB2, 0x4D, 0xBF, 0x40, c, !c]);
+                assert_eq!(wire_bytes(&pattern, 1), wire_bytes(&pattern, 0));
+                assert_eq!(wire_bytes(&pattern, 2), [0xD5, 0x66, 0, 0, 0, 0x3B]);
+                assert_eq!(
+                    wire_bytes(&pattern, 3),
+                    [0xB9, 0x46, 0xF5, 0x0A, 0x25, 0xDA]
+                );
+                assert_eq!(pattern.durations_us.len(), 500);
+                assert_eq!(&pattern.durations_us[..2], &[4400, 4400]);
+                assert_eq!(
+                    encode_spi(&pattern, DEFAULT_SAMPLE_HZ).unwrap().len() % 1024,
+                    0
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preserves_all_four_existing_fixed_action_waveforms() {
+        for (action, command) in [
+            (
+                IrAction::AcOn,
+                AirconCommand::Set {
+                    temperature_c: 26,
+                    mode: AcMode::Cool,
+                    eco: true,
+                },
+            ),
+            (
+                IrAction::AcCool,
+                AirconCommand::Set {
+                    temperature_c: 26,
+                    mode: AcMode::Cool,
+                    eco: false,
+                },
+            ),
+            (
+                IrAction::AcDry,
+                AirconCommand::Set {
+                    temperature_c: 26,
+                    mode: AcMode::Dry,
+                    eco: false,
+                },
+            ),
+            (IrAction::AcOff, AirconCommand::Off {}),
+        ] {
+            assert_eq!(
+                aircon_pattern(&command).unwrap().durations_us,
+                action_pattern(action).unwrap().durations_us
+            );
+        }
+        let eco = aircon_pattern(&AirconCommand::Eco { enabled: true }).unwrap();
+        assert_eq!(wire_bytes(&eco, 0), [0xB9, 0x46, 0xF5, 0x0A, 0x24, 0xDB]);
+    }
+
+    #[test]
+    fn rejects_invalid_aircon_parameters_before_encoding() {
+        assert_eq!(
+            serde_json::from_str::<AirconCommand>(r#"{"operation":"off"}"#).unwrap(),
+            AirconCommand::Off {},
+        );
+        for temperature_c in [0, 16, 31, 255] {
+            let command = AirconCommand::Set {
+                temperature_c,
+                mode: AcMode::Cool,
+                eco: false,
+            };
+            assert!(command.validate().is_err());
+            assert!(aircon_pattern(&command).is_err());
+        }
+        for mode in [AcMode::Dry, AcMode::Heat, AcMode::Auto] {
+            assert!(
+                AirconCommand::Set {
+                    temperature_c: 26,
+                    mode,
+                    eco: true
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for json in [
+            r#"{"operation":"set","temperature_c":20.5,"mode":"cool","eco":false}"#,
+            r#"{"operation":"set","temperature_c":-1,"mode":"cool","eco":false}"#,
+            r#"{"operation":"set","temperature_c":20,"mode":"fan","eco":false}"#,
+            r#"{"operation":"set","temperature_c":20,"mode":"cool","eco":false,"timer":60}"#,
+            r#"{"operation":"off","temperature_c":20}"#,
+            r#"{"operation":"eco","enabled":true,"mode":"dry"}"#,
+            r#"{"operation":"set","temperature_c":20,"mode":"cool"}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<AirconCommand>(json).is_err(),
+                "{json}"
+            );
+        }
+    }
 
     #[test]
     fn exposes_only_fixed_air_conditioner_actions() {

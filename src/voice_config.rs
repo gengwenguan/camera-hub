@@ -3,7 +3,7 @@ use pinyin::ToPinyin;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-pub const VOICE_CONFIG_VERSION: u32 = 3;
+pub const VOICE_CONFIG_VERSION: u32 = 4;
 pub const VOICE_TEST_REQUEST_MAX_AGE_SECS: u64 = 60;
 pub const MAX_PHRASES_PER_COMMAND: usize = 8;
 const MAX_TOTAL_PHRASES: usize = 96;
@@ -14,6 +14,7 @@ pub struct VoiceConfig {
     pub version: u32,
     pub revision: u64,
     pub enabled: bool,
+    pub nlu_enabled: bool,
     pub capture_device: String,
     pub playback_device: String,
     pub playback_volume: u8,
@@ -62,6 +63,10 @@ pub struct VoiceWorkerStatus {
     pub asr_transcript: String,
     pub asr_transcript_epoch: u64,
     pub asr_error: String,
+    pub nlu_state: crate::voice_nlu::ExecutionState,
+    pub nlu_intent: Option<crate::ir::AirconCommand>,
+    pub nlu_message: String,
+    pub nlu_epoch: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -96,8 +101,7 @@ impl VoiceTestRequest {
 
 /// On-demand streaming ASR request dropped by the Web UI for the voice worker.
 ///
-/// Phase 1 只做「唤醒 → 转写」：worker 收到请求后打开一次限时录音窗口，
-/// 用流式识别器转写整句并写回 `VoiceWorkerStatus`，不触发任何命令执行。
+/// 手动测试始终只转写与预览规则解析，不触发任何命令执行。
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VoiceTranscribeRequest {
@@ -124,6 +128,7 @@ impl Default for VoiceConfig {
             version: VOICE_CONFIG_VERSION,
             revision: 1,
             enabled: false,
+            nlu_enabled: false,
             capture_device: "hw:0,0".to_owned(),
             playback_device: "plughw:0,0".to_owned(),
             playback_volume: 60,

@@ -103,7 +103,7 @@ impl VoiceService {
         next.voice_profile_revision = current.voice_profile_revision;
         next.revision = current.revision.saturating_add(1);
         next = next.normalize()?;
-        if next.enabled {
+        if next.enabled && !next.nlu_enabled && !self.status().asr_available {
             next.keyword_buffer()?;
         }
         self.save(&next)?;
@@ -478,6 +478,32 @@ mod tests {
 
         assert!(service.update(stale).is_err());
         assert_eq!(service.current().revision, 1);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn allows_natural_control_without_fixed_commands_and_preserves_opt_in() {
+        let root = temporary_root("voice-nlu");
+        let service = service(&root);
+        let mut config = service.current();
+        config.enabled = true;
+        config.commands.clear();
+        assert!(service.update(config.clone()).is_err());
+        config.nlu_enabled = true;
+        let saved = service.update(config).unwrap();
+        assert!(saved.enabled && saved.nlu_enabled);
+        assert!(saved.commands.is_empty());
+        let mut legacy = serde_json::to_value(&saved).unwrap();
+        legacy.as_object_mut().unwrap().remove("nlu_enabled");
+        legacy["version"] = serde_json::json!(3);
+        let (migrated, changed) = parse_voice_config(
+            &serde_json::to_vec(&legacy).unwrap(),
+            Path::new("voice.json"),
+        )
+        .unwrap();
+        assert!(changed);
+        assert!(!migrated.nlu_enabled);
+        assert_eq!(migrated.version, VOICE_CONFIG_VERSION);
         let _ = fs::remove_dir_all(root);
     }
 

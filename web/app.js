@@ -50,6 +50,11 @@
         voiceAsrStatus: $("voiceAsrStatus"),
         voiceAsrState: $("voiceAsrState"),
         voiceAsrTranscript: $("voiceAsrTranscript"),
+        voiceAsrTime: $("voiceAsrTime"),
+        voiceNluIntent: $("voiceNluIntent"),
+        voiceNluState: $("voiceNluState"),
+        voiceNluMessage: $("voiceNluMessage"),
+        voiceNluEnabled: $("voiceNluEnabled"),
         voiceAsrError: $("voiceAsrError"),
         voiceTranscribeButton: $("voiceTranscribeButton"),
         voiceTranscribeWindow: $("voiceTranscribeWindow"),
@@ -244,7 +249,7 @@
         "settings",
         "evaluation",
     ]);
-    const VOICE_VIEWS = new Set(["commands", "profile", "public", "status", "aircon"]);
+    const VOICE_VIEWS = new Set(["commands", "natural", "profile", "public", "status", "aircon"]);
     const ROOT_VIEWS = new Set(["overview", "voice", "qq", "ddns"]);
 
     async function api(path, options = {}) {
@@ -515,15 +520,54 @@
         ui.voiceAsrStatus.className = `chip ${available ? "active" : "offline"}`;
         ui.voiceAsrState.textContent = VOICE_ASR_STATES[asrState] || asrState;
         ui.voiceAsrTranscript.textContent = status.asr_transcript || "--";
+        ui.voiceAsrTime.textContent = status.asr_transcript_epoch
+            ? new Date(status.asr_transcript_epoch * 1000).toLocaleString()
+            : "等待转写";
+        ui.voiceNluIntent.textContent = airconIntentLabel(status.nlu_intent);
+        const nluStates = {
+            idle: "等待指令", listening: "正在听完整指令", preview: "仅预览，未执行",
+            disabled: "自然语言控制未启用", rejected: "未执行：指令不明确或暂不支持",
+            ignored: "等待空调指令", cooldown: "未执行：操作过于频繁",
+            executing: "正在发送红外", sent: "红外已发送", failed: "执行失败",
+        };
+        ui.voiceNluState.textContent = nluStates[status.nlu_state] || "等待指令";
+        ui.voiceNluMessage.textContent = status.nlu_message || "--";
+        ui.voiceNluMessage.classList.toggle("error", ["rejected", "failed"].includes(status.nlu_state));
         ui.voiceAsrError.textContent =
             status.asr_error || (available ? "运行正常" : "请先在服务状态中安装自然语言识别模型");
         ui.voiceAsrError.classList.toggle("error", !!status.asr_error);
         if (ui.voiceTranscribeButton) {
             const busy = state.transcribeBusy || listening;
             ui.voiceTranscribeButton.disabled = !online || !available || busy;
-            ui.voiceTranscribeButton.textContent = busy ? "识别中…" : "开始转写";
+            ui.voiceTranscribeButton.textContent = busy ? "识别中…" : "转写测试（仅预览）";
         }
     }
+
+    function airconIntentLabel(intent) {
+        if (!intent) return "--";
+        if (intent.operation === "off") return "关闭空调";
+        if (intent.operation === "eco") return `${intent.enabled ? "开启" : "关闭"}空调 ECO`;
+        const modes = { cool: "制冷", dry: "抽湿", heat: "制热", auto: "自动模式" };
+        return `${modes[intent.mode] || intent.mode} ${intent.temperature_c}°C、自动风、ECO ${intent.eco ? "开启" : "关闭"}`;
+    }
+
+    $("voiceParseForm")?.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const output = $("voiceParseResult");
+        output.textContent = "解析中…";
+        try {
+            const result = await api("/api/v1/voice/parse", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text: $("voiceParseText").value }),
+            });
+            output.textContent = result.intent
+                ? `仅预览，未执行：${airconIntentLabel(result.intent)}`
+                : result.message;
+        } catch (error) {
+            output.textContent = error.message;
+        }
+    });
 
     function renderVoice(body) {
         const config = body && body.config || {};
@@ -565,6 +609,7 @@
         if (!state.voiceDirty && !state.voiceProfileBusy) {
             state.voiceConfig = structuredClone(config);
             ui.voiceEnabled.checked = !!config.enabled;
+            ui.voiceNluEnabled.checked = !!config.nlu_enabled;
             ui.voiceCaptureDevice.value = config.capture_device || "hw:0,0";
             ui.voicePlaybackDevice.value = config.playback_device || "plughw:0,0";
             const playbackVolume = Number(config.playback_volume ?? 60);
@@ -1042,7 +1087,7 @@
             <tr>
                 <td>${formatTimestamp(event.epoch)}</td>
                 <td>${esc(event.phrase || event.command_id)}</td>
-                <td>${event.source === "test" ? "测试" : "语音"}</td>
+                <td>${event.source === "test" ? "测试" : event.source === "nlu" ? "自然语言" : "语音"}</td>
                 <td class="${event.success ? "voice-success" : "voice-failure"}">
                     ${esc(event.message || (event.success ? "成功" : "失败"))}
                 </td>
@@ -1053,6 +1098,7 @@
     function collectVoiceConfig() {
         const config = structuredClone(state.voiceConfig || {});
         config.enabled = ui.voiceEnabled.checked;
+        config.nlu_enabled = ui.voiceNluEnabled.checked;
         config.capture_device = ui.voiceCaptureDevice.value.trim();
         config.playback_device = ui.voicePlaybackDevice.value.trim();
         config.playback_volume = Number(ui.voicePlaybackVolume.value);

@@ -22,6 +22,7 @@ mod state;
 mod system;
 mod voice;
 mod voice_config;
+mod voice_nlu;
 mod voice_studio;
 mod voice_tts;
 mod web;
@@ -214,8 +215,10 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
         .route("/api/v1/voice/transcribe", post(transcribe_voice))
+        .route("/api/v1/voice/parse", post(parse_voice))
         .route("/api/v1/ir", get(ir_overview))
         .route("/api/v1/ir/actions/{action}", post(send_ir_action))
+        .route("/api/v1/ir/aircon/state", post(send_aircon_state))
         .route("/api/v1/assets", get(assets_overview))
         .route("/api/v1/assets/{asset}/install", post(install_asset))
         .route("/api/v1/components", get(components_overview))
@@ -1053,6 +1056,32 @@ async fn install_asset(
         StatusCode::ACCEPTED,
         Json(json!({"ok":true,"asset":status})),
     ))
+}
+
+async fn send_aircon_state(
+    State(state): State<Arc<AppState>>,
+    Json(command): Json<crate::ir::AirconCommand>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    command
+        .validate()
+        .map_err(|error| ApiError::status(StatusCode::BAD_REQUEST, error.to_string()))?;
+    let transmission =
+        state.ir.send_aircon(&command).await.map_err(|error| {
+            ApiError::status(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
+        })?;
+    Ok(Json(
+        json!({"ok":true,"command":command,"transmission":transmission}),
+    ))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VoiceParseBody {
+    text: String,
+}
+
+async fn parse_voice(Json(body): Json<VoiceParseBody>) -> Json<voice_nlu::ParseResult> {
+    Json(voice_nlu::parse(&body.text))
 }
 
 async fn control_component(

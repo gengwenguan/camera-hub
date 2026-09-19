@@ -1421,6 +1421,47 @@ textarea:focus {
 #voiceAsrTranscript {
     white-space: pre-wrap;
     word-break: break-word;
+    font-size: 24px;
+    line-height: 1.5;
+    margin: 10px 0;
+}
+
+.voice-transcript {
+    padding: 20px;
+    margin-bottom: 16px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+}
+
+.voice-transcript span,
+.voice-transcript time {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.voice-nlu-result {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.voice-nlu-result dd {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.voice-nlu-result > div:last-child {
+    grid-column: 1 / -1;
+}
+
+#voiceParseText {
+    flex: 1;
+    min-width: 160px;
+}
+
+#voiceParseResult {
+    flex-basis: 100%;
+    overflow-wrap: anywhere;
 }
 
 .voice-global-grid,
