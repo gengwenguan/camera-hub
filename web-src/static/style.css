@@ -1603,6 +1603,86 @@ textarea:focus {
     color: var(--danger);
 }
 
+.qq-message-list {
+    margin-top: 20px;
+    border-top: 1px solid var(--line);
+}
+
+.qq-message-list .empty {
+    padding: 32px 14px 14px;
+}
+
+.qq-message-row {
+    display: grid;
+    gap: 8px;
+    padding: 14px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.qq-message-row header,
+.qq-message-row header > div,
+.qq-message-row footer {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    min-width: 0;
+}
+
+.qq-message-row header {
+    justify-content: space-between;
+}
+
+.qq-message-row header > div {
+    flex: 1;
+}
+
+.qq-message-row strong {
+    overflow: hidden;
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.qq-message-scene {
+    flex: none;
+    padding: 2px 7px;
+    border: 1px solid rgba(99, 246, 195, 0.35);
+    border-radius: 999px;
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 800;
+}
+
+.qq-message-row time,
+.qq-message-row footer {
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 10px;
+}
+
+.qq-message-row time {
+    flex: none;
+}
+
+.qq-message-row p {
+    margin: 0;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+}
+
+.qq-message-row footer {
+    flex-wrap: wrap;
+}
+
+.qq-message-row footer span {
+    overflow: hidden;
+    max-width: 100%;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 .qq-config-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1713,6 +1793,46 @@ textarea:focus {
 .qq-token-actions {
     display: flex;
     gap: 8px;
+}
+
+.qq-curl-example {
+    display: grid;
+    gap: 8px;
+    margin-top: 20px;
+}
+
+.qq-curl-example > div {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.qq-curl-example > div > span {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.qq-curl-example .button {
+    min-height: 34px;
+    padding: 0 12px;
+}
+
+.qq-curl-example pre {
+    margin: 0;
+    padding: 14px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #0b0e20;
+    overflow-wrap: anywhere;
+}
+
+.qq-curl-example code {
+    color: #d7ddff;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    line-height: 1.65;
+    white-space: pre-wrap;
 }
 
 .qq-test-form {

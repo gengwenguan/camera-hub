@@ -655,6 +655,19 @@
         <section class="panel qq-panel" data-view="qq" hidden>
             <div class="panel-heading">
                 <div>
+                    <p class="eyebrow">RECENT MESSAGES</p>
+                    <h2>最近消息</h2>
+                </div>
+                <span class="chip" id="qqMessageCount">0 条</span>
+            </div>
+            <div class="qq-message-list" id="qqMessageList">
+                <div class="empty">暂无收到的消息</div>
+            </div>
+        </section>
+
+        <section class="panel qq-panel" data-view="qq" hidden>
+            <div class="panel-heading">
+                <div>
                     <p class="eyebrow">BOT CONFIGURATION</p>
                     <h2>接入配置</h2>
                 </div>
@@ -716,9 +729,9 @@
                     <input id="qqPushEndpoint" type="text" readonly>
                 </label>
                 <label>
-                    <span>新 Push Token</span>
+                    <span>Push Token</span>
                     <input id="qqPushToken" type="text" readonly
-                           placeholder="生成后仅在本次页面显示">
+                           placeholder="生成后在此持续显示">
                 </label>
                 <div class="qq-token-actions">
                     <button class="button ghost" id="rotateQqPushToken"
@@ -726,6 +739,14 @@
                     <button class="button ghost" id="copyQqPushToken"
                             type="button" disabled>复制 Token</button>
                 </div>
+            </div>
+            <div class="qq-curl-example">
+                <div>
+                    <span>cURL 推送示例</span>
+                    <button class="button ghost" id="copyQqCurlExample"
+                            type="button">复制示例</button>
+                </div>
+                <pre><code id="qqCurlExample"></code></pre>
             </div>
             <form class="qq-test-form" id="qqTestForm">
                 <label>

@@ -364,7 +364,8 @@ ZipVoice、KWS 和 YOLO 使用同一个跨进程推理锁。MI6 本机只允许�
 测试请求超过 60 秒后不再执行；事件日志达到 4 MiB 时保留一份滚动历史，Web 查询
 只读取当前日志尾部。
 
-同一页面可按需安装 KWS 和 TTS/Vocos 模型。AssetManager 只接受程序内置的固定
+同一页面可按需安装 KWS、自然语言识别（流式 Zipformer）和 TTS/Vocos 模型。
+AssetManager 只接受程序内置的固定
 资源清单，下载时检查预期大小和 SHA-256，拒绝不安全归档路径，并在磁盘空间检查后
 使用同文件系统临时目录原子替换。下载和解压期间 worker 保持运行，仅在最终提交时
 短暂停止；安装完成后按原运行状态重新初始化。模型缓存目录由
@@ -405,6 +406,10 @@ Web 的“QQ 机器人”页面配置 AppID、AppSecret、默认目标群和外�
 主进程通过 QQ Gateway WebSocket 维持机器人在线，并从加群或群消息事件中登记
 `group_openid`。AppSecret 只写入权限为 `0600` 的
 `CAMERA_HUB_QQ_CONFIG_FILE`；配置查询不会返回原始密钥。
+群聊、群聊 @ 和单聊消息事件会保留在进程内存中，Web 页面显示最近 10 条；
+消息不会写入配置文件，服务重启后列表清空。
+新生成的 Push Token 会保存在同一个 `0600` 配置文件中，并持续显示在已登录的
+Web 管理页面；页面同时生成包含当前地址和 Token 的可复制 cURL 示例。
 
 外部程序使用独立 Push Token 发送纯文本消息，不接触 AppSecret 或 QQ Access Token：
 

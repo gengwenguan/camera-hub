@@ -105,6 +105,8 @@
         qqConnectedAt: $("qqConnectedAt"),
         qqSentCount: $("qqSentCount"),
         qqLastError: $("qqLastError"),
+        qqMessageCount: $("qqMessageCount"),
+        qqMessageList: $("qqMessageList"),
         qqForm: $("qqForm"),
         qqEnabled: $("qqEnabled"),
         qqAppId: $("qqAppId"),
@@ -120,6 +122,8 @@
         qqPushToken: $("qqPushToken"),
         rotateQqPushToken: $("rotateQqPushToken"),
         copyQqPushToken: $("copyQqPushToken"),
+        qqCurlExample: $("qqCurlExample"),
+        copyQqCurlExample: $("copyQqCurlExample"),
         qqTestForm: $("qqTestForm"),
         qqTestTarget: $("qqTestTarget"),
         qqTestMessage: $("qqTestMessage"),
@@ -1402,12 +1406,11 @@
         ui.qqLastError.textContent =
             status.last_error || (online ? "运行正常" : status.detail || "等待连接");
         ui.qqLastError.classList.toggle("error", !!status.last_error);
-        ui.qqPushEndpoint.value =
-            `${location.origin}${body.push_endpoint || "/api/v1/integrations/qq/notify"}`;
-        ui.qqPushTokenState.textContent = config.push_token_configured
-            ? "Token 已配置" : "尚未生成 Token";
-        ui.qqPushTokenState.className =
-            `chip ${config.push_token_configured ? "active" : ""}`.trim();
+        renderQqPushAccess(config, body.push_endpoint);
+        renderQqMessages(
+            Array.isArray(body.recent_messages) ? body.recent_messages : [],
+            Array.isArray(config.groups) ? config.groups : [],
+        );
 
         if (!state.qqDirty) {
             state.qqConfig = structuredClone(config);
@@ -1421,6 +1424,79 @@
             renderQqGroups(Array.isArray(config.groups) ? config.groups : [], config.default_group);
         }
         updateQqCredentialRequirements();
+    }
+
+    function renderQqPushAccess(config, pushEndpoint) {
+        const token = config.push_token || "";
+        const configured = !!config.push_token_configured;
+        ui.qqPushEndpoint.value =
+            `${location.origin}${pushEndpoint || "/api/v1/integrations/qq/notify"}`;
+        ui.qqPushToken.value = token;
+        ui.qqPushTokenState.textContent = token
+            ? "Token 已显示"
+            : configured ? "重新生成后可显示" : "尚未生成 Token";
+        ui.qqPushTokenState.className = `chip ${configured ? "active" : ""}`.trim();
+        ui.rotateQqPushToken.textContent = configured ? "重新生成 Token" : "生成 Token";
+        ui.copyQqPushToken.disabled = !token;
+        const commandToken = token || "$CAMERA_HUB_QQ_PUSH_TOKEN";
+        ui.qqCurlExample.textContent = [
+            `curl -X POST '${ui.qqPushEndpoint.value}' \\`,
+            `  -H "Authorization: Bearer ${commandToken}" \\`,
+            "  -H 'Content-Type: application/json' \\",
+            `  --data '{"target":"default","content":"任务执行完成"}'`,
+        ].join("\n");
+    }
+
+    function renderQqMessages(messages, groups) {
+        ui.qqMessageCount.textContent = `${messages.length} 条`;
+        if (!messages.length) {
+            ui.qqMessageList.innerHTML = '<div class="empty">暂无收到的消息</div>';
+            return;
+        }
+        const groupNames = new Map(
+            groups.map((group) => [group.openid, group.name || compactOpenid(group.openid)]),
+        );
+        ui.qqMessageList.innerHTML = messages.map((message) => {
+            const groupMessage = message.scene === "group";
+            const sourceOpenid = message.source_openid || "";
+            const sourceName = groupMessage
+                ? groupNames.get(sourceOpenid) || "QQ群"
+                : message.sender_name || "QQ 用户";
+            const sceneLabel = message.event_type === "GROUP_AT_MESSAGE_CREATE"
+                ? "群聊 @"
+                : groupMessage ? "群聊" : "单聊";
+            const attachmentCount = Number(message.attachment_count || 0);
+            const content = message.content
+                || (attachmentCount ? `[${attachmentCount} 个附件]` : "[非文本消息]");
+            const sender = message.sender_name
+                ? `${message.sender_name} (${compactOpenid(message.sender_openid)})`
+                : compactOpenid(message.sender_openid) || "未知发送者";
+            const sourceTitle = sourceOpenid ? ` title="${esc(sourceOpenid)}"` : "";
+            const attachment = attachmentCount
+                ? `<span>${attachmentCount} 个附件</span>` : "";
+            return `
+                <article class="qq-message-row">
+                    <header>
+                        <div>
+                            <span class="qq-message-scene">${sceneLabel}</span>
+                            <strong${sourceTitle}>${esc(sourceName)}</strong>
+                        </div>
+                        <time>${formatTimestamp(
+                            message.timestamp_epoch || message.received_epoch,
+                        )}</time>
+                    </header>
+                    <p>${esc(content)}</p>
+                    <footer>
+                        <span title="${esc(message.sender_openid || "")}">${esc(sender)}</span>
+                        ${attachment}
+                    </footer>
+                </article>`;
+        }).join("");
+    }
+
+    function compactOpenid(value) {
+        const text = String(value || "");
+        return text.length > 20 ? `${text.slice(0, 8)}...${text.slice(-6)}` : text;
     }
 
     function renderQqGroups(groups, defaultGroup) {
@@ -1509,9 +1585,11 @@
             const body = await api("/api/v1/qq/push-token", { method: "POST" });
             ui.qqPushToken.value = body.token || "";
             ui.copyQqPushToken.disabled = !ui.qqPushToken.value;
-            if (state.qqConfig) state.qqConfig.push_token_configured = true;
-            ui.qqPushTokenState.textContent = "新 Token 仅显示一次";
-            ui.qqPushTokenState.className = "chip active";
+            if (state.qqConfig) {
+                state.qqConfig.push_token_configured = true;
+                state.qqConfig.push_token = body.token || "";
+            }
+            await loadQq(true);
             showToast("新 Push Token 已生成");
         } catch (error) {
             handleError(error);
@@ -1529,6 +1607,23 @@
             document.execCommand("copy");
         }
         showToast("Push Token 已复制");
+    }
+
+    async function copyQqCurlExample() {
+        const command = ui.qqCurlExample.textContent || "";
+        if (!command) return;
+        try {
+            await navigator.clipboard.writeText(command);
+        } catch (_) {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(ui.qqCurlExample);
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.execCommand("copy");
+            selection.removeAllRanges();
+        }
+        showToast("cURL 示例已复制");
     }
 
     async function sendQqTest(event) {
@@ -3323,6 +3418,7 @@
     });
     ui.rotateQqPushToken.addEventListener("click", rotateQqPushToken);
     ui.copyQqPushToken.addEventListener("click", copyQqPushToken);
+    ui.copyQqCurlExample.addEventListener("click", copyQqCurlExample);
     ui.qqTestForm.addEventListener("submit", sendQqTest);
     ui.ddnsForm.addEventListener("input", () => {
         state.ddnsDirty = true;

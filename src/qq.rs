@@ -5,7 +5,7 @@ use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
@@ -16,10 +16,11 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-const QQ_CONFIG_VERSION: u32 = 1;
+const QQ_CONFIG_VERSION: u32 = 2;
 const QQ_API_BASE: &str = "https://api.bot.qq.com";
 const GROUP_AND_C2C_INTENT: u64 = 1 << 25;
 const NOTIFY_QUEUE_CAPACITY: usize = 64;
+const RECENT_MESSAGE_LIMIT: usize = 10;
 const MESSAGE_CHUNK_BYTES: usize = 1800;
 const MESSAGE_MAX_CHARS: usize = 12_000;
 
@@ -32,6 +33,7 @@ struct QqConfig {
     app_id: String,
     app_secret: String,
     default_group: String,
+    push_token: String,
     push_token_sha256: String,
     groups: Vec<QqGroup>,
 }
@@ -62,6 +64,7 @@ pub struct QqPublicConfig {
     pub secret_configured: bool,
     pub default_group: String,
     pub push_token_configured: bool,
+    pub push_token: String,
     pub groups: Vec<QqGroup>,
 }
 
@@ -85,8 +88,23 @@ pub struct QqStatus {
 pub struct QqOverview {
     pub config: QqPublicConfig,
     pub status: QqStatus,
+    pub recent_messages: Vec<QqRecentMessage>,
     pub config_path: PathBuf,
     pub push_endpoint: &'static str,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct QqRecentMessage {
+    pub id: String,
+    pub event_type: String,
+    pub scene: String,
+    pub source_openid: String,
+    pub sender_openid: String,
+    pub sender_name: String,
+    pub content: String,
+    pub attachment_count: usize,
+    pub timestamp_epoch: u64,
+    pub received_epoch: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -132,6 +150,7 @@ impl Default for QqConfig {
             app_id: String::new(),
             app_secret: String::new(),
             default_group: String::new(),
+            push_token: String::new(),
             push_token_sha256: String::new(),
             groups: Vec::new(),
         }
@@ -172,6 +191,7 @@ impl QqConfig {
         self.app_id = self.app_id.trim().to_owned();
         self.app_secret = self.app_secret.trim().to_owned();
         self.default_group = self.default_group.trim().to_owned();
+        self.push_token = self.push_token.trim().to_owned();
         self.push_token_sha256 = self.push_token_sha256.trim().to_ascii_lowercase();
 
         if !self.app_id.is_empty()
@@ -192,6 +212,14 @@ impl QqConfig {
                     .all(|byte| byte.is_ascii_hexdigit()))
         {
             bail!("推送 Token 摘要格式无效");
+        }
+        if !self.push_token.is_empty()
+            && (self.push_token.len() > 128 || self.push_token.chars().any(char::is_control))
+        {
+            bail!("推送 Token 格式无效");
+        }
+        if !self.push_token.is_empty() {
+            self.push_token_sha256 = token_digest(&self.push_token);
         }
 
         let mut openids = HashSet::new();
@@ -222,6 +250,7 @@ impl QqConfig {
             secret_configured: !self.app_secret.is_empty(),
             default_group: self.default_group.clone(),
             push_token_configured: !self.push_token_sha256.is_empty(),
+            push_token: self.push_token.clone(),
             groups: self.groups.clone(),
         }
     }
@@ -299,9 +328,9 @@ impl QqConfigStore {
         Ok(next)
     }
 
-    fn set_push_token(&mut self, digest: String) -> Result<QqConfig> {
+    fn set_push_token(&mut self, token: String) -> Result<QqConfig> {
         let mut next = self.current.clone();
-        next.push_token_sha256 = digest;
+        next.push_token = token;
         next.revision = next.revision.saturating_add(1);
         next = next.normalize()?;
         self.save(&next)?;
@@ -369,6 +398,7 @@ struct NotifyJob {
 pub struct QqService {
     store: Mutex<QqConfigStore>,
     status: RwLock<QqStatus>,
+    recent_messages: RwLock<VecDeque<QqRecentMessage>>,
     config_tx: watch::Sender<QqConfig>,
     notify_tx: mpsc::Sender<NotifyJob>,
     http: reqwest::Client,
@@ -388,6 +418,7 @@ impl QqService {
         let service = Arc::new(Self {
             store: Mutex::new(store),
             status: RwLock::new(QqStatus::default()),
+            recent_messages: RwLock::new(VecDeque::with_capacity(RECENT_MESSAGE_LIMIT)),
             config_tx,
             notify_tx,
             http,
@@ -401,6 +432,7 @@ impl QqService {
         QqOverview {
             config: store.current.public(),
             status: self.status(),
+            recent_messages: self.recent_messages(),
             config_path: store.path.clone(),
             push_endpoint: "/api/v1/integrations/qq/notify",
         }
@@ -420,11 +452,10 @@ impl QqService {
         let mut random = [0u8; 32];
         getrandom::fill(&mut random).context("generate QQ push token")?;
         let token = format!("chq_{}", hex::encode(random));
-        let digest = token_digest(&token);
         self.store
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .set_push_token(digest)?;
+            .set_push_token(token.clone())?;
         Ok(token)
     }
 
@@ -445,6 +476,23 @@ impl QqService {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
+    }
+
+    fn recent_messages(&self) -> Vec<QqRecentMessage> {
+        self.recent_messages
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
+
+    fn remember_message(&self, message: QqRecentMessage) {
+        let mut messages = self
+            .recent_messages
+            .write()
+            .unwrap_or_else(|error| error.into_inner());
+        remember_recent_message(&mut messages, message);
     }
 
     pub async fn notify(
@@ -831,9 +879,91 @@ fn handle_dispatch(service: &QqService, payload: &Value) {
             service.discover_group(group_openid);
         }
     }
+    if let Some(message) = parse_incoming_message(payload, epoch_seconds()) {
+        service.remember_message(message);
+    }
     service.update_status(|status| {
         status.last_event_epoch = epoch_seconds();
     });
+}
+
+fn parse_incoming_message(payload: &Value, received_epoch: u64) -> Option<QqRecentMessage> {
+    let event = payload.get("t")?.as_str()?;
+    let scene = match event {
+        "GROUP_AT_MESSAGE_CREATE" | "GROUP_MESSAGE_CREATE" => "group",
+        "C2C_MESSAGE_CREATE" => "c2c",
+        _ => return None,
+    };
+    let data = payload.get("d")?;
+    let sender_openid = data
+        .pointer("/author/member_openid")
+        .or_else(|| data.pointer("/author/user_openid"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let source_openid = if scene == "group" {
+        data.get("group_openid")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    } else {
+        sender_openid.clone()
+    };
+    let id = data
+        .get("id")
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if id.is_empty() {
+        return None;
+    }
+    let content = data
+        .get("content")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(MESSAGE_MAX_CHARS)
+        .collect();
+    let timestamp_epoch = data
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .and_then(|value| u64::try_from(value.timestamp()).ok())
+        .unwrap_or(received_epoch);
+
+    Some(QqRecentMessage {
+        id,
+        event_type: event.to_owned(),
+        scene: scene.to_owned(),
+        source_openid,
+        sender_openid,
+        sender_name: data
+            .pointer("/author/username")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .chars()
+            .take(64)
+            .collect(),
+        content,
+        attachment_count: data
+            .get("attachments")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default(),
+        timestamp_epoch,
+        received_epoch,
+    })
+}
+
+fn remember_recent_message(messages: &mut VecDeque<QqRecentMessage>, message: QqRecentMessage) {
+    if messages.iter().any(|existing| existing.id == message.id) {
+        return;
+    }
+    messages.push_front(message);
+    messages.truncate(RECENT_MESSAGE_LIMIT);
 }
 
 struct AccessToken {
@@ -1133,6 +1263,41 @@ mod tests {
     }
 
     #[test]
+    fn persists_push_token_for_authenticated_web_display() {
+        let path = temporary_config("push-token");
+        let mut store = QqConfigStore::load(path.clone()).unwrap();
+        let token = "chq_0123456789abcdef".to_owned();
+        let updated = store.set_push_token(token.clone()).unwrap();
+        assert_eq!(updated.public().push_token, token);
+        assert_eq!(updated.push_token_sha256, token_digest(&token));
+
+        drop(store);
+        let reloaded = QqConfigStore::load(path.clone()).unwrap();
+        assert!(reloaded.current.public().push_token_configured);
+        assert_eq!(reloaded.current.public().push_token, token);
+        assert_eq!(
+            reloaded.current.push_token_sha256,
+            token_digest(&reloaded.current.push_token)
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn keeps_legacy_push_token_digest_without_exposing_a_fake_value() {
+        let path = temporary_config("legacy-push-token");
+        let mut store = QqConfigStore::load(path.clone()).unwrap();
+        store.current.push_token_sha256 = token_digest("legacy-token");
+        store.save(&store.current).unwrap();
+        drop(store);
+
+        let reloaded = QqConfigStore::load(path.clone()).unwrap();
+        let public = reloaded.current.public();
+        assert!(public.push_token_configured);
+        assert!(public.push_token.is_empty());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn chunks_unicode_messages_without_breaking_characters() {
         let content = "测".repeat(MESSAGE_CHUNK_BYTES);
         let chunks = split_message(&content);
@@ -1156,5 +1321,83 @@ mod tests {
             digest.as_bytes(),
             token_digest("chq_other").as_bytes()
         ));
+    }
+
+    #[test]
+    fn parses_group_and_c2c_message_events() {
+        let group = parse_incoming_message(
+            &json!({
+                "id": "event-1",
+                "t": "GROUP_AT_MESSAGE_CREATE",
+                "d": {
+                    "id": "message-1",
+                    "group_openid": "GROUP123456",
+                    "author": {
+                        "member_openid": "MEMBER123456",
+                        "username": "测试用户"
+                    },
+                    "content": "  打开摄像头  ",
+                    "timestamp": "2023-11-06T13:37:18+08:00",
+                    "attachments": [{"content_type": "image/jpeg"}]
+                }
+            }),
+            99,
+        )
+        .expect("group message");
+        assert_eq!(group.id, "message-1");
+        assert_eq!(group.scene, "group");
+        assert_eq!(group.source_openid, "GROUP123456");
+        assert_eq!(group.sender_openid, "MEMBER123456");
+        assert_eq!(group.sender_name, "测试用户");
+        assert_eq!(group.content, "打开摄像头");
+        assert_eq!(group.attachment_count, 1);
+        assert_ne!(group.timestamp_epoch, 99);
+
+        let c2c = parse_incoming_message(
+            &json!({
+                "t": "C2C_MESSAGE_CREATE",
+                "d": {
+                    "id": "message-2",
+                    "author": {"user_openid": "USER123456"},
+                    "content": "你好"
+                }
+            }),
+            100,
+        )
+        .expect("c2c message");
+        assert_eq!(c2c.scene, "c2c");
+        assert_eq!(c2c.source_openid, "USER123456");
+        assert_eq!(c2c.sender_openid, "USER123456");
+        assert_eq!(c2c.timestamp_epoch, 100);
+    }
+
+    #[test]
+    fn recent_messages_are_newest_first_limited_and_deduplicated() {
+        let mut messages = VecDeque::new();
+        for index in 0..12 {
+            remember_recent_message(
+                &mut messages,
+                QqRecentMessage {
+                    id: format!("message-{index}"),
+                    event_type: "C2C_MESSAGE_CREATE".to_owned(),
+                    scene: "c2c".to_owned(),
+                    source_openid: "USER123456".to_owned(),
+                    sender_openid: "USER123456".to_owned(),
+                    sender_name: String::new(),
+                    content: format!("content-{index}"),
+                    attachment_count: 0,
+                    timestamp_epoch: index,
+                    received_epoch: index,
+                },
+            );
+        }
+        assert_eq!(messages.len(), RECENT_MESSAGE_LIMIT);
+        assert_eq!(messages.front().unwrap().id, "message-11");
+        assert_eq!(messages.back().unwrap().id, "message-2");
+
+        let duplicate = messages.front().unwrap().clone();
+        remember_recent_message(&mut messages, duplicate);
+        assert_eq!(messages.len(), RECENT_MESSAGE_LIMIT);
+        assert_eq!(messages.front().unwrap().id, "message-11");
     }
 }
