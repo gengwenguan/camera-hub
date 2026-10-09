@@ -85,6 +85,7 @@ Web 中的 AI 开关。
 /home/android/.config/camera-hub-components.json
 /home/android/.config/camera-hub-ddns.json
 /home/android/.config/camera-hub-voice.json
+/home/android/.config/camera-hub-aircon.json
 /home/android/camera-data/
 /home/android/camera-voice/
 ```

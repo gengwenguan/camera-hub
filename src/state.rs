@@ -1,4 +1,5 @@
 use crate::ai::AiService;
+use crate::aircon::AirconService;
 use crate::asset_manager::AssetManager;
 use crate::benchmark::BenchmarkRegistry;
 use crate::component_manager::ComponentManager;
@@ -65,6 +66,7 @@ pub struct AppState {
     pub qq: Arc<QqService>,
     pub ddns: Arc<DdnsControl>,
     pub ir: Arc<IrControl>,
+    pub aircon: Arc<AirconService>,
     pub assets: Arc<AssetManager>,
     pub components: Arc<ComponentManager>,
     pub ai: Arc<AiService>,
@@ -86,6 +88,7 @@ pub struct AppServices {
     pub qq: Arc<QqService>,
     pub ddns: Arc<DdnsControl>,
     pub ir: Arc<IrControl>,
+    pub aircon: Arc<AirconService>,
     pub assets: Arc<AssetManager>,
     pub components: Arc<ComponentManager>,
     pub voice: Arc<VoiceService>,
@@ -102,6 +105,7 @@ impl AppState {
             qq,
             ddns,
             ir,
+            aircon,
             assets,
             components,
             voice,
@@ -124,6 +128,7 @@ impl AppState {
             qq,
             ddns,
             ir,
+            aircon,
             assets,
             components,
             frames,

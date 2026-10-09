@@ -481,13 +481,93 @@
                             data-service-control="ir" data-service-action="stop">停止</button>
                 </div>
             </div>
+            <dl class="aircon-state-summary">
+                <div><dt>影子状态</dt><dd id="airconStateKnown">尚未同步</dd></div>
+                <div><dt>电源</dt><dd id="airconStatePower">--</dd></div>
+                <div><dt>模式</dt><dd id="airconStateMode">--</dd></div>
+                <div><dt>温度</dt><dd id="airconStateTemperature">--</dd></div>
+                <div><dt>ECO</dt><dd id="airconStateEco">--</dd></div>
+            </dl>
+            <form class="aircon-command-form" id="airconCommandForm">
+                <label>
+                    <span>操作</span>
+                    <select id="airconOperation">
+                        <option value="set">设置完整状态</option>
+                        <option value="off">关闭空调</option>
+                    </select>
+                </label>
+                <label>
+                    <span>模式</span>
+                    <select id="airconMode">
+                        <option value="cool">制冷</option>
+                        <option value="dry">抽湿</option>
+                        <option value="heat">制热</option>
+                        <option value="auto">自动</option>
+                    </select>
+                </label>
+                <label>
+                    <span>温度</span>
+                    <input id="airconTemperature" type="number"
+                           min="17" max="30" step="1" value="26" required>
+                </label>
+                <label class="toggle aircon-eco-toggle">
+                    <input id="airconEco" type="checkbox">
+                    <span>开启 ECO</span>
+                </label>
+                <label>
+                    <span>延迟执行（分钟）</span>
+                    <input id="airconDelayMinutes" type="number"
+                           min="0" max="43200" step="1" value="0">
+                </label>
+                <label>
+                    <span>执行后自动关机（分钟）</span>
+                    <input id="airconAutoOffMinutes" type="number"
+                           min="0" max="10080" step="1" value="0">
+                </label>
+                <button class="button primary" id="sendAirconCommand"
+                        type="submit">执行命令</button>
+            </form>
             <div class="ir-test-groups" id="irActionList">
                 <section class="ir-primary-actions">
-                    <h3>空调模式</h3>
+                    <h3>快速动作</h3>
                     <p>默认开机使用制冷 26°C + ECO；普通制冷和抽湿模式会明确关闭 ECO。</p>
                     <div class="ir-action-grid" data-ir-action-group="control"></div>
                 </section>
             </div>
+            <section class="aircon-schedules">
+                <div class="aircon-section-heading">
+                    <h3>定时任务</h3>
+                    <button class="button danger" id="cancelAllAirconSchedules"
+                            type="button">取消全部</button>
+                </div>
+                <div class="aircon-schedule-list" id="airconScheduleList">
+                    <div class="empty">暂无定时任务</div>
+                </div>
+            </section>
+            <section class="aircon-integration">
+                <div class="aircon-section-heading">
+                    <h3>豆包接入</h3>
+                    <span class="chip active">HTTPS + Token</span>
+                </div>
+                <div class="aircon-token-grid">
+                    <label>
+                        <span>集成 Token</span>
+                        <input id="airconIntegrationToken" type="text" readonly>
+                    </label>
+                    <div class="aircon-token-actions">
+                        <button class="button ghost" id="rotateAirconToken"
+                                type="button">重新生成 Token</button>
+                        <button class="button ghost" id="copyAirconToken"
+                                type="button">复制 Token</button>
+                    </div>
+                </div>
+                <label class="aircon-intent-field">
+                    <span>当前命令 Intent URI</span>
+                    <textarea id="airconIntentUri" rows="4" readonly></textarea>
+                </label>
+                <button class="button ghost" id="copyAirconIntent"
+                        type="button">复制 Intent URI</button>
+            </section>
             <p class="ir-voice-phrases">
                 语音命令：<code>小雨开空调</code>、<code>小雨制冷模式</code>、
                 <code>小雨抽湿模式</code>、<code>小雨关空调</code>

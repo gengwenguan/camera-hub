@@ -157,6 +157,7 @@ fn public_path(method: &str, path: &str) -> bool {
         || path == "/voice-studio.css"
         || path.starts_with("/api/v1/public/voice-studio/")
         || (method == "POST" && path == "/api/v1/integrations/qq/notify")
+        || (matches!(method, "GET" | "POST") && path == "/api/v1/integrations/aircon/command")
         || path == "/health"
         || path == "/certificate.sha256"
         || path.starts_with("/.well-known/acme-challenge/")
@@ -348,6 +349,12 @@ mod tests {
         assert!(public_path("POST", "/api/v1/integrations/qq/notify"));
         assert!(!public_path("GET", "/api/v1/integrations/qq/notify"));
         assert!(!public_path("POST", "/api/v1/integrations/qq/notify/extra"));
+        assert!(public_path("GET", "/api/v1/integrations/aircon/command"));
+        assert!(public_path("POST", "/api/v1/integrations/aircon/command"));
+        assert!(!public_path(
+            "GET",
+            "/api/v1/integrations/aircon/command/extra"
+        ));
         assert!(public_path("POST", "/api/v1/public/voice-studio/session"));
         assert!(public_path("GET", "/voice-studio"));
         assert!(!public_path("POST", "/api/v1/voice/reference"));

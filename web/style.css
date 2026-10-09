@@ -1269,6 +1269,152 @@ textarea:focus {
     margin-top: 16px;
 }
 
+.aircon-state-summary {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 1px;
+    margin: 20px 0 0;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--line);
+}
+
+.aircon-state-summary div {
+    min-width: 0;
+    padding: 12px;
+    background: #0b0e20;
+}
+
+.aircon-state-summary dt,
+.aircon-state-summary dd {
+    margin: 0;
+}
+
+.aircon-state-summary dt,
+.aircon-command-form label > span,
+.aircon-token-grid label > span,
+.aircon-intent-field > span {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.aircon-state-summary dd {
+    margin-top: 6px;
+    overflow: hidden;
+    font-size: 11px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.aircon-command-form {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+    align-items: end;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+}
+
+.aircon-command-form label:not(.toggle),
+.aircon-token-grid label,
+.aircon-intent-field {
+    display: grid;
+    gap: 7px;
+}
+
+.aircon-command-form input:not([type="checkbox"]),
+.aircon-command-form select,
+.aircon-token-grid input,
+.aircon-intent-field textarea {
+    width: 100%;
+    padding: 0 11px;
+}
+
+.aircon-eco-toggle {
+    min-height: 42px;
+}
+
+.aircon-section-heading {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.aircon-section-heading h3 {
+    margin: 0;
+    font-size: 13px;
+}
+
+.aircon-schedules,
+.aircon-integration {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+}
+
+.aircon-schedule-list {
+    margin-top: 10px;
+}
+
+.aircon-schedule-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.aircon-schedule-row:last-child {
+    border-bottom: 0;
+}
+
+.aircon-schedule-row strong,
+.aircon-schedule-row small {
+    display: block;
+}
+
+.aircon-schedule-row strong {
+    font-size: 12px;
+}
+
+.aircon-schedule-row small {
+    margin-top: 4px;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.aircon-token-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+    margin-top: 12px;
+}
+
+.aircon-token-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.aircon-intent-field {
+    margin-top: 12px;
+}
+
+.aircon-intent-field textarea {
+    min-height: 88px;
+    padding-top: 10px;
+    padding-bottom: 10px;
+    resize: vertical;
+}
+
+.aircon-integration > .button {
+    margin-top: 10px;
+}
+
 .ir-test-groups {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2447,12 +2593,21 @@ td.file-name {
     .voice-runtime,
     .voice-studio-policy,
     .voice-command-grid,
+    .aircon-state-summary,
+    .aircon-command-form,
+    .aircon-token-grid,
     .qq-runtime,
     .qq-config-grid,
     .qq-push-grid,
     .qq-test-form,
     .ddns-runtime {
         grid-template-columns: 1fr;
+    }
+
+    .aircon-token-actions,
+    .aircon-section-heading {
+        align-items: stretch;
+        flex-direction: column;
     }
 
     .ddns-runtime .ddns-error-row {

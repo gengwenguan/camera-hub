@@ -189,6 +189,7 @@ CAMERA_HUB_TLS_KEY=/srv/camera-hub/state/key.pem
 CAMERA_HUB_DATA_DIR=/srv/camera-hub/data
 CAMERA_HUB_SETTINGS_FILE=/srv/camera-hub/state/settings.json
 CAMERA_HUB_QQ_CONFIG_FILE=/srv/camera-hub/state/qq.json
+CAMERA_HUB_AIRCON_CONFIG_FILE=/srv/camera-hub/state/aircon.json
 CAMERA_HUB_COMPONENT_MANAGER_ENABLED=true
 CAMERA_HUB_COMPONENTS_FILE=/srv/camera-hub/state/components.json
 CAMERA_HUB_LOG_DIR=/srv/camera-hub/log
@@ -267,6 +268,10 @@ POST /api/v1/components/:component/:action
 PUT  /api/v1/components/:component/autostart
 GET  /api/v1/ir
 POST /api/v1/ir/actions/:action
+POST /api/v1/aircon/commands
+POST /api/v1/aircon/integration-token
+GET  /api/v1/integrations/aircon/command
+POST /api/v1/integrations/aircon/command
 POST /api/v1/public/voice-studio/session
 PUT  /api/v1/public/voice-studio/reference
 POST /api/v1/public/voice-studio/synthesize
@@ -376,14 +381,39 @@ AssetManager 只接受程序内置的固定
 
 在带 `/dev/peel_ir` 的 LinuxDeploy 设备上，内置组件管理器会运行
 `camera-hub worker ir`。该 worker 只监听 `127.0.0.1:39182`，主 Web 通过登录鉴权
-后的 `/api/v1/ir/actions/:action` 转发固定动作，不接受任意 URL、原始字节或自定义
-波形。驱动输出限制载波频率、脉冲数量、单段时长、总时长和发送频率。
+后的 `/api/v1/ir/actions/:action` 转发固定动作，也可通过
+`/api/v1/aircon/commands` 设置 17–30°C、制冷/抽湿/制热/自动模式和 ECO。所有输入
+都会转换为完整 RN02S 状态，不接受任意 URL、原始字节或自定义波形。驱动输出限制
+载波频率、脉冲数量、单段时长、总时长和发送频率。
 
 正式动作使用 RN02S：`ac-on` 为制冷 26°C、自动风并开启 ECO；`ac-cool` 为制冷
 26°C 并明确关闭 ECO；`ac-dry` 为抽湿 26°C 并明确关闭 ECO；`ac-off` 使用已验证
 的关机方案 B。旧 `ac-on-no-eco` URL 继续映射到 `ac-cool`。启动时会以只追加方式
 合并“开空调”“制冷模式”“抽湿/除湿模式”“关空调”等多组说法，不覆盖已有用户
 命令的 URL、回复和参数。
+
+空调状态、外部集成 Token 和定时任务持久化到
+`CAMERA_HUB_AIRCON_CONFIG_FILE`。定时由 camera-hub 调度，支持最长 30 天的
+`delay_minutes` / `execute_at_epoch` 和最长 7 天的 `auto_off_minutes`，因此不依赖
+未验证的空调内置定时红外字段。红外没有状态回读，Web 显示的是最近成功发送后的
+影子状态。
+
+豆包或 IntentApiBridge 可使用独立 Token 调用动态命令。标准客户端使用 HTTPS、
+Bearer Token 和 JSON POST；仅支持 URL 参数的桥接器可调用兼容 GET：
+
+```bash
+curl -G 'https://hub.example/api/v1/integrations/aircon/command' \
+  --data-urlencode "token=$CAMERA_HUB_AIRCON_TOKEN" \
+  --data-urlencode 'operation=set' \
+  --data-urlencode 'temperature_c=24' \
+  --data-urlencode 'mode=cool' \
+  --data-urlencode 'eco=false' \
+  --data-urlencode 'auto_off_minutes=120'
+```
+
+相对调温使用 `operation=adjust_temperature&delta_c=-2`；延迟关机使用
+`operation=off&delay_minutes=120`；取消全部待执行任务使用
+`operation=cancel_all`。
 
 检测照片写入 `<data-dir>/<device_id>/snapshot/YYYYMMDD/`，并经同一设备 WebSocket
 回传开发板相册。照片使用推理时的同一帧，按 YOLOX 输出执行 person 框解码和 NMS，

@@ -1,4 +1,5 @@
 mod ai;
+mod aircon;
 mod asset_manager;
 mod auth;
 mod benchmark;
@@ -29,11 +30,15 @@ mod webrtc_live;
 mod workers;
 
 use crate::ai::AiService;
+use crate::aircon::{
+    AirconCommandRequest, AirconError, AirconIntegrationQuery, AirconOperation, AirconService,
+};
 use crate::asset_manager::AssetManager;
 use crate::component_manager::ComponentManager;
 use crate::config::Config;
 use crate::ddns_control::DdnsControl;
 use crate::frames::FrameHub;
+use crate::ir::AcMode;
 use crate::ir_control::IrControl;
 use crate::media::MediaStore;
 use crate::qq::{QqConfigUpdate, QqNotifyError, QqNotifyRequest, QqService};
@@ -155,6 +160,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
     )?);
     let components = ComponentManager::start(&config)?;
     let ir = Arc::new(IrControl::new(&config)?);
+    let aircon = AirconService::start(&config, ir.clone())?;
     let assets = AssetManager::new(&config, components.clone())?;
     let voice = Arc::new(VoiceService::load(&config)?);
     let voice_studio = Arc::new(VoiceStudio::new(&config)?);
@@ -167,6 +173,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             qq,
             ddns,
             ir,
+            aircon,
             assets,
             components,
             voice,
@@ -211,11 +218,20 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         .route("/api/v1/ddns/preview", post(preview_ddns))
         .route("/api/v1/ddns/reconcile", post(reconcile_ddns))
         .route("/api/v1/integrations/qq/notify", post(qq_notify_external))
+        .route(
+            "/api/v1/integrations/aircon/command",
+            get(aircon_command_external_query).post(aircon_command_external_json),
+        )
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
         .route("/api/v1/voice/transcribe", post(transcribe_voice))
         .route("/api/v1/ir", get(ir_overview))
         .route("/api/v1/ir/actions/{action}", post(send_ir_action))
+        .route("/api/v1/aircon/commands", post(send_aircon_command))
+        .route(
+            "/api/v1/aircon/integration-token",
+            post(rotate_aircon_token),
+        )
         .route("/api/v1/assets", get(assets_overview))
         .route("/api/v1/assets/{asset}/install", post(install_asset))
         .route("/api/v1/components", get(components_overview))
@@ -1026,18 +1042,133 @@ async fn assets_overview(State(state): State<Arc<AppState>>) -> Json<serde_json:
 }
 
 async fn ir_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
-    Json(json!({"ir":state.ir.overview().await}))
+    Json(json!({
+        "ir": state.ir.overview().await,
+        "aircon": state.aircon.overview(),
+    }))
 }
 
 async fn send_ir_action(
     State(state): State<Arc<AppState>>,
     Path(action): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    let command = match action.as_str() {
+        "ac-on" => Some(AirconOperation::Set {
+            temperature_c: 26,
+            mode: AcMode::Cool,
+            eco: true,
+        }),
+        "ac-cool" | "ac-on-no-eco" => Some(AirconOperation::Set {
+            temperature_c: 26,
+            mode: AcMode::Cool,
+            eco: false,
+        }),
+        "ac-dry" => Some(AirconOperation::Set {
+            temperature_c: 26,
+            mode: AcMode::Dry,
+            eco: false,
+        }),
+        "ac-off" => Some(AirconOperation::Off {}),
+        _ => None,
+    };
+    if let Some(command) = command {
+        let result = state
+            .aircon
+            .submit(AirconCommandRequest {
+                command,
+                request_id: String::new(),
+                delay_minutes: None,
+                execute_at_epoch: None,
+                auto_off_minutes: None,
+            })
+            .await
+            .map_err(aircon_error)?;
+        let transmission = result.transmission.clone();
+        return Ok(Json(json!({
+            "ok": true,
+            "transmission": transmission,
+            "aircon": result,
+        })));
+    }
     let transmission =
         state.ir.send(&action).await.map_err(|error| {
             ApiError::status(StatusCode::SERVICE_UNAVAILABLE, error.to_string())
         })?;
     Ok(Json(json!({"ok":true,"transmission":transmission})))
+}
+
+async fn send_aircon_command(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<AirconCommandRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let result = state.aircon.submit(request).await.map_err(aircon_error)?;
+    Ok(Json(json!({"ok":true,"result":result})))
+}
+
+async fn rotate_aircon_token(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let token = state.aircon.rotate_token().map_err(aircon_error)?;
+    Ok(Json(json!({"ok":true,"token":token})))
+}
+
+async fn aircon_command_external_query(
+    State(state): State<Arc<AppState>>,
+    Extension(transport): Extension<auth::TransportSecurity>,
+    Query(query): Query<AirconIntegrationQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_secure_aircon_transport(transport)?;
+    if !state.aircon.verify_token(&query.token) {
+        return Err(ApiError::status(
+            StatusCode::UNAUTHORIZED,
+            "invalid aircon integration token",
+        ));
+    }
+    let request = query.into_request().map_err(aircon_error)?;
+    let result = state.aircon.submit(request).await.map_err(aircon_error)?;
+    Ok(Json(json!({"ok":true,"result":result})))
+}
+
+async fn aircon_command_external_json(
+    State(state): State<Arc<AppState>>,
+    Extension(transport): Extension<auth::TransportSecurity>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<AirconCommandRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_secure_aircon_transport(transport)?;
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    if !state.aircon.verify_token(token) {
+        return Err(ApiError::status(
+            StatusCode::UNAUTHORIZED,
+            "invalid aircon integration token",
+        ));
+    }
+    let result = state.aircon.submit(request).await.map_err(aircon_error)?;
+    Ok(Json(json!({"ok":true,"result":result})))
+}
+
+fn require_secure_aircon_transport(transport: auth::TransportSecurity) -> Result<(), ApiError> {
+    if !transport.secure && transport.tls_available {
+        return Err(ApiError::status(
+            StatusCode::UPGRADE_REQUIRED,
+            "空调集成接口必须使用 HTTPS",
+        ));
+    }
+    Ok(())
+}
+
+fn aircon_error(error: AirconError) -> ApiError {
+    let status = match &error {
+        AirconError::Invalid(_) => StatusCode::BAD_REQUEST,
+        AirconError::NotFound(_) => StatusCode::NOT_FOUND,
+        AirconError::Delivery(_) => StatusCode::SERVICE_UNAVAILABLE,
+        AirconError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    ApiError::status(status, error.to_string())
 }
 
 async fn install_asset(
@@ -1324,6 +1455,7 @@ async fn hub_settings(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
             "ai_runtime": state.config.ai_runtime,
             "ai_model": state.config.ai_model,
             "qq_config_file": state.config.qq_config_file,
+            "aircon_config_file": state.config.aircon_config_file,
             "ddns_config_file": state.config.ddns_config_file,
             "ddns_status_file": state.ddns.status_path(),
             "component_manager_enabled": state.config.component_manager_enabled,

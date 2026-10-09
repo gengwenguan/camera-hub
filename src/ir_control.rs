@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::ir::{IrAction, IrActionDefinition, IrTransmission, action_catalog};
+use crate::ir::{AirconCommand, IrAction, IrActionDefinition, IrTransmission, action_catalog};
 use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -32,23 +32,37 @@ struct WorkerResponse {
 
 impl IrControl {
     pub fn new(config: &Config) -> Result<Self> {
-        let parsed = reqwest::Url::parse(&config.ir_url)?;
+        Self::from_url(&config.ir_url, config.ir_device.clone())
+    }
+
+    pub(crate) fn from_url(url: &str, device: PathBuf) -> Result<Self> {
+        let parsed = reqwest::Url::parse(url)?;
         let loopback = parsed.host_str().is_some_and(|host| {
             host.eq_ignore_ascii_case("localhost")
                 || host
+                    .trim_matches(['[', ']'])
                     .parse::<std::net::IpAddr>()
                     .is_ok_and(|address| address.is_loopback())
         });
-        if parsed.scheme() != "http" || !loopback {
-            bail!("红外 worker URL 必须使用本机回环 HTTP");
+        if parsed.scheme() != "http"
+            || !loopback
+            || !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+            || parsed.path() != "/"
+        {
+            bail!("红外 worker URL 必须使用无路径、无凭据的本机回环 HTTP");
         }
         Ok(Self {
             client: Client::builder()
                 .connect_timeout(Duration::from_secs(2))
                 .timeout(Duration::from_secs(5))
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
                 .build()?,
-            base_url: config.ir_url.trim_end_matches('/').to_owned(),
-            device: config.ir_device.clone(),
+            base_url: parsed.as_str().trim_end_matches('/').to_owned(),
+            device,
         })
     }
 
@@ -82,6 +96,22 @@ impl IrControl {
             .send()
             .await
             .context("调用红外 worker")?;
+        Self::read_transmission(response).await
+    }
+
+    pub async fn send_aircon(&self, command: &AirconCommand) -> Result<IrTransmission> {
+        command.validate()?;
+        let response = self
+            .client
+            .post(format!("{}/v1/aircon/state", self.base_url))
+            .json(command)
+            .send()
+            .await
+            .context("调用参数化红外控制")?;
+        Self::read_transmission(response).await
+    }
+
+    async fn read_transmission(response: reqwest::Response) -> Result<IrTransmission> {
         let status = response.status();
         let body = response
             .json::<WorkerResponse>()

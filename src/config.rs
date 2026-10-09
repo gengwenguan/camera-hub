@@ -62,6 +62,13 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_AIRCON_CONFIG_FILE",
+        default_value = "camera-hub-state/aircon.json"
+    )]
+    pub aircon_config_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_DDNS_CONFIG_FILE",
         default_value = "camera-hub-state/ddns.json"
     )]

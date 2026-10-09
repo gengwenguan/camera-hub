@@ -99,6 +99,26 @@
         irServiceControls: $("irServiceControls"),
         irActionList: $("irActionList"),
         irLastResult: $("irLastResult"),
+        airconStateKnown: $("airconStateKnown"),
+        airconStatePower: $("airconStatePower"),
+        airconStateMode: $("airconStateMode"),
+        airconStateTemperature: $("airconStateTemperature"),
+        airconStateEco: $("airconStateEco"),
+        airconCommandForm: $("airconCommandForm"),
+        airconOperation: $("airconOperation"),
+        airconMode: $("airconMode"),
+        airconTemperature: $("airconTemperature"),
+        airconEco: $("airconEco"),
+        airconDelayMinutes: $("airconDelayMinutes"),
+        airconAutoOffMinutes: $("airconAutoOffMinutes"),
+        sendAirconCommand: $("sendAirconCommand"),
+        airconScheduleList: $("airconScheduleList"),
+        cancelAllAirconSchedules: $("cancelAllAirconSchedules"),
+        airconIntegrationToken: $("airconIntegrationToken"),
+        rotateAirconToken: $("rotateAirconToken"),
+        copyAirconToken: $("copyAirconToken"),
+        airconIntentUri: $("airconIntentUri"),
+        copyAirconIntent: $("copyAirconIntent"),
         qqStatus: $("qqStatus"),
         qqState: $("qqState"),
         qqBotName: $("qqBotName"),
@@ -229,6 +249,9 @@
         voiceAssetsBusy: false,
         voiceAssetsInstalling: false,
         irBusy: false,
+        airconBusy: false,
+        aircon: null,
+        airconDirty: false,
         qqConfig: null,
         qqDirty: false,
         qqBusy: false,
@@ -489,7 +512,11 @@
             renderVoice(body);
             renderVoiceAssets(assetsBody && assetsBody.assets || {});
             renderVoiceServices(servicesBody && servicesBody.components || {});
-            renderIr(irBody && irBody.ir || {}, servicesBody && servicesBody.components || {});
+            renderIr(
+                irBody && irBody.ir || {},
+                servicesBody && servicesBody.components || {},
+                irBody && irBody.aircon || {},
+            );
         } catch (error) {
             if (!silent) handleError(error);
         } finally {
@@ -651,7 +678,7 @@
         renderManagedVoiceService("voice", services.voice || {}, available);
     }
 
-    function renderIr(ir, components) {
+    function renderIr(ir, components, aircon) {
         const service = components.ir || {};
         const available = !!ir.available && !!service.healthy;
         ui.irStatus.textContent = available
@@ -691,6 +718,217 @@
                 group.innerHTML = '<div class="empty">红外动作不可用</div>';
             }
         }
+        renderAircon(aircon, available);
+    }
+
+    const AIRCON_MODE_LABELS = {
+        cool: "制冷",
+        dry: "抽湿",
+        heat: "制热",
+        auto: "自动",
+    };
+
+    const AIRCON_SCHEDULE_STATUS = {
+        pending: "等待执行",
+        running: "正在执行",
+        completed: "已完成",
+        failed: "失败",
+        cancelled: "已取消",
+    };
+
+    function renderAircon(aircon, available) {
+        state.aircon = structuredClone(aircon || {});
+        const current = aircon.state || {};
+        ui.airconStateKnown.textContent = aircon.state_known ? "已有发送记录" : "使用默认值";
+        ui.airconStatePower.textContent = current.power ? "开启" : "关闭";
+        ui.airconStateMode.textContent = AIRCON_MODE_LABELS[current.mode] || current.mode || "--";
+        ui.airconStateTemperature.textContent =
+            Number(current.temperature_c) ? `${current.temperature_c}°C` : "--";
+        ui.airconStateEco.textContent = current.eco ? "开启" : "关闭";
+        if (!state.airconDirty) {
+            ui.airconMode.value = current.mode || "cool";
+            ui.airconTemperature.value = current.temperature_c || 26;
+            ui.airconEco.checked = !!current.eco;
+        }
+        ui.sendAirconCommand.disabled = state.airconBusy || !available;
+        renderAirconSchedules(Array.isArray(aircon.schedules) ? aircon.schedules : []);
+        ui.airconIntegrationToken.value = aircon.integration_token || "";
+        ui.copyAirconToken.disabled = !ui.airconIntegrationToken.value;
+        ui.rotateAirconToken.disabled = state.airconBusy;
+        renderAirconIntent();
+        updateAirconForm();
+    }
+
+    function formatAirconOperation(command) {
+        if (!command) return "未知操作";
+        if (command.operation === "set") {
+            return `${AIRCON_MODE_LABELS[command.mode] || command.mode} ` +
+                `${command.temperature_c}°C · ECO ${command.eco ? "开" : "关"}`;
+        }
+        if (command.operation === "off") return "关闭空调";
+        if (command.operation === "power") return command.enabled ? "打开空调" : "关闭空调";
+        if (command.operation === "set_temperature") return `设置 ${command.temperature_c}°C`;
+        if (command.operation === "adjust_temperature") {
+            return `温度${Number(command.delta_c) > 0 ? "+" : ""}${command.delta_c}°C`;
+        }
+        if (command.operation === "set_mode") {
+            return `切换${AIRCON_MODE_LABELS[command.mode] || command.mode}`;
+        }
+        if (command.operation === "set_eco") return `${command.enabled ? "开启" : "关闭"} ECO`;
+        return command.operation || "未知操作";
+    }
+
+    function renderAirconSchedules(schedules) {
+        if (!schedules.length) {
+            ui.airconScheduleList.innerHTML = '<div class="empty">暂无定时任务</div>';
+            ui.cancelAllAirconSchedules.disabled = true;
+            return;
+        }
+        const pending = schedules.some((schedule) => schedule.status === "pending");
+        ui.cancelAllAirconSchedules.disabled = state.airconBusy || !pending;
+        ui.airconScheduleList.innerHTML = schedules.slice(0, 20).map((schedule) => `
+            <div class="aircon-schedule-row">
+                <span>
+                    <strong>${esc(formatAirconOperation(schedule.command))}</strong>
+                    <small>${esc(AIRCON_SCHEDULE_STATUS[schedule.status] || schedule.status)}
+                        · ${esc(formatTimestamp(schedule.execute_at_epoch))}
+                        ${schedule.message ? ` · ${esc(schedule.message)}` : ""}</small>
+                </span>
+                ${schedule.status === "pending"
+                    ? `<button class="button danger" type="button"
+                               data-aircon-schedule-cancel="${esc(schedule.id)}">取消</button>`
+                    : ""}
+            </div>`).join("");
+    }
+
+    function updateAirconForm() {
+        const setting = ui.airconOperation.value === "set";
+        const supportsEco = ui.airconMode.value === "cool";
+        if (setting && !supportsEco) ui.airconEco.checked = false;
+        ui.airconMode.disabled = !setting || state.airconBusy;
+        ui.airconTemperature.disabled = !setting || state.airconBusy;
+        ui.airconEco.disabled = !setting || !supportsEco || state.airconBusy;
+        ui.airconAutoOffMinutes.disabled = !setting || state.airconBusy;
+        renderAirconIntent();
+    }
+
+    function airconCommandPayload() {
+        const setting = ui.airconOperation.value === "set";
+        const delay = Math.max(0, Number(ui.airconDelayMinutes.value || 0));
+        const autoOff = Math.max(0, Number(ui.airconAutoOffMinutes.value || 0));
+        return {
+            command: setting
+                ? {
+                    operation: "set",
+                    temperature_c: Number(ui.airconTemperature.value),
+                    mode: ui.airconMode.value,
+                    eco: ui.airconEco.checked,
+                }
+                : { operation: "off" },
+            delay_minutes: delay || null,
+            auto_off_minutes: setting && autoOff ? autoOff : null,
+            request_id: "",
+        };
+    }
+
+    function renderAirconIntent() {
+        if (!ui.airconIntentUri) return;
+        const aircon = state.aircon || {};
+        const payload = airconCommandPayload();
+        const command = payload.command;
+        const params = new URLSearchParams({
+            token: aircon.integration_token || "AIRCON_TOKEN",
+            operation: command.operation,
+        });
+        if (command.operation === "set") {
+            params.set("temperature_c", String(command.temperature_c));
+            params.set("mode", command.mode);
+            params.set("eco", String(command.eco));
+        }
+        if (payload.delay_minutes) {
+            params.set("delay_minutes", String(payload.delay_minutes));
+        }
+        if (payload.auto_off_minutes) {
+            params.set("auto_off_minutes", String(payload.auto_off_minutes));
+        }
+        const endpoint = `${location.origin}` +
+            `${aircon.integration_endpoint || "/api/v1/integrations/aircon/command"}`;
+        ui.airconIntentUri.value =
+            `apibridge://request?method=GET&url=${encodeURIComponent(`${endpoint}?${params}`)}`;
+    }
+
+    async function submitAirconCommand(event) {
+        event.preventDefault();
+        if (state.airconBusy || !ui.airconCommandForm.reportValidity()) return;
+        const payload = airconCommandPayload();
+        const summary = formatAirconOperation(payload.command);
+        if (!window.confirm(`执行“${summary}”？`)) return;
+        state.airconBusy = true;
+        ui.sendAirconCommand.disabled = true;
+        try {
+            const body = await api("/api/v1/aircon/commands", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+            const result = body.result || {};
+            ui.irLastResult.textContent = result.message || `${summary}已提交`;
+            showToast(result.message || `${summary}已提交`);
+            state.airconDirty = false;
+        } catch (error) {
+            ui.irLastResult.textContent = `操作失败：${error.message || error}`;
+            handleError(error);
+        } finally {
+            state.airconBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    async function cancelAirconSchedule(scheduleId) {
+        if (state.airconBusy) return;
+        state.airconBusy = true;
+        try {
+            const command = scheduleId
+                ? { operation: "cancel_schedule", schedule_id: scheduleId }
+                : { operation: "cancel_all" };
+            const body = await api("/api/v1/aircon/commands", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ command, request_id: "" }),
+            });
+            showToast(body.result?.message || "定时任务已取消");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.airconBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    async function rotateAirconToken() {
+        if (state.airconBusy) return;
+        if (!window.confirm("重新生成后，豆包中配置的旧 Token 会立即失效。继续？")) return;
+        state.airconBusy = true;
+        try {
+            await api("/api/v1/aircon/integration-token", { method: "POST" });
+            showToast("空调集成 Token 已更新");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.airconBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    async function copyAirconValue(input, message) {
+        if (!input.value) return;
+        try {
+            await navigator.clipboard.writeText(input.value);
+        } catch (_) {
+            input.select();
+            document.execCommand("copy");
+        }
+        showToast(message);
     }
 
     async function controlIrService(action) {
@@ -3364,6 +3602,24 @@
         if (!button) return;
         const label = button.querySelector("strong")?.textContent || "红外测试";
         sendIrAction(button.dataset.irAction, label);
+    });
+    ui.airconCommandForm.addEventListener("input", () => {
+        state.airconDirty = true;
+        updateAirconForm();
+    });
+    ui.airconCommandForm.addEventListener("submit", submitAirconCommand);
+    ui.airconScheduleList.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-aircon-schedule-cancel]");
+        if (!button) return;
+        cancelAirconSchedule(button.dataset.airconScheduleCancel);
+    });
+    ui.cancelAllAirconSchedules.addEventListener("click", () => cancelAirconSchedule(""));
+    ui.rotateAirconToken.addEventListener("click", rotateAirconToken);
+    ui.copyAirconToken.addEventListener("click", () => {
+        copyAirconValue(ui.airconIntegrationToken, "空调集成 Token 已复制");
+    });
+    ui.copyAirconIntent.addEventListener("click", () => {
+        copyAirconValue(ui.airconIntentUri, "Intent URI 已复制");
     });
     ui.reloadVoice.addEventListener("click", async () => {
         state.voiceDirty = false;
