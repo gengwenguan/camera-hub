@@ -1,6 +1,7 @@
 mod ai;
 mod aircon;
 mod asset_manager;
+mod atomic_file;
 mod auth;
 mod benchmark;
 mod component_manager;
@@ -141,10 +142,10 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         .init();
 
     let mut config = Config::parse_from(arguments).normalize();
-    let web_auth = Arc::new(auth::WebAuth::new(
-        config.web_username.clone(),
-        config.web_password.clone(),
-    ));
+    let web_auth = Arc::new(
+        auth::WebAuth::new(config.web_username.clone(), config.web_password.clone())
+            .with_device_tokens(&config.device_link_tokens)?,
+    );
     config.moq_auth_token = web_auth.moq_token().to_owned();
     let settings = Arc::new(HubSettingsStore::load(
         config.settings_file.clone(),
@@ -158,11 +159,11 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         config.ddns_config_file.clone(),
         config.ddns_status_file.clone(),
     )?);
+    let voice = Arc::new(VoiceService::load(&config)?);
     let components = ComponentManager::start(&config)?;
     let ir = Arc::new(IrControl::new(&config)?);
     let aircon = AirconService::start(&config, ir.clone())?;
     let assets = AssetManager::new(&config, components.clone())?;
-    let voice = Arc::new(VoiceService::load(&config)?);
     let voice_studio = Arc::new(VoiceStudio::new(&config)?);
     let state = Arc::new(AppState::new(
         config.clone(),
@@ -227,6 +228,10 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         .route("/api/v1/voice/transcribe", post(transcribe_voice))
         .route("/api/v1/ir", get(ir_overview))
         .route("/api/v1/ir/actions/{action}", post(send_ir_action))
+        .route(
+            "/api/v1/internal/voice/aircon/{action}",
+            post(send_local_voice_aircon),
+        )
         .route("/api/v1/aircon/commands", post(send_aircon_command))
         .route(
             "/api/v1/aircon/integration-token",
@@ -390,16 +395,28 @@ async fn devices(State(state): State<Arc<AppState>>) -> Result<Json<serde_json::
     })))
 }
 
+#[derive(Default, Deserialize)]
+struct DeviceLinkQuery {
+    #[serde(default)]
+    token: String,
+}
+
 async fn device_link(
     State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<Arc<auth::WebAuth>>,
     Path(device_id): Path<String>,
+    Query(query): Query<DeviceLinkQuery>,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     websocket: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
     validate_device_id(&device_id)?;
+    let photos_allowed = auth.can_read_device_photos(&headers, &device_id, &query.token);
     Ok(websocket
         .max_message_size(2 * 1024 * 1024)
-        .on_upgrade(move |socket| serve_device_link(socket, state, device_id, remote))
+        .on_upgrade(move |socket| {
+            serve_device_link(socket, state, device_id, remote, photos_allowed)
+        })
         .into_response())
 }
 
@@ -408,6 +425,7 @@ async fn serve_device_link(
     state: Arc<AppState>,
     device_id: String,
     remote: SocketAddr,
+    photos_allowed: bool,
 ) {
     let generation = state.begin_link(&device_id).await;
     state.frames.reset_clock_sync(&device_id);
@@ -452,7 +470,7 @@ async fn serve_device_link(
                     break;
                 }
             }
-            _ = photo_interval.tick() => {
+            _ = photo_interval.tick(), if photos_allowed => {
                 let root = state.config.data_dir.join(&device_id).join("snapshot");
                 let after = photo_cursor.clone();
                 let name = tokio::task::spawn_blocking(move || next_snapshot_name(&root, &after))
@@ -1097,6 +1115,34 @@ async fn send_ir_action(
     Ok(Json(json!({"ok":true,"transmission":transmission})))
 }
 
+#[derive(Deserialize)]
+struct LocalVoiceQuery {
+    token: String,
+}
+
+async fn send_local_voice_aircon(
+    State(state): State<Arc<AppState>>,
+    Path(action): Path<String>,
+    Query(query): Query<LocalVoiceQuery>,
+    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let local_peer = remote.ip().is_loopback()
+        || (!state.config.bind.ip().is_unspecified() && remote.ip() == state.config.bind.ip());
+    if !local_peer || !state.voice.verify_internal_token(&query.token) {
+        return Err(ApiError::status(
+            StatusCode::UNAUTHORIZED,
+            "invalid local voice credential",
+        ));
+    }
+    if !matches!(action.as_str(), "ac-on" | "ac-cool" | "ac-dry" | "ac-off") {
+        return Err(ApiError::status(
+            StatusCode::BAD_REQUEST,
+            "unsupported local aircon action",
+        ));
+    }
+    send_ir_action(State(state), Path(action)).await
+}
+
 async fn send_aircon_command(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AirconCommandRequest>,
@@ -1518,6 +1564,7 @@ async fn recordings(
 
 fn validate_device_id(device_id: &str) -> Result<(), ApiError> {
     if !device_id.is_empty()
+        && !matches!(device_id, "." | "..")
         && device_id.len() <= 64
         && device_id
             .bytes()
@@ -1732,9 +1779,19 @@ impl IntoResponse for ApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_snapshots, decode_link_packet, delete_selected_snapshots};
+    use super::{
+        clear_snapshots, decode_link_packet, delete_selected_snapshots, validate_device_id,
+    };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn device_id_cannot_select_parent_or_current_directory() {
+        assert!(validate_device_id(".").is_err());
+        assert!(validate_device_id("..").is_err());
+        assert!(validate_device_id("../front").is_err());
+        assert!(validate_device_id("front-01.local").is_ok());
+    }
 
     fn packet(version: u8, capture_epoch_us: Option<i64>) -> Vec<u8> {
         let payload = [1u8, 2, 3];

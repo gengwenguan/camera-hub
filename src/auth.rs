@@ -8,6 +8,7 @@ use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -27,6 +28,7 @@ pub struct WebAuth {
     password: String,
     token: String,
     moq_token: String,
+    device_tokens: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -42,11 +44,36 @@ impl WebAuth {
             password,
             token: session_token(),
             moq_token: session_token(),
+            device_tokens: BTreeMap::new(),
         }
     }
 
     pub fn moq_token(&self) -> &str {
         &self.moq_token
+    }
+
+    pub fn with_device_tokens(mut self, json: &str) -> anyhow::Result<Self> {
+        self.device_tokens = serde_json::from_str(json)?;
+        if self
+            .device_tokens
+            .values()
+            .any(|token| token.len() < 32 || token.chars().any(char::is_control))
+        {
+            anyhow::bail!("device link tokens must contain at least 32 characters");
+        }
+        Ok(self)
+    }
+
+    pub fn can_read_device_photos(
+        &self,
+        headers: &HeaderMap,
+        device_id: &str,
+        token: &str,
+    ) -> bool {
+        self.authorized(headers)
+            || self.device_tokens.get(device_id).is_some_and(|expected| {
+                !token.is_empty() && constant_time_eq(expected.as_bytes(), token.as_bytes())
+            })
     }
 
     fn verify(&self, username: &str, password: &str) -> bool {
@@ -158,6 +185,7 @@ fn public_path(method: &str, path: &str) -> bool {
         || path.starts_with("/api/v1/public/voice-studio/")
         || (method == "POST" && path == "/api/v1/integrations/qq/notify")
         || (matches!(method, "GET" | "POST") && path == "/api/v1/integrations/aircon/command")
+        || (method == "POST" && path.starts_with("/api/v1/internal/voice/aircon/"))
         || path == "/health"
         || path == "/certificate.sha256"
         || path.starts_with("/.well-known/acme-challenge/")
@@ -330,12 +358,31 @@ mod tests {
             password: "12345".to_owned(),
             token: "token".to_owned(),
             moq_token: "moq-token".to_owned(),
+            device_tokens: BTreeMap::new(),
         };
         assert!(auth.verify("admin", "12345"));
         assert!(!auth.verify("admin", "bad"));
         let mut headers = HeaderMap::new();
         headers.insert(COOKIE, HeaderValue::from_static("camera_hub_session=token"));
         assert!(auth.authorized(&headers));
+    }
+
+    #[test]
+    fn photo_return_requires_a_session_or_device_bound_token() {
+        let auth = WebAuth::new("admin".to_owned(), "password".to_owned())
+            .with_device_tokens(r#"{"front":"0123456789abcdef0123456789abcdef"}"#)
+            .unwrap();
+        let headers = HeaderMap::new();
+        assert!(!auth.can_read_device_photos(&headers, "front", ""));
+        assert!(!auth.can_read_device_photos(&headers, "front", "wrong"));
+        assert!(!auth.can_read_device_photos(&headers, "back", "0123456789abcdef0123456789abcdef"));
+        assert!(auth.can_read_device_photos(&headers, "front", "0123456789abcdef0123456789abcdef"));
+        let mut session_headers = HeaderMap::new();
+        session_headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{COOKIE_NAME}={}", auth.token)).unwrap(),
+        );
+        assert!(auth.can_read_device_photos(&session_headers, "front", ""));
     }
 
     #[test]

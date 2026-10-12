@@ -30,6 +30,7 @@ impl std::fmt::Display for VoiceRevisionConflict {
 impl std::error::Error for VoiceRevisionConflict {}
 
 pub struct VoiceService {
+    internal_token: String,
     config_path: PathBuf,
     status_path: PathBuf,
     events_path: PathBuf,
@@ -67,8 +68,30 @@ impl VoiceService {
             }
             Err(error) => return Err(error.into()),
         };
-        let commands_added = merge_air_conditioner_commands(&mut current, &config.ir_url)?;
+        let mut token = [0_u8; 32];
+        getrandom::fill(&mut token).context("generate local voice token")?;
+        let internal_token = hex::encode(token);
+        let ip = if config.bind.ip().is_unspecified() {
+            if config.bind.is_ipv6() {
+                "::1".parse().unwrap()
+            } else {
+                "127.0.0.1".parse().unwrap()
+            }
+        } else {
+            config.bind.ip()
+        };
+        let main_url = format!(
+            "http://{}",
+            std::net::SocketAddr::new(ip, config.bind.port())
+        );
+        let commands_added = merge_air_conditioner_commands(
+            &mut current,
+            &config.ir_url,
+            &main_url,
+            &internal_token,
+        )?;
         let service = Self {
+            internal_token,
             config_path: config.voice_config_file.clone(),
             status_path: config.voice_status_file.clone(),
             events_path: config.voice_events_file.clone(),
@@ -90,6 +113,15 @@ impl VoiceService {
             .read()
             .unwrap_or_else(|error| error.into_inner())
             .clone()
+    }
+
+    pub fn verify_internal_token(&self, token: &str) -> bool {
+        let mut difference = self.internal_token.len() ^ token.len();
+        for (index, byte) in self.internal_token.bytes().enumerate() {
+            difference |=
+                usize::from(byte ^ token.as_bytes().get(index).copied().unwrap_or_default());
+        }
+        difference == 0
     }
 
     pub fn update(&self, mut next: VoiceConfig) -> Result<VoiceConfig> {
@@ -287,8 +319,13 @@ fn parse_voice_config(data: &[u8], path: &Path) -> Result<(VoiceConfig, bool)> {
     Ok((config, migrated))
 }
 
-fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Result<bool> {
-    let base_url = ir_url.trim_end_matches('/');
+fn merge_air_conditioner_commands(
+    config: &mut VoiceConfig,
+    ir_url: &str,
+    main_url: &str,
+    token: &str,
+) -> Result<bool> {
+    let base_url = main_url.trim_end_matches('/');
     let candidates = [
         VoiceCommand {
             id: "ac-on".to_owned(),
@@ -297,7 +334,7 @@ fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Res
             phrases: vec!["小雨打开空调".to_owned(), "小雨开空调".to_owned()],
             reply: "好的，空调已设置为制冷二十六度并开启节能模式".to_owned(),
             method: "POST".to_owned(),
-            url: format!("{base_url}/v1/actions/ac-on"),
+            url: format!("{base_url}/api/v1/internal/voice/aircon/ac-on?token={token}"),
             body: String::new(),
             boosting_score: 1.5,
             trigger_threshold: 0.05,
@@ -314,7 +351,7 @@ fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Res
             ],
             reply: "好的，空调已设置为制冷二十六度".to_owned(),
             method: "POST".to_owned(),
-            url: format!("{base_url}/v1/actions/ac-cool"),
+            url: format!("{base_url}/api/v1/internal/voice/aircon/ac-cool?token={token}"),
             body: String::new(),
             boosting_score: 1.5,
             trigger_threshold: 0.05,
@@ -331,7 +368,7 @@ fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Res
             ],
             reply: "好的，空调已设置为抽湿模式二十六度".to_owned(),
             method: "POST".to_owned(),
-            url: format!("{base_url}/v1/actions/ac-dry"),
+            url: format!("{base_url}/api/v1/internal/voice/aircon/ac-dry?token={token}"),
             body: String::new(),
             boosting_score: 1.5,
             trigger_threshold: 0.05,
@@ -344,7 +381,7 @@ fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Res
             phrases: vec!["小雨关闭空调".to_owned(), "小雨关空调".to_owned()],
             reply: "好的，空调已关闭".to_owned(),
             method: "POST".to_owned(),
-            url: format!("{base_url}/v1/actions/ac-off"),
+            url: format!("{base_url}/api/v1/internal/voice/aircon/ac-off?token={token}"),
             body: String::new(),
             boosting_score: 1.5,
             trigger_threshold: 0.05,
@@ -363,7 +400,24 @@ fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Res
             .iter_mut()
             .find(|current| current.id == command.id)
         {
-            if current.url == command.url {
+            let old_url = format!("{}/v1/actions/{}", ir_url.trim_end_matches('/'), command.id);
+            let managed_url = reqwest::Url::parse(&current.url).ok().is_some_and(|url| {
+                url.path() == format!("/api/v1/internal/voice/aircon/{}", command.id)
+                    && url.scheme() == "http"
+                    && url.host_str().is_some_and(|host| {
+                        host.trim_matches(['[', ']'])
+                            .parse::<std::net::IpAddr>()
+                            .is_ok_and(|ip| ip.is_loopback() || ip == main_url_ip(main_url))
+                    })
+            });
+            if current.method == "POST"
+                && current.body.is_empty()
+                && (current.url == old_url || managed_url || current.url == command.url)
+            {
+                if current.url != command.url {
+                    current.url.clone_from(&command.url);
+                    changed = true;
+                }
                 if current.trigger_threshold == 0.45 {
                     current.trigger_threshold = command.trigger_threshold;
                     changed = true;
@@ -401,19 +455,18 @@ fn merge_air_conditioner_commands(config: &mut VoiceConfig, ir_url: &str) -> Res
     Ok(changed)
 }
 
+fn main_url_ip(url: &str) -> std::net::IpAddr {
+    reqwest::Url::parse(url)
+        .unwrap()
+        .host_str()
+        .unwrap()
+        .trim_matches(['[', ']'])
+        .parse()
+        .unwrap()
+}
+
 fn write_json(path: &Path, value: &impl serde::Serialize) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
-    }
-    fs::rename(&temporary, path)?;
-    Ok(())
+    crate::atomic_file::write_json(path, value)
 }
 
 fn replace_invalid_config(path: &Path, fallback: &VoiceConfig) -> Result<PathBuf> {
@@ -446,6 +499,7 @@ mod tests {
 
     fn service(root: &Path) -> VoiceService {
         VoiceService {
+            internal_token: "test-token".to_owned(),
             config_path: root.join("voice.json"),
             status_path: root.join("voice-status.json"),
             events_path: root.join("events.jsonl"),
@@ -570,30 +624,42 @@ mod tests {
     fn merges_air_conditioner_commands_without_overwriting_existing_commands() {
         let mut config = VoiceConfig::default();
         let original = config.commands.clone();
-        assert!(merge_air_conditioner_commands(&mut config, "http://127.0.0.1:39182/").unwrap());
+        assert!(
+            merge_air_conditioner_commands(
+                &mut config,
+                "http://127.0.0.1:39182/",
+                "http://127.0.0.1:8080",
+                "test"
+            )
+            .unwrap()
+        );
         assert_eq!(&config.commands[..original.len()], original.as_slice());
         assert!(config.commands.iter().any(|command| {
             command.id == "ac-on"
                 && command.enabled
-                && command.url == "http://127.0.0.1:39182/v1/actions/ac-on"
+                && command.url
+                    == "http://127.0.0.1:8080/api/v1/internal/voice/aircon/ac-on?token=test"
                 && command.phrases.contains(&"小雨开空调".to_owned())
         }));
         assert!(config.commands.iter().any(|command| {
             command.id == "ac-cool"
                 && command.enabled
-                && command.url == "http://127.0.0.1:39182/v1/actions/ac-cool"
+                && command.url
+                    == "http://127.0.0.1:8080/api/v1/internal/voice/aircon/ac-cool?token=test"
                 && command.phrases.contains(&"小雨制冷模式".to_owned())
         }));
         assert!(config.commands.iter().any(|command| {
             command.id == "ac-dry"
                 && command.enabled
-                && command.url == "http://127.0.0.1:39182/v1/actions/ac-dry"
+                && command.url
+                    == "http://127.0.0.1:8080/api/v1/internal/voice/aircon/ac-dry?token=test"
                 && command.phrases.contains(&"小雨抽湿模式".to_owned())
         }));
         assert!(config.commands.iter().any(|command| {
             command.id == "ac-off"
                 && command.enabled
-                && command.url == "http://127.0.0.1:39182/v1/actions/ac-off"
+                && command.url
+                    == "http://127.0.0.1:8080/api/v1/internal/voice/aircon/ac-off?token=test"
                 && command.phrases.contains(&"小雨关空调".to_owned())
         }));
         let cool = config
@@ -602,7 +668,15 @@ mod tests {
             .find(|command| command.id == "ac-cool")
             .unwrap();
         cool.trigger_threshold = 0.45;
-        assert!(merge_air_conditioner_commands(&mut config, "http://127.0.0.1:39182").unwrap());
+        assert!(
+            merge_air_conditioner_commands(
+                &mut config,
+                "http://127.0.0.1:39182",
+                "http://127.0.0.1:8080",
+                "test"
+            )
+            .unwrap()
+        );
         assert_eq!(
             config
                 .commands
@@ -613,7 +687,72 @@ mod tests {
             0.05
         );
         let revision = config.revision;
-        assert!(!merge_air_conditioner_commands(&mut config, "http://example.invalid").unwrap());
+        assert!(
+            !merge_air_conditioner_commands(
+                &mut config,
+                "http://example.invalid",
+                "http://127.0.0.1:8080",
+                "test"
+            )
+            .unwrap()
+        );
         assert_eq!(config.revision, revision);
+    }
+
+    #[test]
+    fn migrates_managed_urls_and_preserves_custom_actions() {
+        let mut config = VoiceConfig::default();
+        merge_air_conditioner_commands(
+            &mut config,
+            "http://127.0.0.1:39182",
+            "http://[::1]:80",
+            "old",
+        )
+        .unwrap();
+        let on = config
+            .commands
+            .iter_mut()
+            .find(|command| command.id == "ac-on")
+            .unwrap();
+        on.url = "http://127.0.0.1:39182/v1/actions/ac-on".to_owned();
+        let off = config
+            .commands
+            .iter_mut()
+            .find(|command| command.id == "ac-off")
+            .unwrap();
+        off.url = "http://custom.invalid/command".to_owned();
+        let custom = off.clone();
+        assert!(
+            merge_air_conditioner_commands(
+                &mut config,
+                "http://127.0.0.1:39182",
+                "http://[::1]:80",
+                "new"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            config
+                .commands
+                .iter()
+                .find(|command| command.id == "ac-off")
+                .unwrap(),
+            &custom
+        );
+        for command in config
+            .commands
+            .iter()
+            .filter(|command| matches!(command.id.as_str(), "ac-on" | "ac-cool" | "ac-dry"))
+        {
+            assert!(
+                command
+                    .url
+                    .starts_with("http://[::1]/api/v1/internal/voice/aircon/")
+                    || command
+                        .url
+                        .starts_with("http://[::1]:80/api/v1/internal/voice/aircon/")
+            );
+            assert!(command.url.ends_with("?token=new"));
+        }
     }
 }

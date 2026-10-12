@@ -145,7 +145,13 @@ GET /api/v1/devices/:id/link
 Upgrade: websocket
 ```
 
-该入口不校验 Token。媒体上行使用 CHP1 v2 的 32 字节网络序头：
+媒体上行允许匿名连接；私有 AI JPEG 下行要求有效的网页登录会话，或匹配该设备
+的专属 Token。设备 Token 由服务端环境变量 `CAMERA_HUB_DEVICE_LINK_TOKENS`
+配置为 JSON 对象，例如 `{"front":"<至少32字符的随机Token>"}`；开发板连接
+`/api/v1/devices/front/link?token=<URL编码后的Token>`。Token 不能跨设备使用；
+未配置或校验失败时仍可上传媒体及同步时钟，但不会回传照片。
+
+媒体上行使用 CHP1 v2 的 32 字节网络序头：
 
 ```text
 magic "CHP1" | kind u8 | version u8 | flags u16
@@ -165,6 +171,11 @@ capture_epoch_us i64 | payload
 
 文本消息只承载 `hello`。开发板每 10 秒更新固件版本、IPv6 和最后已同步照片；
 camera-hub 由此更新设备在线状态并避免重连后重复回传历史 JPEG。
+
+默认本地语音的四个空调动作经过主服务统一维护影子状态与定时，再交给 IR worker
+发送。启动时仅迁移系统管理的旧 IR URL，自定义 URL 保留；内部语音凭据每次启动
+更新，接口要求本机来源与凭据同时匹配。所有红外状态仍为发送后的预期状态，
+`physical_confirmed=false`，不表示空调真实执行确认。
 
 ## 运行与数据目录
 

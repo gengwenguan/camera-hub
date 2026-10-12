@@ -890,31 +890,42 @@ fn save_state(path: &Path, state: &DdnsState) -> Result<()> {
 }
 
 fn write_secure_json(path: &Path, value: &impl Serialize) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("创建 DDNS 目录 {}", parent.display()))?;
-    }
-    let temporary = path.with_extension("tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(value)?)
-        .with_context(|| format!("写入临时 DDNS 文件 {}", temporary.display()))?;
-    secure_file(&temporary)?;
-    fs::rename(&temporary, path).with_context(|| format!("替换 DDNS 文件 {}", path.display()))?;
-    secure_file(path)?;
-    Ok(())
-}
-
-fn secure_file(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
+    crate::atomic_file::write_json(path, value)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secure_writes_do_not_use_a_shared_extension_only_temporary() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-ddns-temp-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        // A different writer may already own the old shared temporary path.
+        let shared = root.join("camera-hub-ddns.tmp");
+        fs::write(&shared, b"other writer").unwrap();
+        let config = root.join("camera-hub-ddns.json");
+        let state = root.join("camera-hub-ddns.state");
+        write_secure_json(&config, &serde_json::json!({"kind":"config"})).unwrap();
+        write_secure_json(&state, &serde_json::json!({"kind":"state"})).unwrap();
+        assert_eq!(fs::read(&shared).unwrap(), b"other writer");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(config).unwrap()).unwrap(),
+            serde_json::json!({"kind":"config"})
+        );
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(state).unwrap()).unwrap(),
+            serde_json::json!({"kind":"state"})
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
 
     const PROC_IPV6: &str = "\
 00000000000000000000000000000001 01 80 10 80 lo

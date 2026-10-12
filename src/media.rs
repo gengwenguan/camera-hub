@@ -183,12 +183,13 @@ impl MediaStore {
     }
 
     pub fn clean(&self) -> Result<()> {
-        let current = self
+        let recorders = self
             .recorders
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(|error| error.into_inner());
+        let current = recorders
             .values()
-            .filter(|recorder| !recorder.current.as_os_str().is_empty())
+            .filter(|recorder| recorder.file.is_some())
             .map(|recorder| recorder.current.clone())
             .collect::<BTreeSet<_>>();
         let settings = self.settings.current();
@@ -224,14 +225,23 @@ fn valid_date(value: &str) -> bool {
 }
 
 fn valid_recording_name(name: &str, date: &str) -> bool {
-    name.len() == 19
-        && name.get(..8) == Some(date)
+    name.get(..8) == Some(date)
         && name.as_bytes().get(8) == Some(&b'_')
         && name
             .as_bytes()
             .get(9..15)
             .is_some_and(|value| value.iter().all(u8::is_ascii_digit))
-        && name.get(15..) == Some(".mp4")
+        && name
+            .strip_suffix(".mp4")
+            .and_then(|stem| stem.get(15..))
+            .is_some_and(|suffix| {
+                suffix.is_empty()
+                    || suffix.strip_prefix('_').is_some_and(|digits| {
+                        !digits.is_empty()
+                            && digits.len() <= 6
+                            && digits.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+            })
 }
 
 fn valid_record_file(name: &str, date: &str) -> bool {
@@ -335,18 +345,47 @@ impl DeviceRecorder {
             (self.root.join("spool"), "ai-live.mp4".to_owned())
         };
         fs::create_dir_all(&directory)?;
-        let path = directory.join(name);
-
-        let mut file = BufWriter::with_capacity(64 * 1024, File::create(&path)?);
+        let mut path = directory.join(&name);
+        let raw_file = if persistent {
+            let stem = name.strip_suffix(".mp4").context("recording name")?;
+            let mut opened = None;
+            for collision in 0..1000 {
+                if collision > 0 {
+                    path = directory.join(format!("{stem}_{collision:03}.mp4"));
+                }
+                if path
+                    .with_file_name(format!(
+                        "{}.idx",
+                        path.file_name().unwrap().to_string_lossy()
+                    ))
+                    .exists()
+                {
+                    continue;
+                }
+                match OpenOptions::new().write(true).create_new(true).open(&path) {
+                    Ok(file) => {
+                        opened = Some(file);
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            opened.context("too many recording name collisions")?
+        } else {
+            File::create(&path)?
+        };
+        let mut file = BufWriter::with_capacity(64 * 1024, raw_file);
         file.write_all(&self.init)?;
         let index_path = PathBuf::from(format!("{}.idx", path.display()));
-        let mut index = BufWriter::new(
-            OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(index_path)?,
-        );
+        let mut options = OpenOptions::new();
+        options.write(true);
+        if persistent {
+            options.create_new(true);
+        } else {
+            options.create(true).truncate(true);
+        }
+        let mut index = BufWriter::new(options.open(index_path)?);
         write!(
             index,
             "{{\"v\":1,\"ts\":90000,\"init\":{},\"frags\":[",
@@ -443,9 +482,7 @@ fn clean_files(
         if protected(&file.path, current) {
             continue;
         }
-        if fs::remove_file(&file.path).is_ok() {
-            total = total.saturating_sub(file.size);
-        }
+        total = total.saturating_sub(remove_pair(&file.path));
     }
     Ok(())
 }
@@ -457,16 +494,46 @@ fn collect_files(root: &Path, output: &mut Vec<StoredFile>) -> Result<()> {
         Err(error) => return Err(error.into()),
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_files(&path, output)?;
-        } else if let Ok(metadata) = entry.metadata() {
-            output.push(StoredFile {
-                path,
-                size: metadata.len(),
-                modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-            });
+        if !entry.file_type()?.is_dir() {
+            continue;
         }
+        let device = entry.path();
+        let record = device.join("record");
+        if fs::symlink_metadata(&record).is_ok_and(|metadata| metadata.is_dir()) {
+            for day in fs::read_dir(&record)?.flatten() {
+                let date = day.file_name().to_string_lossy().into_owned();
+                if day.file_type()?.is_dir() && valid_date(&date) {
+                    collect_owned_files(&day.path(), output, |name| {
+                        valid_record_file(name, &date)
+                    })?;
+                }
+            }
+        }
+        let spool = device.join("spool");
+        if fs::symlink_metadata(&spool).is_ok_and(|metadata| metadata.is_dir()) {
+            collect_owned_files(&spool, output, |name| {
+                matches!(name, "ai-live.mp4" | "ai-live.mp4.idx")
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_owned_files(
+    root: &Path,
+    output: &mut Vec<StoredFile>,
+    owned: impl Fn(&str) -> bool,
+) -> Result<()> {
+    for entry in fs::read_dir(root)?.flatten() {
+        if !entry.file_type()?.is_file() || !owned(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        output.push(StoredFile {
+            path: entry.path(),
+            size: metadata.len(),
+            modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+        });
     }
     Ok(())
 }
@@ -477,11 +544,24 @@ fn protected(path: &Path, current: &BTreeSet<PathBuf>) -> bool {
     })
 }
 
-fn remove_pair(path: &Path) {
-    let _ = fs::remove_file(path);
-    if path.extension().is_some_and(|extension| extension == "mp4") {
-        let _ = fs::remove_file(format!("{}.idx", path.display()));
+fn remove_pair(path: &Path) -> u64 {
+    let size = fs::symlink_metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+    if fs::remove_file(path).is_err() {
+        return 0;
     }
+    let mut removed = size;
+    if path.extension().is_some_and(|extension| extension == "mp4") {
+        let index = PathBuf::from(format!("{}.idx", path.display()));
+        let size = fs::symlink_metadata(&index)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        if fs::remove_file(index).is_ok() {
+            removed = removed.saturating_add(size);
+        }
+    }
+    removed
 }
 
 fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
@@ -628,6 +708,116 @@ mod tests {
         let mut second = make_fragment(1, 990_000);
         assert_eq!(rewrite_tfdt(&mut first, &mut bases), Some(0));
         assert_eq!(rewrite_tfdt(&mut second, &mut bases), Some(90_000));
+    }
+
+    #[test]
+    fn quick_restart_does_not_overwrite_recording() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-roll-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let mut recorder = DeviceRecorder::new(root.clone());
+        recorder.set_init(b"\0\0\0\x08ftyp");
+        recorder.roll(true).unwrap();
+        let first = recorder.current.clone();
+        recorder.stop().unwrap();
+        let original = fs::read(&first).unwrap();
+        let original_index = fs::read(format!("{}.idx", first.display())).unwrap();
+        recorder.roll(true).unwrap();
+        assert_ne!(first, recorder.current);
+        assert_eq!(fs::read(&first).unwrap(), original);
+        assert_eq!(
+            fs::read(format!("{}.idx", first.display())).unwrap(),
+            original_index
+        );
+        let date = recorder
+            .current
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(valid_recording_name(
+            recorder.current.file_name().unwrap().to_str().unwrap(),
+            date
+        ));
+        recorder.stop().unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cleanup_does_not_follow_directory_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-clean-link-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        let foreign = root.join("foreign/record/20260810");
+        fs::create_dir_all(&foreign).unwrap();
+        let path = foreign.join("20260810_010203.mp4");
+        fs::write(&path, b"preserve").unwrap();
+        let media = root.join("media");
+        fs::create_dir_all(&media).unwrap();
+        std::os::unix::fs::symlink(root.join("foreign"), media.join("front")).unwrap();
+        clean_files(&media, &BTreeSet::new(), 7, 1).unwrap();
+        assert_eq!(fs::read(path).unwrap(), b"preserve");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cleanup_preserves_other_owners_and_unknown_files() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-clean-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let paths = [
+            "front/record/20260810/20260810_010203.mp4",
+            "front/record/20260810/20260810_010203.mp4.idx",
+            "front/record/20260810/notes.txt",
+            "front/snapshot/20260810/20260810_010203.jpg",
+            "voice/tts/profiles/default/reference.wav",
+            "voice/tts/profiles/default/reference.txt",
+            "voice/events.jsonl",
+        ];
+        for name in paths {
+            let path = root.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, b"keep or expire").unwrap();
+            File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1)))
+                .unwrap();
+        }
+        clean_files(&root, &BTreeSet::new(), 7, u64::MAX).unwrap();
+        assert!(!root.join(paths[0]).exists());
+        assert!(!root.join(paths[1]).exists());
+        for name in &paths[2..] {
+            assert!(root.join(name).exists(), "deleted foreign file {name}");
+        }
+        // Non-recording bytes must not count against the recording budget.
+        clean_files(&root, &BTreeSet::new(), 7, 1).unwrap();
+        for name in &paths[2..] {
+            assert!(
+                root.join(name).exists(),
+                "budget deleted foreign file {name}"
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

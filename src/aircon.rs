@@ -4,7 +4,7 @@ use crate::ir_control::IrControl;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex as AsyncMutex;
@@ -421,14 +421,13 @@ impl AirconStore {
     }
 
     fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let temporary = self.path.with_extension("json.tmp");
-        fs::write(&temporary, serde_json::to_vec_pretty(&self.current)?)?;
-        secure_file(&temporary)?;
-        fs::rename(&temporary, &self.path)?;
-        secure_file(&self.path)
+        crate::atomic_file::write_json(&self.path, &self.current)
+    }
+
+    fn commit(&mut self, next: AirconDocument) -> Result<()> {
+        crate::atomic_file::write_json(&self.path, &next)?;
+        self.current = next;
+        Ok(())
     }
 
     fn add_schedule(
@@ -445,46 +444,74 @@ impl AirconStore {
                 .iter()
                 .find(|schedule| schedule.request_id == request_id)
         {
+            if existing.command != command || existing.auto_off_minutes != auto_off_minutes {
+                return Err(AirconError::Invalid(
+                    "request_id 已用于不同的定时请求".to_owned(),
+                ));
+            }
             return Ok(existing.clone());
         }
-        let active_count = self
-            .current
-            .schedules
-            .iter()
-            .filter(|schedule| {
-                matches!(
-                    schedule.status,
-                    AirconScheduleStatus::Pending | AirconScheduleStatus::Running
-                )
-            })
-            .count();
-        if active_count >= MAX_SCHEDULES {
-            return Err(AirconError::Invalid(format!(
-                "最多允许 {MAX_SCHEDULES} 个待执行空调任务，请先取消部分任务"
-            )));
-        }
-        let id = format!("aircon-{:016x}", self.current.next_schedule_id);
-        self.current.next_schedule_id = self.current.next_schedule_id.saturating_add(1);
-        let schedule = AirconSchedule {
-            id,
+        let mut next = self.current.clone();
+        let schedule = insert_schedule(
+            &mut next,
             command,
             request_id,
             execute_at_epoch,
             auto_off_minutes,
-            status: AirconScheduleStatus::Pending,
-            created_epoch: epoch_seconds(),
-            finished_epoch: 0,
-            message: "等待执行".to_owned(),
-        };
-        self.current.schedules.push(schedule.clone());
-        self.current
-            .schedules
-            .sort_by_key(|item| item.execute_at_epoch);
-        self.current.revision = self.current.revision.saturating_add(1);
-        self.current.prune_schedules();
-        self.save().map_err(internal_error)?;
+        )?;
+        self.commit(next).map_err(internal_error)?;
         Ok(schedule)
     }
+}
+
+fn insert_schedule(
+    document: &mut AirconDocument,
+    command: AirconOperation,
+    request_id: String,
+    execute_at_epoch: u64,
+    auto_off_minutes: Option<u32>,
+) -> std::result::Result<AirconSchedule, AirconError> {
+    let active_count: usize = document
+        .schedules
+        .iter()
+        .filter(|schedule| {
+            matches!(
+                schedule.status,
+                AirconScheduleStatus::Pending | AirconScheduleStatus::Running
+            )
+        })
+        // Running parents transfer their child reservation while holding the
+        // execution lock; the concrete off task then owns that capacity.
+        .map(|schedule| {
+            1 + usize::from(
+                schedule.status == AirconScheduleStatus::Pending
+                    && schedule.auto_off_minutes.is_some(),
+            )
+        })
+        .sum();
+    let required = 1 + usize::from(auto_off_minutes.is_some());
+    if active_count + required > MAX_SCHEDULES {
+        return Err(AirconError::Invalid(format!(
+            "最多允许 {MAX_SCHEDULES} 个待执行空调任务（含自动关机），请先取消部分任务"
+        )));
+    }
+    let schedule = AirconSchedule {
+        id: format!("aircon-{:016x}", document.next_schedule_id),
+        command,
+        request_id,
+        execute_at_epoch,
+        auto_off_minutes,
+        status: AirconScheduleStatus::Pending,
+        created_epoch: epoch_seconds(),
+        finished_epoch: 0,
+        message: "等待执行".to_owned(),
+    };
+    document.next_schedule_id = document.next_schedule_id.saturating_add(1);
+    document.schedules.push(schedule.clone());
+    document.schedules.sort_by_key(|item| item.execute_at_epoch);
+    document.revision = document.revision.saturating_add(1);
+    document.prune_schedules();
+    Ok(schedule)
 }
 
 pub struct AirconService {
@@ -543,9 +570,10 @@ impl AirconService {
     pub fn rotate_token(&self) -> std::result::Result<String, AirconError> {
         let token = generate_token().map_err(internal_error)?;
         let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
-        store.current.integration_token.clone_from(&token);
-        store.current.revision = store.current.revision.saturating_add(1);
-        store.save().map_err(internal_error)?;
+        let mut next = store.current.clone();
+        next.integration_token.clone_from(&token);
+        next.revision = next.revision.saturating_add(1);
+        store.commit(next).map_err(internal_error)?;
         Ok(token)
     }
 
@@ -553,6 +581,7 @@ impl AirconService {
         &self,
         mut request: AirconCommandRequest,
     ) -> std::result::Result<AirconCommandResult, AirconError> {
+        let _execution = self.execution.lock().await;
         normalize_request_id(&mut request.request_id)?;
         if request.command.is_cancellation() {
             if request.delay_minutes.is_some()
@@ -614,10 +643,10 @@ impl AirconService {
         command: AirconOperation,
     ) -> std::result::Result<AirconCommandResult, AirconError> {
         let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        let mut next = store.current.clone();
         let message = match command {
             AirconOperation::CancelSchedule { schedule_id } => {
-                let schedule = store
-                    .current
+                let schedule = next
                     .schedules
                     .iter_mut()
                     .find(|schedule| schedule.id == schedule_id)
@@ -632,7 +661,7 @@ impl AirconService {
             }
             AirconOperation::CancelAll {} => {
                 let mut count = 0_u64;
-                for schedule in &mut store.current.schedules {
+                for schedule in &mut next.schedules {
                     if schedule.status == AirconScheduleStatus::Pending {
                         schedule.status = AirconScheduleStatus::Cancelled;
                         schedule.finished_epoch = epoch_seconds();
@@ -644,8 +673,8 @@ impl AirconService {
             }
             _ => return Err(AirconError::Invalid("不是取消定时操作".to_owned())),
         };
-        store.current.revision = store.current.revision.saturating_add(1);
-        store.save().map_err(internal_error)?;
+        next.revision = next.revision.saturating_add(1);
+        store.commit(next).map_err(internal_error)?;
         Ok(AirconCommandResult {
             ok: true,
             status: AirconResultStatus::Cancelled,
@@ -663,7 +692,6 @@ impl AirconService {
         operation: AirconOperation,
         auto_off_minutes: Option<u32>,
     ) -> std::result::Result<AirconCommandResult, AirconError> {
-        let _execution = self.execution.lock().await;
         let (current, was_known) = {
             let store = self.store.lock().unwrap_or_else(|error| error.into_inner());
             (store.current.state.clone(), store.current.state_known)
@@ -674,35 +702,64 @@ impl AirconService {
                 "关闭空调操作不能设置自动关机".to_owned(),
             ));
         }
-        let transmission = self
-            .ir
-            .send_aircon(&next.to_ir_command())
-            .await
-            .map_err(|error| AirconError::Delivery(error.to_string()))?;
+        // Persist the off task before dispatch. A scheduled parent already owns
+        // this slot, so transfer its reservation to the concrete off task.
+        let auto_off = if let Some(minutes) = auto_off_minutes {
+            let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+            let mut document = store.current.clone();
+            let schedule = insert_schedule(
+                &mut document,
+                AirconOperation::Off {},
+                String::new(),
+                epoch_seconds().saturating_add(u64::from(minutes) * 60),
+                None,
+            )?;
+            store.commit(document).map_err(internal_error)?;
+            Some(schedule)
+        } else {
+            None
+        };
+        let transmission = match self.ir.send_aircon(&next.to_ir_command()).await {
+            Ok(transmission) => transmission,
+            Err(error) => {
+                let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+                // A worker timeout does not prove that nothing was transmitted.
+                store.current.state_known = false;
+                // Retain the persisted off task: an uncertain send may have
+                // switched the appliance on before the response was lost.
+                store.current.revision = store.current.revision.saturating_add(1);
+                let persistence = store.save().err();
+                let mut message = match persistence {
+                    Some(persistence) => format!("{error}；失败状态保存失败：{persistence}"),
+                    None => error.to_string(),
+                };
+                if auto_off.is_some() {
+                    message.push_str("；发送结果未确认，已保留自动关机任务");
+                }
+                return Err(AirconError::Delivery(message));
+            }
+        };
 
         let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
         store.current.state = next.clone();
         store.current.state_known = true;
         store.current.revision = store.current.revision.saturating_add(1);
-        let auto_off = if let Some(minutes) = auto_off_minutes {
-            Some(store.add_schedule(
-                AirconOperation::Off {},
-                String::new(),
-                epoch_seconds().saturating_add(u64::from(minutes) * 60),
-                None,
-            )?)
+        // The transmission already happened: keep the shadow state truthful
+        // even if the disk write fails, and report the partial outcome.
+        let persistence_error = store.save().err();
+        let mut message = if was_known {
+            next.message()
         } else {
-            store.save().map_err(internal_error)?;
-            None
+            format!("{}（此前状态未知，已按默认状态补全）", next.message())
         };
+        if let Some(error) = persistence_error {
+            warn!(%error, "aircon transmitted but state persistence failed");
+            message.push_str(&format!("；红外已发送，但状态保存失败：{error}"));
+        }
         Ok(AirconCommandResult {
             ok: true,
             status: AirconResultStatus::Executed,
-            message: if was_known {
-                next.message()
-            } else {
-                format!("{}（此前状态未知，已按默认状态补全）", next.message())
-            },
+            message,
             state: next,
             state_known: true,
             physical_confirmed: false,
@@ -712,6 +769,7 @@ impl AirconService {
     }
 
     async fn run_due(&self) -> Result<()> {
+        let _execution = self.execution.lock().await;
         let due = {
             let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
             let Some(index) = store.current.schedules.iter().position(|schedule| {
@@ -720,11 +778,13 @@ impl AirconService {
             }) else {
                 return Ok(());
             };
-            store.current.schedules[index].status = AirconScheduleStatus::Running;
-            store.current.schedules[index].message = "正在执行".to_owned();
-            store.current.revision = store.current.revision.saturating_add(1);
-            store.save()?;
-            store.current.schedules[index].clone()
+            let mut next = store.current.clone();
+            next.schedules[index].status = AirconScheduleStatus::Running;
+            next.schedules[index].message = "正在执行".to_owned();
+            next.revision = next.revision.saturating_add(1);
+            let due = next.schedules[index].clone();
+            store.commit(next)?;
+            due
         };
 
         let result = self
@@ -839,15 +899,6 @@ fn epoch_seconds() -> u64 {
         .as_secs()
 }
 
-fn secure_file(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -863,6 +914,77 @@ mod tests {
             "camera-hub-aircon-{label}-{}-{nonce}.json",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn failed_schedule_save_does_not_publish_task() {
+        let path = temporary_config("save-failure");
+        let mut store = AirconStore::load(path.clone()).unwrap();
+        let revision = store.current.revision;
+        let original_path = store.path.clone();
+        // Use an ordinary file as the parent to deterministically reject writes.
+        store.path = path.join("cannot-write.json");
+        assert!(
+            store
+                .add_schedule(
+                    AirconOperation::Off {},
+                    "rejected".to_owned(),
+                    epoch_seconds() + 60,
+                    None
+                )
+                .is_err()
+        );
+        assert!(store.current.schedules.is_empty());
+        assert_eq!(store.current.revision, revision);
+        store.path = original_path;
+        store.save().unwrap();
+        assert!(
+            AirconStore::load(path.clone())
+                .unwrap()
+                .current
+                .schedules
+                .is_empty()
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn auto_off_capacity_is_rejected_before_dispatch() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let path = temporary_config("auto-off-capacity");
+        let mut store = AirconStore::load(path.clone()).unwrap();
+        for index in 0..MAX_SCHEDULES {
+            store
+                .add_schedule(
+                    AirconOperation::Off {},
+                    format!("task-{index}"),
+                    epoch_seconds() + 3600,
+                    None,
+                )
+                .unwrap();
+        }
+        // No listener: a capacity rejection must happen before touching the worker.
+        let service = AirconService {
+            store: Mutex::new(store),
+            ir: Arc::new(IrControl::from_url("http://127.0.0.1:1", PathBuf::new()).unwrap()),
+            execution: AsyncMutex::new(()),
+        };
+        let result = service
+            .submit(AirconCommandRequest {
+                command: AirconOperation::Set {
+                    temperature_c: 24,
+                    mode: AcMode::Cool,
+                    eco: false,
+                },
+                request_id: String::new(),
+                delay_minutes: None,
+                execute_at_epoch: None,
+                auto_off_minutes: Some(1),
+            })
+            .await;
+        assert!(matches!(result, Err(AirconError::Invalid(_))), "{result:?}");
+        assert!(!service.overview().state_known);
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -967,6 +1089,57 @@ mod tests {
             .unwrap_err();
         assert!(matches!(error, AirconError::Invalid(_)));
         assert_eq!(store.current.schedules.len(), MAX_SCHEDULES);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn delayed_auto_off_reserves_its_child_capacity() {
+        let path = temporary_config("child-capacity");
+        let mut store = AirconStore::load(path.clone()).unwrap();
+        for index in 0..MAX_SCHEDULES - 2 {
+            store
+                .add_schedule(
+                    AirconOperation::Off {},
+                    format!("task-{index}"),
+                    epoch_seconds() + 3600,
+                    None,
+                )
+                .unwrap();
+        }
+        let parent = store
+            .add_schedule(
+                AirconOperation::Power { enabled: true },
+                "parent".to_owned(),
+                epoch_seconds() + 60,
+                Some(30),
+            )
+            .unwrap();
+        assert!(matches!(
+            store.add_schedule(
+                AirconOperation::Off {},
+                "overflow".to_owned(),
+                epoch_seconds() + 3600,
+                None,
+            ),
+            Err(AirconError::Invalid(_))
+        ));
+        // Execution transfers the reserved child slot without requiring a new one.
+        let mut next = store.current.clone();
+        let task = next
+            .schedules
+            .iter_mut()
+            .find(|task| task.id == parent.id)
+            .unwrap();
+        task.status = AirconScheduleStatus::Running;
+        insert_schedule(
+            &mut next,
+            AirconOperation::Off {},
+            String::new(),
+            epoch_seconds() + 1800,
+            None,
+        )
+        .unwrap();
+        assert_eq!(next.schedules.len(), MAX_SCHEDULES);
         fs::remove_file(path).unwrap();
     }
 

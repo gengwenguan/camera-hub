@@ -2,10 +2,12 @@ use crate::benchmark::{BenchmarkAnchor, BenchmarkRegistry};
 use crate::frames::{EncodedFrame, FrameSubscription};
 use anyhow::{Context, Result, bail};
 use std::io;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
-use tokio::io::{AsyncWriteExt, DuplexStream};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::io::{AsyncRead, AsyncWriteExt, DuplexStream, ReadBuf};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 use tracing::{info, warn};
 
 const MAX_FLV_SESSIONS: usize = 4;
@@ -23,7 +25,30 @@ pub struct FlvLive {
 }
 
 pub struct FlvOutput {
-    pub stream: DuplexStream,
+    pub stream: FlvStream,
+}
+
+pub struct FlvStream {
+    stream: DuplexStream,
+    cancel: Option<oneshot::Sender<()>>,
+}
+
+impl AsyncRead for FlvStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl Drop for FlvStream {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
 }
 
 impl FlvLive {
@@ -72,18 +97,21 @@ async fn start_flv(
     }
 
     let id = device_id.to_owned();
+    let (cancel, cancelled) = oneshot::channel();
     tokio::spawn(async move {
         let _permit = permit;
-        if let Err(error) = feed_flv(
+        let result = tokio::select! {
+            _ = cancelled => Ok(()),
+            result = feed_flv(
             &id,
             subscription,
             &mut muxer,
             &mut writer,
             &benchmark,
             benchmark_id.as_deref(),
-        )
-        .await
-        {
+            ) => result,
+        };
+        if let Err(error) = result {
             if is_client_disconnect(&error) {
                 info!(device_id = %id, "HTTP-FLV client disconnected");
             } else {
@@ -97,7 +125,12 @@ async fn start_flv(
         let _ = writer.shutdown().await;
         info!(device_id = %id, "HTTP-FLV session closed");
     });
-    Ok(FlvOutput { stream })
+    Ok(FlvOutput {
+        stream: FlvStream {
+            stream,
+            cancel: Some(cancel),
+        },
+    })
 }
 
 async fn feed_flv(
@@ -510,6 +543,37 @@ fn flv_tag(tag_type: u8, timestamp: u32, payload: &[u8]) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn disconnected_offline_client_releases_session_permit() {
+        let live = FlvLive::new(Arc::new(BenchmarkRegistry::default()));
+        let (video, _) = tokio::sync::broadcast::channel(4);
+        let (aac, _) = tokio::sync::broadcast::channel(4);
+        let output = live
+            .open(
+                "front",
+                FrameSubscription {
+                    initial_video: None,
+                    video: video.subscribe(),
+                    aac: aac.subscribe(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(live.permits.available_permits(), MAX_FLV_SESSIONS - 1);
+        drop(output);
+        let permit = tokio::time::timeout(
+            Duration::from_secs(1),
+            live.permits
+                .clone()
+                .acquire_many_owned(MAX_FLV_SESSIONS as u32),
+        )
+        .await
+        .expect("offline task leaked its permit")
+        .unwrap();
+        drop(permit);
+    }
 
     fn frame(pts_us: i64, key: bool, data: Vec<u8>) -> EncodedFrame {
         EncodedFrame {

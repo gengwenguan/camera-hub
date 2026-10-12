@@ -84,6 +84,7 @@ struct Args {
 
 struct TtsState {
     tts: Arc<StdMutex<Option<OfflineTts>>>,
+    loaded: Arc<AtomicBool>,
     model: TtsModel,
     inference_lock: Arc<InferenceLock>,
     token: String,
@@ -101,6 +102,7 @@ struct TtsModel {
 
 struct SynthesisTask {
     tts: Arc<StdMutex<Option<OfflineTts>>>,
+    loaded: Arc<AtomicBool>,
     model: TtsModel,
     inference_lock: Arc<InferenceLock>,
     data_dir: PathBuf,
@@ -133,6 +135,7 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
     let inference_lock = Arc::new(InferenceLock::open()?);
     let state = Arc::new(TtsState {
         tts: Arc::new(StdMutex::new(None)),
+        loaded: Arc::new(AtomicBool::new(false)),
         model,
         inference_lock,
         token: args.token,
@@ -203,11 +206,7 @@ fn validate_model_assets(model: &TtsModel) -> Result<()> {
 }
 
 async fn health(State(state): State<Arc<TtsState>>) -> Json<serde_json::Value> {
-    let loaded = state
-        .tts
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .is_some();
+    let loaded = state.loaded.load(Ordering::Acquire);
     Json(json!({
         "ok": true,
         "model": "zipvoice-distill-int8",
@@ -297,6 +296,7 @@ async fn synthesize(
     );
     let task = SynthesisTask {
         tts: state.tts.clone(),
+        loaded: state.loaded.clone(),
         model: state.model.clone(),
         inference_lock: state.inference_lock.clone(),
         data_dir,
@@ -372,6 +372,7 @@ fn synthesize_cached(task: &SynthesisTask) -> Result<Vec<u8>> {
     let mut tts = task.tts.lock().unwrap_or_else(|error| error.into_inner());
     if tts.is_none() {
         *tts = Some(create_tts(&task.model)?);
+        task.loaded.store(true, Ordering::Release);
     }
     let deadline = Instant::now() + task.max_generation;
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -784,6 +785,29 @@ impl IntoResponse for TtsError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn health_remains_available_while_model_is_locked() {
+        let state = Arc::new(TtsState {
+            tts: Arc::new(StdMutex::new(None)),
+            loaded: Arc::new(AtomicBool::new(true)),
+            model: TtsModel {
+                model_dir: PathBuf::new(),
+                vocoder: PathBuf::new(),
+                threads: 1,
+            },
+            inference_lock: Arc::new(InferenceLock::open().unwrap()),
+            token: String::new(),
+            data_dir: PathBuf::new(),
+            max_data_bytes: MIN_DATA_BYTES,
+            capacity: Arc::new(Semaphore::new(0)),
+        });
+        let locked = state.tts.clone();
+        let _guard = locked.lock().unwrap();
+        let response = health(State(state)).await;
+        assert_eq!(response.0["loaded"], true);
+        assert_eq!(response.0["busy"], true);
+    }
 
     fn temporary_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(

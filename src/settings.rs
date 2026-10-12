@@ -173,13 +173,14 @@ impl HubSettingsStore {
     }
 
     pub fn update(&self, patch: HubSettingsPatch) -> Result<HubSettings> {
-        let mut next = self.current();
-        next.apply(patch);
-        self.save(&next)?;
-        *self
+        let mut current = self
             .current
             .write()
-            .unwrap_or_else(|error| error.into_inner()) = next.clone();
+            .unwrap_or_else(|error| error.into_inner());
+        let mut next = current.clone();
+        next.apply(patch);
+        self.save(&next)?;
+        *current = next.clone();
         Ok(next)
     }
 
@@ -188,14 +189,7 @@ impl HubSettingsStore {
     }
 
     fn save(&self, settings: &HubSettings) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let temporary = self.path.with_extension("json.tmp");
-        let data = serde_json::to_vec_pretty(settings)?;
-        fs::write(&temporary, data)?;
-        fs::rename(&temporary, &self.path)?;
-        Ok(())
+        crate::atomic_file::write_json(&self.path, settings)
     }
 }
 
