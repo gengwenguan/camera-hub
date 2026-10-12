@@ -101,6 +101,8 @@ impl ComponentSettings {
 
 struct ManagedComponent {
     desired_running: bool,
+    stopping: bool,
+    maintenance: bool,
     child: Option<Child>,
     started_epoch: u64,
     restart_count: u64,
@@ -113,6 +115,8 @@ impl ManagedComponent {
     fn new(desired_running: bool) -> Self {
         Self {
             desired_running,
+            stopping: false,
+            maintenance: false,
             child: None,
             started_epoch: 0,
             restart_count: 0,
@@ -124,6 +128,7 @@ impl ManagedComponent {
 }
 
 struct ManagerState {
+    shutting_down: bool,
     settings: ComponentSettings,
     components: BTreeMap<ComponentId, ManagedComponent>,
 }
@@ -136,6 +141,7 @@ pub struct ComponentManager {
     voice_lib_dir: PathBuf,
     config: Config,
     state: Mutex<ManagerState>,
+    operations: BTreeMap<ComponentId, Mutex<()>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -168,7 +174,6 @@ pub struct ComponentStatus {
 #[derive(Default)]
 pub struct AssetResume {
     tts: bool,
-    voice: bool,
 }
 
 impl ComponentManager {
@@ -191,9 +196,14 @@ impl ComponentManager {
             voice_lib_dir: config.voice_lib_dir.clone(),
             config: config.clone(),
             state: Mutex::new(ManagerState {
+                shutting_down: false,
                 settings,
                 components,
             }),
+            operations: ComponentId::ALL
+                .into_iter()
+                .map(|id| (id, Mutex::new(())))
+                .collect(),
         });
         if enabled {
             let task = manager.clone();
@@ -243,12 +253,13 @@ impl ComponentManager {
         if !self.installed(id) {
             bail!("组件 {} 尚未安装完整运行资源", id.as_str());
         }
+        let _operation = self.operations[&id].lock().await;
         match action {
-            "start" => self.start_component(id).await,
-            "stop" => self.stop_component(id, false).await,
+            "start" => self.start_component_locked(id).await,
+            "stop" => self.stop_component_locked(id, false).await,
             "restart" => {
-                self.stop_component(id, true).await?;
-                self.start_component(id).await
+                self.stop_component_locked(id, true).await?;
+                self.start_component_locked(id).await
             }
             _ => unreachable!(),
         }
@@ -260,8 +271,11 @@ impl ComponentManager {
         }
         let id = ComponentId::parse(service)?;
         let mut state = self.state.lock().await;
-        state.settings.set_autostart(id, enabled);
-        save_settings(&self.settings_path, &state.settings)
+        let mut next = state.settings.clone();
+        next.set_autostart(id, enabled);
+        save_settings(&self.settings_path, &next)?;
+        state.settings = next;
+        Ok(())
     }
 
     #[cfg(feature = "voice-workers")]
@@ -269,64 +283,71 @@ impl ComponentManager {
         if !self.enabled {
             return Ok(AssetResume::default());
         }
-        let resume = {
-            let state = self.state.lock().await;
-            AssetResume {
-                tts: asset == "voice-tts" && should_resume(&state.components[&ComponentId::Tts]),
-                voice: should_resume(&state.components[&ComponentId::Voice]),
-            }
-        };
-        match asset {
-            "voice-kws" | "voice-asr" => {
-                self.stop_component(ComponentId::Voice, false).await?;
-            }
-            "voice-tts" => {
-                self.stop_component(ComponentId::Voice, false).await?;
-                self.stop_component(ComponentId::Tts, false).await?;
-            }
-            _ => bail!("不支持的资源包：{asset}"),
+        if !matches!(asset, "voice-kws" | "voice-asr" | "voice-tts") {
+            bail!("不支持的资源包：{asset}");
         }
-        Ok(resume)
+        let _voice = self.operations[&ComponentId::Voice].lock().await;
+        let _tts = self.operations[&ComponentId::Tts].lock().await;
+        let ids = if asset == "voice-tts" {
+            vec![ComponentId::Voice, ComponentId::Tts]
+        } else {
+            vec![ComponentId::Voice]
+        };
+        for id in ids {
+            let desired = {
+                let mut state = self.state.lock().await;
+                let component = state.components.get_mut(&id).unwrap();
+                component.maintenance = true;
+                component.desired_running
+            };
+            self.stop_component_locked(id, desired).await?;
+        }
+        Ok(AssetResume {
+            tts: asset == "voice-tts",
+        })
     }
 
     #[cfg(feature = "voice-workers")]
-    pub async fn resume_after_asset(&self, asset: &str, resume: AssetResume) -> Result<()> {
+    pub async fn resume_after_asset(&self, _asset: &str, resume: AssetResume) -> Result<()> {
         if !self.enabled {
             return Ok(());
         }
-        if asset == "voice-tts" && resume.tts {
-            self.start_component(ComponentId::Tts).await?;
+        {
+            let mut state = self.state.lock().await;
+            state
+                .components
+                .get_mut(&ComponentId::Voice)
+                .unwrap()
+                .maintenance = false;
+            if resume.tts {
+                state
+                    .components
+                    .get_mut(&ComponentId::Tts)
+                    .unwrap()
+                    .maintenance = false;
+            }
         }
-        if resume.voice {
-            self.start_component(ComponentId::Voice).await?;
+        if resume.tts {
+            self.start_if_desired(ComponentId::Tts).await?;
         }
+        self.start_if_desired(ComponentId::Voice).await?;
         Ok(())
     }
 
     pub async fn shutdown(&self) {
-        let children = {
+        {
             let mut state = self.state.lock().await;
-            state
-                .components
-                .values_mut()
-                .filter_map(|component| {
-                    component.desired_running = false;
-                    component.child.take()
-                })
-                .collect::<Vec<_>>()
-        };
-        for mut child in children {
-            terminate_child(&mut child).await;
+            state.shutting_down = true;
+        }
+        for id in ComponentId::ALL {
+            let _ = self.stop_component(id, false).await;
         }
     }
 
     async fn bootstrap(&self) {
         let _ = self.start_if_desired(ComponentId::Tts).await;
         let _ = self.start_if_desired(ComponentId::Ddns).await;
-        if self.desired(ComponentId::Voice).await
-            && self.installed(ComponentId::Voice)
-            && let Err(error) = self.start_component(ComponentId::Voice).await
-        {
+        if let Err(error) = self.start_if_desired(ComponentId::Voice).await {
             self.record_error(ComponentId::Voice, error.to_string())
                 .await;
         }
@@ -336,6 +357,9 @@ impl ComponentManager {
         let mut interval = tokio::time::interval(Duration::from_secs(2));
         loop {
             interval.tick().await;
+            if self.state.lock().await.shutting_down {
+                return;
+            }
             self.reap_exited().await;
             for id in ComponentId::ALL {
                 let should_start = {
@@ -343,6 +367,8 @@ impl ComponentManager {
                     let component = &state.components[&id];
                     component.desired_running
                         && component.child.is_none()
+                        && !component.stopping
+                        && !component.maintenance
                         && component.next_start_epoch <= epoch_seconds()
                         && self.installed(id)
                 };
@@ -358,46 +384,129 @@ impl ComponentManager {
     }
 
     async fn start_if_desired(&self, id: ComponentId) -> Result<()> {
+        let _operation = self.operations[&id].lock().await;
         if self.desired(id).await && self.installed(id) {
-            self.spawn_component(id).await?;
+            self.start_component_locked(id).await?;
         }
         Ok(())
     }
 
-    async fn start_component(&self, id: ComponentId) -> Result<()> {
+    async fn start_component_locked(&self, id: ComponentId) -> Result<()> {
         {
             let mut state = self.state.lock().await;
+            if state.shutting_down {
+                bail!("服务正在关闭");
+            }
             state
                 .components
                 .get_mut(&id)
                 .expect("managed component")
                 .desired_running = true;
+            if state.components[&id].maintenance {
+                return Ok(());
+            }
         }
         if id == ComponentId::Voice {
             if !self.installed(ComponentId::Tts) {
                 bail!("TTS 运行资源未安装，无法启动语音识别");
             }
-            {
-                let mut state = self.state.lock().await;
-                state
-                    .components
-                    .get_mut(&ComponentId::Tts)
-                    .expect("TTS component")
-                    .desired_running = true;
-            }
-            self.spawn_component(ComponentId::Tts).await?;
+            let _tts = self.operations[&ComponentId::Tts].lock().await;
+            self.start_component_locked_tts().await?;
             self.wait_for_tts().await?;
         }
-        self.spawn_component(id).await
+        self.spawn_component_locked(id).await
+    }
+
+    async fn start_component_locked_tts(&self) -> Result<()> {
+        self.state
+            .lock()
+            .await
+            .components
+            .get_mut(&ComponentId::Tts)
+            .unwrap()
+            .desired_running = true;
+        self.spawn_component_locked(ComponentId::Tts).await
+    }
+
+    fn configure_worker(&self, command: &mut Command, id: ComponentId) {
+        let config = &self.config;
+        match id {
+            ComponentId::Voice => {
+                for (key, value) in [
+                    ("CAMERA_HUB_VOICE_CONFIG_FILE", &config.voice_config_file),
+                    ("CAMERA_HUB_VOICE_STATUS_FILE", &config.voice_status_file),
+                    ("CAMERA_HUB_VOICE_COMMAND_FILE", &config.voice_command_file),
+                    (
+                        "CAMERA_HUB_VOICE_TRANSCRIBE_FILE",
+                        &config.voice_transcribe_file,
+                    ),
+                    ("CAMERA_HUB_VOICE_EVENTS_FILE", &config.voice_events_file),
+                    ("CAMERA_HUB_VOICE_MODEL_DIR", &config.voice_model_dir),
+                    ("CAMERA_HUB_ASR_MODEL_DIR", &config.asr_model_dir),
+                ] {
+                    command.env(key, value);
+                }
+                command
+                    .env("CAMERA_HUB_TTS_URL", &config.tts_url)
+                    .env("CAMERA_HUB_TTS_TOKEN", &config.tts_token);
+            }
+            ComponentId::Tts => {
+                command
+                    .env("CAMERA_HUB_TTS_TOKEN", &config.tts_token)
+                    .env("CAMERA_HUB_TTS_MODEL_DIR", &config.tts_model_dir)
+                    .env("CAMERA_HUB_TTS_VOCODER", &config.tts_vocoder);
+                if std::env::var_os("CAMERA_HUB_TTS_DATA_DIR").is_none() {
+                    command.env("CAMERA_HUB_TTS_DATA_DIR", config.data_dir.join("voice/tts"));
+                }
+                if std::env::var_os("CAMERA_HUB_TTS_BIND").is_none()
+                    && let Ok(url) = reqwest::Url::parse(&config.tts_url)
+                    && let (Some(host), Some(port)) = (url.host_str(), url.port_or_known_default())
+                    && let Ok(ip) = host.trim_matches(['[', ']']).parse::<std::net::IpAddr>()
+                {
+                    command.env(
+                        "CAMERA_HUB_TTS_BIND",
+                        std::net::SocketAddr::new(ip, port).to_string(),
+                    );
+                }
+            }
+            ComponentId::Ddns => {
+                command
+                    .env("CAMERA_HUB_DDNS_CONFIG_FILE", &config.ddns_config_file)
+                    .env("CAMERA_HUB_DDNS_STATUS_FILE", &config.ddns_status_file);
+                if std::env::var_os("CAMERA_HUB_DDNS_STATE_FILE").is_none() {
+                    command.env(
+                        "CAMERA_HUB_DDNS_STATE_FILE",
+                        config.ddns_config_file.with_extension("state"),
+                    );
+                }
+            }
+            ComponentId::Ir => {
+                command
+                    .env("CAMERA_HUB_IR_BIND", config.ir_bind.to_string())
+                    .env("CAMERA_HUB_IR_DEVICE", &config.ir_device);
+            }
+        }
     }
 
     async fn spawn_component(&self, id: ComponentId) -> Result<()> {
+        let _operation = self.operations[&id].lock().await;
+        self.spawn_component_locked(id).await
+    }
+
+    async fn spawn_component_locked(&self, id: ComponentId) -> Result<()> {
         if !self.installed(id) {
             bail!("组件 {} 尚未安装完整运行资源", id.as_str());
         }
         let mut state = self.state.lock().await;
+        if state.shutting_down {
+            return Ok(());
+        }
         let component = state.components.get_mut(&id).expect("managed component");
-        if component.child.is_some() || !component.desired_running {
+        if component.child.is_some()
+            || !component.desired_running
+            || component.stopping
+            || component.maintenance
+        {
             return Ok(());
         }
         let log_path = self.log_dir.join(id.log_name());
@@ -427,6 +536,7 @@ impl ComponentManager {
             })
             .unwrap_or_else(|| self.voice_lib_dir.as_os_str().to_owned());
         command.env("LD_LIBRARY_PATH", library_path);
+        self.configure_worker(&mut command, id);
         #[cfg(target_os = "linux")]
         unsafe {
             command.pre_exec(|| {
@@ -453,15 +563,28 @@ impl ComponentManager {
     }
 
     async fn stop_component(&self, id: ComponentId, restart: bool) -> Result<()> {
+        let _operation = self.operations[&id].lock().await;
+        self.stop_component_locked(id, restart).await
+    }
+
+    async fn stop_component_locked(&self, id: ComponentId, restart: bool) -> Result<()> {
         let child = {
             let mut state = self.state.lock().await;
             let component = state.components.get_mut(&id).expect("managed component");
             component.desired_running = restart;
+            component.stopping = true;
             component.child.take()
         };
         if let Some(mut child) = child {
             terminate_child(&mut child).await;
         }
+        self.state
+            .lock()
+            .await
+            .components
+            .get_mut(&id)
+            .unwrap()
+            .stopping = false;
         Ok(())
     }
 
@@ -617,6 +740,10 @@ impl ComponentManager {
         let running = component.child.is_some();
         let pid = component.child.as_ref().and_then(Child::id);
         let (healthy, service_state, detail) = match id {
+            _ if component.maintenance => {
+                (false, "maintenance".to_owned(), "模型资源安装中".to_owned())
+            }
+            _ if component.stopping => (false, "stopping".to_owned(), "等待旧进程退出".to_owned()),
             ComponentId::Tts if running => match tts_health {
                 Some(health) => {
                     let loaded = health
@@ -702,11 +829,6 @@ impl ComponentManager {
     }
 }
 
-#[cfg(feature = "voice-workers")]
-fn should_resume(component: &ManagedComponent) -> bool {
-    component.desired_running || component.child.is_some()
-}
-
 trait StringFallback {
     fn if_empty(self, fallback: &str) -> String;
 }
@@ -749,18 +871,7 @@ fn load_settings(path: &Path) -> Result<ComponentSettings> {
 }
 
 fn save_settings(path: &Path, settings: &ComponentSettings) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let temporary = path.with_extension("json.tmp");
-    fs::write(&temporary, serde_json::to_vec_pretty(settings)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&temporary, fs::Permissions::from_mode(0o600))?;
-    }
-    fs::rename(temporary, path)?;
-    Ok(())
+    crate::atomic_file::write_json(path, settings)
 }
 
 fn epoch_seconds() -> u64 {
@@ -773,6 +884,186 @@ fn epoch_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    fn test_manager(root: &Path) -> Arc<ComponentManager> {
+        let mut config = Config::parse_from(["camera-hub"]);
+        config.components_file = root.join("components.json");
+        config.component_manager_enabled = false;
+        let mut manager = ComponentManager::start(&config).unwrap();
+        Arc::get_mut(&mut manager).unwrap().enabled = true;
+        Arc::get_mut(&mut manager).unwrap().executable = PathBuf::from("/usr/bin/true");
+        manager
+    }
+
+    #[test]
+    fn workers_receive_parsed_main_service_overrides() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-component-env-{}-{}",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        let mut manager = test_manager(&root);
+        let manager_mut = Arc::get_mut(&mut manager).unwrap();
+        manager_mut.config.voice_config_file = root.join("custom-voice.json");
+        manager_mut.config.ir_bind = "127.0.0.1:39222".parse().unwrap();
+        manager_mut.config.ir_device = root.join("custom-ir");
+        let mut command = Command::new("/usr/bin/true");
+        manager.configure_worker(&mut command, ComponentId::Voice);
+        let envs: BTreeMap<_, _> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.unwrap().to_os_string(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            envs["CAMERA_HUB_VOICE_CONFIG_FILE"],
+            root.join("custom-voice.json").as_os_str()
+        );
+        let mut command = Command::new("/usr/bin/true");
+        manager.configure_worker(&mut command, ComponentId::Ir);
+        let envs: BTreeMap<_, _> = command
+            .as_std()
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.unwrap().to_os_string(),
+                )
+            })
+            .collect();
+        assert_eq!(envs["CAMERA_HUB_IR_BIND"], "127.0.0.1:39222");
+        assert_eq!(
+            envs["CAMERA_HUB_IR_DEVICE"],
+            root.join("custom-ir").as_os_str()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(feature = "voice-workers")]
+    #[tokio::test]
+    async fn asset_resume_preserves_a_new_stop_intent() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-component-maintenance-{}-{}",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        let manager = test_manager(&root);
+        manager
+            .state
+            .lock()
+            .await
+            .components
+            .get_mut(&ComponentId::Voice)
+            .unwrap()
+            .desired_running = true;
+        let resume = manager.quiesce_for_asset("voice-kws").await.unwrap();
+        assert!(manager.state.lock().await.components[&ComponentId::Voice].maintenance);
+        manager
+            .stop_component(ComponentId::Voice, false)
+            .await
+            .unwrap();
+        manager
+            .resume_after_asset("voice-kws", resume)
+            .await
+            .unwrap();
+        let state = manager.state.lock().await;
+        assert!(!state.components[&ComponentId::Voice].maintenance);
+        assert!(!state.components[&ComponentId::Voice].desired_running);
+        assert!(state.components[&ComponentId::Voice].child.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_autostart_save_does_not_publish_setting() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-component-save-{}-{}",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        let mut manager = test_manager(&root);
+        Arc::get_mut(&mut manager).unwrap().settings_path = root.join("components.json/invalid");
+        assert!(manager.set_autostart("ddns", false).await.is_err());
+        assert!(manager.state.lock().await.settings.ddns_autostart);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn restart_does_not_spawn_before_old_child_exits() {
+        let root = std::env::temp_dir().join(format!(
+            "camera-hub-component-restart-{}-{}",
+            std::process::id(),
+            epoch_seconds()
+        ));
+        let manager = test_manager(&root);
+        let script = r#"import signal,sys,time
+signal.signal(signal.SIGTERM, lambda *_: (time.sleep(0.3), sys.exit(0)))
+print("ready", flush=True)
+while True: time.sleep(1)
+"#;
+        let mut child = Command::new("python3")
+            .args(["-u", "-c", script])
+            .stdout(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut reader = BufReader::new(child.stdout.take().unwrap());
+        let mut ready = String::new();
+        reader.read_line(&mut ready).await.unwrap();
+        assert_eq!(ready.trim(), "ready");
+        let old_pid = child.id().unwrap();
+        manager
+            .state
+            .lock()
+            .await
+            .components
+            .get_mut(&ComponentId::Ddns)
+            .unwrap()
+            .child = Some(child);
+        let stopping = manager.clone();
+        let task = tokio::spawn(async move {
+            stopping
+                .stop_component(ComponentId::Ddns, true)
+                .await
+                .unwrap()
+        });
+        // Observe the real stop boundary; no scheduler timing assumption.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let state = manager.state.lock().await;
+                let component = &state.components[&ComponentId::Ddns];
+                let boundary = component.desired_running && component.child.is_none();
+                drop(state);
+                if boundary {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        manager.spawn_component(ComponentId::Ddns).await.unwrap();
+        let replaced = manager.state.lock().await.components[&ComponentId::Ddns]
+            .child
+            .as_ref()
+            .and_then(Child::id);
+        let old_alive = unsafe { libc::kill(old_pid as libc::pid_t, 0) } == 0;
+        if old_alive {
+            assert!(
+                replaced.is_none(),
+                "replacement started while old child was alive"
+            );
+        }
+        task.await.unwrap();
+        manager.shutdown().await;
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_only_known_components() {

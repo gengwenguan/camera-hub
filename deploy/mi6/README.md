@@ -3,6 +3,7 @@
 该目录只包含小米 6 LinuxDeploy 环境所需的系统级安装与启动逻辑：
 
 - 安装单一 `/usr/local/bin/camera-hub` 可执行文件和 sherpa 共享库。
+- 新程序暂存并检查依赖后切换，保留 `camera-hub.previous`；启动失败时恢复上一版程序。
 - 配置 80/443 端口 capability、MI6 音频路由和 `rc.local`。
 - 通过 `camera-hub setup mi6` 初始化用户目录、环境文件和内部 TTS token。
 - 安装本机及边缘节点 ACME 辅助脚本。
@@ -16,7 +17,7 @@ SSH、源码同步和远端构建属于开发工作流，位于
 在项目根目录执行：
 
 ```bash
-# 仅同步源码
+# MI6 工作区干净时从其远程分支快进拉取
 scripts/dev/mi6-deploy.sh sync
 
 # 同步并执行锁定依赖的 release 构建
@@ -27,6 +28,8 @@ scripts/dev/mi6-deploy.sh push
 ```
 
 连接参数可通过 `HUB_HOST`、`HUB_USER`、`HUB_PASSWORD` 和 `REMOTE_DIR` 覆盖。
+修改、提交及推送在 MI6 完成，本地通过 Git 拉取。部署脚本不会用本地目录覆盖
+MI6 工作区；存在未提交改动时会拒绝同步和构建。
 项目依赖由 `Cargo.toml` 和 `Cargo.lock` 固定。部署脚本不读取开发机之外的相邻
 源码仓库，WebRTC 等依赖均由 Cargo 从其公开 GitHub 地址获取：
 

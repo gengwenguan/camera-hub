@@ -262,6 +262,7 @@ fn run_ai(
             let confidence = result.confidence;
             let inference_ms = inference.elapsed().as_secs_f64() * 1000.0;
             let mut snapshot = None;
+            let mut snapshot_error = None;
             if !result.detections.is_empty()
                 && snapshots.get(&device_id).is_none_or(|last| {
                     last.elapsed() >= Duration::from_secs(current_settings.ai_min_snapshot_seconds)
@@ -283,10 +284,11 @@ fn run_ai(
                             current_settings.ai_snapshot_max_count,
                         ) {
                             warn!(device_id, error = %format!("{error:#}"), "AI snapshot cleanup failed");
+                            snapshot_error = Some(format!("清理抓拍失败：{error:#}"));
                         }
                         snapshot = Some(path);
                     }
-                    Err(error) => update_error(&status, &device_id, error),
+                    Err(error) => snapshot_error = Some(format!("保存抓拍失败：{error:#}")),
                 }
             }
             let mut current = status.lock().unwrap_or_else(|error| error.into_inner());
@@ -294,7 +296,7 @@ fn run_ai(
             current.last_device_id.clone_from(&device_id);
             current.last_confidence = confidence;
             current.last_inference_ms = inference_ms;
-            current.last_error.clear();
+            current.last_error = snapshot_error.unwrap_or_default();
             if let Some(path) = snapshot {
                 current.detection_count = current.detection_count.saturating_add(1);
                 current.last_snapshot = path.to_string_lossy().into_owned();

@@ -33,7 +33,17 @@ use webrtc::track::track_local::track_local_static_sample::TrackLocalStaticSampl
 pub struct WebRtcRelay {
     frames: Arc<FrameHub>,
     benchmark: Arc<BenchmarkRegistry>,
-    sessions: Mutex<BTreeMap<String, Session>>,
+    sessions: Mutex<BTreeMap<String, SessionSlot>>,
+}
+
+struct SessionSlot {
+    id: String,
+    session: Option<Session>,
+}
+
+pub struct WebRtcAnswer {
+    pub sdp: String,
+    pub session_id: String,
 }
 
 impl WebRtcRelay {
@@ -50,7 +60,8 @@ impl WebRtcRelay {
         device_id: &str,
         offer: String,
         benchmark_id: Option<String>,
-    ) -> Result<String> {
+        mut session_id: String,
+    ) -> Result<WebRtcAnswer> {
         if offer.len() > 256 * 1024 || !offer.starts_with("v=0") || !offer.contains("\nm=") {
             bail!("invalid WebRTC offer");
         }
@@ -58,26 +69,69 @@ impl WebRtcRelay {
             .frames
             .subscribe(device_id)
             .context("device frame stream is not ready")?;
-        let (session, answer) = create_session(
+        if session_id.is_empty() {
+            let mut nonce = [0_u8; 16];
+            getrandom::fill(&mut nonce)?;
+            session_id = hex::encode(nonce);
+        }
+        if session_id.len() > 64
+            || !session_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            bail!("invalid WebRTC session ID");
+        }
+        let previous = self.sessions.lock().await.insert(
+            device_id.to_owned(),
+            SessionSlot {
+                id: session_id.clone(),
+                session: None,
+            },
+        );
+        if let Some(session) = previous.and_then(|slot| slot.session) {
+            session.close().await;
+        }
+        let result = create_session(
             device_id,
             offer,
             subscription,
             benchmark_id.map(|id| (self.benchmark.clone(), id)),
         )
-        .await?;
-        let previous = self
-            .sessions
-            .lock()
-            .await
-            .insert(device_id.to_owned(), session);
-        if let Some(previous) = previous {
-            previous.close().await;
+        .await;
+        let (session, sdp) = match result {
+            Ok(result) => result,
+            Err(error) => {
+                self.close(device_id, &session_id).await;
+                return Err(error);
+            }
+        };
+        let mut sessions = self.sessions.lock().await;
+        if let Some(slot) = sessions
+            .get_mut(device_id)
+            .filter(|slot| slot.id == session_id)
+        {
+            slot.session = Some(session);
+        } else {
+            drop(sessions);
+            session.close().await;
+            bail!("WebRTC session was cancelled or superseded");
         }
-        Ok(answer)
+        Ok(WebRtcAnswer { sdp, session_id })
     }
 
-    pub async fn close(&self, device_id: &str) {
-        if let Some(session) = self.sessions.lock().await.remove(device_id) {
+    pub async fn close(&self, device_id: &str, session_id: &str) {
+        let session = {
+            let mut sessions = self.sessions.lock().await;
+            if sessions
+                .get(device_id)
+                .is_some_and(|slot| slot.id == session_id)
+            {
+                sessions.remove(device_id).and_then(|slot| slot.session)
+            } else {
+                None
+            }
+        };
+        if let Some(session) = session {
             session.close().await;
         }
     }
@@ -422,13 +476,38 @@ fn rtp_payload(packet: &[u8]) -> Option<&[u8]> {
     } else {
         0
     };
+    if packet[0] & 0x20 != 0 && padding == 0 {
+        return None;
+    }
     let end = packet.len().checked_sub(padding)?;
-    (offset < end).then_some(&packet[offset..end])
+    if offset >= end {
+        return None;
+    }
+    packet.get(offset..end)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::rtp_payload;
+    use super::*;
+
+    #[tokio::test]
+    async fn stale_close_cannot_remove_new_session_or_pending_offer() {
+        let relay = WebRtcRelay::new(
+            Arc::new(FrameHub::default()),
+            Arc::new(BenchmarkRegistry::default()),
+        );
+        relay.sessions.lock().await.insert(
+            "front".to_owned(),
+            SessionSlot {
+                id: "new".to_owned(),
+                session: None,
+            },
+        );
+        relay.close("front", "old").await;
+        assert_eq!(relay.sessions.lock().await["front"].id, "new");
+        relay.close("front", "new").await;
+        assert!(relay.sessions.lock().await.is_empty());
+    }
 
     #[test]
     fn extracts_rtp_payload_with_csrc_extension_and_padding() {
@@ -440,5 +519,15 @@ mod tests {
             0, 0, 3, // padding
         ];
         assert_eq!(rtp_payload(&packet), Some(&[9, 8, 7][..]));
+    }
+
+    #[test]
+    fn malformed_rtp_extensions_and_padding_are_rejected() {
+        let mut packet = vec![0x90, 111, 0, 1, 0, 0, 0, 2, 0, 0, 0, 3];
+        packet.extend_from_slice(&[0xbe, 0xde, 0xff, 0xff]);
+        assert_eq!(rtp_payload(&packet), None);
+        packet[0] = 0xa0;
+        *packet.last_mut().unwrap() = 0;
+        assert_eq!(rtp_payload(&packet), None);
     }
 }

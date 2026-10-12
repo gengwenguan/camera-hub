@@ -689,6 +689,8 @@ async fn flv_stream(
 struct WebRtcOffer {
     sdp: String,
     #[serde(default)]
+    session_id: String,
+    #[serde(default)]
     benchmark: Option<String>,
 }
 
@@ -700,17 +702,25 @@ async fn relay_webrtc_offer(
     validate_device_id(&device_id)?;
     let answer = state
         .webrtc
-        .answer(&device_id, offer.sdp, offer.benchmark)
+        .answer(&device_id, offer.sdp, offer.benchmark, offer.session_id)
         .await?;
-    Ok(Json(json!({"sdp":answer})))
+    Ok(Json(
+        json!({"sdp":answer.sdp, "session_id":answer.session_id}),
+    ))
+}
+
+#[derive(Deserialize)]
+struct WebRtcCloseQuery {
+    session_id: String,
 }
 
 async fn close_relay_webrtc(
     State(state): State<Arc<AppState>>,
     Path(device_id): Path<String>,
+    Query(query): Query<WebRtcCloseQuery>,
 ) -> Result<StatusCode, ApiError> {
     validate_device_id(&device_id)?;
-    state.webrtc.close(&device_id).await;
+    state.webrtc.close(&device_id, &query.session_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

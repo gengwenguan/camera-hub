@@ -12,7 +12,7 @@ SHERPA_RUNTIME_SHA256="3575bde0543da12fc626c814c14287455f70a22b72caa483c7398d5f2
 ACTION="${1:-push}"
 
 SSH_OPTIONS=(-6 -o ServerAliveInterval=20 -o ServerAliveCountMax=30 \
-    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+    -o StrictHostKeyChecking=accept-new)
 if [[ -n "${HUB_PASSWORD}" ]]; then
     command -v sshpass >/dev/null || {
         echo "sshpass is required when HUB_PASSWORD is set" >&2
@@ -32,15 +32,15 @@ remote() {
 }
 
 sync_source() {
-    remote "mkdir -p '${REMOTE_DIR}'"
-    rsync -az --delete \
-        --exclude .git \
-        --exclude target \
-        --exclude .DS_Store \
-        --exclude '*.log' \
-        --exclude web-src/node_modules \
-        -e "${RSYNC_RSH}" \
-        "${ROOT_DIR}/" "${REMOTE}:${REMOTE_DIR}/"
+    remote "set -e
+        cd '${REMOTE_DIR}'
+        test -z \"\$(git status --porcelain)\" || {
+            echo 'MI6 checkout has local changes; commit them before deployment' >&2
+            exit 1
+        }
+        git pull --ff-only
+        git rev-parse HEAD
+    "
 }
 
 provision_ai() {
@@ -80,6 +80,8 @@ build_remote() {
     remote "set -e
         . /home/android/.cargo/env
         cd '${REMOTE_DIR}'
+        test -z \"\$(git status --porcelain)\"
+        git rev-parse HEAD
         SHERPA_ONNX_ARCHIVE_DIR='${SHERPA_CACHE_DIR}' \
         cargo build --locked --release --bin camera-hub --features voice-workers
         test -x target/release/camera-hub

@@ -419,6 +419,7 @@ class WebRtcRunner implements Runner {
   private peer?: RTCPeerConnection;
   private abort?: AbortController;
   private stopFrames?: () => void;
+  private readonly relaySessionId = "rtc" + Date.now().toString(36) + Math.random().toString(36).slice(2);
 
   constructor(video: HTMLVideoElement, deviceId: string, sessionId: string, metric: Metric) {
     this.video = video;
@@ -444,12 +445,14 @@ class WebRtcRunner implements Runner {
     peer.addTransceiver("video", { direction: "recvonly" });
     peer.addTransceiver("audio", { direction: "recvonly" });
     peer.ontrack = (event) => {
+      if (peer !== this.peer) return;
       if (!stream.getTracks().some((track) => track.id === event.track.id)) {
         stream.addTrack(event.track);
       }
       this.video.play().catch(() => this.metric.setStatus("等待自动播放权限", true));
     };
     peer.onconnectionstatechange = () => {
+      if (peer !== this.peer) return;
       if (peer.connectionState === "connected") this.metric.setStatus("播放中");
       else if (peer.connectionState === "failed") this.metric.setStatus("WebRTC 连接失败", true);
       else if (peer.connectionState === "disconnected") this.metric.setStatus("连接中断", true);
@@ -457,6 +460,7 @@ class WebRtcRunner implements Runner {
     };
     this.metric.setStatus("创建 WebRTC 会话");
     const offer = await peer.createOffer();
+    if (peer !== this.peer) return;
     await peer.setLocalDescription(offer);
     await waitForIce(peer);
     if (peer !== this.peer) return;
@@ -467,24 +471,32 @@ class WebRtcRunner implements Runner {
         method: "POST",
         cache: "no-store",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sdp: peer.localDescription?.sdp, benchmark: this.sessionId }),
+        body: JSON.stringify({ sdp: peer.localDescription?.sdp, benchmark: this.sessionId, session_id: this.relaySessionId }),
         signal: this.abort.signal,
       },
     );
     if (!response.ok) throw new Error(await response.text());
     const body = await response.json();
+    if (peer !== this.peer) {
+      await this.closeRelay();
+      return;
+    }
     await peer.setRemoteDescription({ type: "answer", sdp: body.sdp });
   }
 
   async stop(): Promise<void> {
-    this.abort?.abort();
     this.stopFrames?.();
     try { this.peer?.close(); } catch (_) {}
     resetVideo(this.video);
     this.peer = undefined;
+    await this.closeRelay();
+  }
+
+  private async closeRelay(): Promise<void> {
     try {
       await fetch(
-        "/api/v1/devices/" + encodeURIComponent(this.deviceId) + "/webrtc/offer",
+        "/api/v1/devices/" + encodeURIComponent(this.deviceId) +
+          "/webrtc/offer?session_id=" + encodeURIComponent(this.relaySessionId),
         { method: "DELETE", cache: "no-store", keepalive: true },
       );
     } catch (_) {}
@@ -558,6 +570,7 @@ class MoqRunner implements Runner {
 }
 
 class Evaluation {
+  private generation = 0;
   private running = false;
   private sessionId = "";
   private deviceId = "";
@@ -598,19 +611,25 @@ class Evaluation {
 
   async start(): Promise<void> {
     const requestedPerf = performance.now();
-    await this.stop();
+    void this.stop();
+    const generation = ++this.generation;
     this.deviceId = ui.device.value;
     if (!this.deviceId) {
       ui.status.textContent = "暂无可评测设备";
       return;
     }
     ui.status.textContent = "正在准备四路播放器";
+    this.running = true;
+    ui.start.disabled = true;
+    ui.stop.disabled = false;
+    ui.device.disabled = true;
     let moqConfig: MoqConfig = { enabled: false, running: false, fingerprints: [] };
     try {
       const response = await fetch("/api/v1/moq/status", { cache: "no-store" });
       if (response.ok) moqConfig = (await response.json()).moq || moqConfig;
     } catch (_) {}
 
+    if (generation !== this.generation) return;
     this.running = true;
     this.sessionId = typeof crypto.randomUUID === "function"
       ? crypto.randomUUID().replaceAll("-", "")
@@ -650,6 +669,7 @@ class Evaluation {
     this.pollTimer = window.setInterval(() => this.poll(), 500);
     void this.poll();
     const results = await Promise.allSettled(this.runners.map((runner) => runner.start()));
+    if (generation !== this.generation) return;
     results.forEach((result, index) => {
       if (result.status === "rejected") {
         this.metric(PROTOCOLS[index]).setStatus(
@@ -661,11 +681,13 @@ class Evaluation {
   }
 
   async stop(): Promise<void> {
+    const generation = ++this.generation;
     if (!this.running && !this.runners.length) return;
     this.running = false;
     clearInterval(this.pollTimer);
     this.pollTimer = 0;
     const sessionId = this.sessionId;
+    this.sessionId = "";
     const runners = this.runners.splice(0);
     await Promise.allSettled(runners.map((runner) => runner.stop()));
     if (sessionId) {
@@ -677,6 +699,7 @@ class Evaluation {
         });
       } catch (_) {}
     }
+    if (generation !== this.generation) return;
     this.metrics.forEach((metric) => {
       if (!metric.error) metric.setStatus("已停止");
     });

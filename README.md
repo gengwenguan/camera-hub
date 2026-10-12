@@ -134,7 +134,7 @@ camera-hub Web 的 WebRTC 直播执行：
 V831 H264/AAC → CHP1 WebSocket → camera-hub AAC→Opus → webrtc-rs → 浏览器
 ```
 
-浏览器通过 `POST /api/v1/devices/:id/webrtc/offer` 与 camera-hub 交换 SDP，之后使用
+浏览器通过 `POST /api/v1/devices/:id/webrtc/offer` 与 camera-hub 交换 SDP，请求可携带预先生成的 `session_id`，响应返回 `sdp` 和 `session_id`。关闭必须带对应 ID，旧会话关闭请求不会影响新连接。之后使用
 IPv6 ICE/DTLS/SRTP 直连 camera-hub。该路径不等待 fMP4 fragment，fMP4/MSE 直播则继续使用
 fMP4/MSE。
 
@@ -291,7 +291,7 @@ GET  /api/v1/moq/status
 GET  /api/v1/devices/:id/live              # WebSocket fMP4 实时流
 GET  /api/v1/devices/:id/live.flv          # HTTP chunked FLV 实时流
 POST /api/v1/devices/:id/webrtc/offer      # camera-hub WebRTC Offer/Answer
-DELETE /api/v1/devices/:id/webrtc/offer    # 关闭 camera-hub WebRTC 会话
+DELETE /api/v1/devices/:id/webrtc/offer?session_id=:session_id  # 只关闭对应会话
 GET  /api/v1/devices/:id/photos            # camera-hub AI 相册列表
 DELETE /api/v1/devices/:id/photos          # 清空该设备在 camera-hub 的 AI 照片
 DELETE /api/v1/devices/:id/photos/:name    # 删除单张 camera-hub AI 照片

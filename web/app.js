@@ -2218,18 +2218,32 @@
 
     async function selectDevice(deviceId) {
         if (!deviceId || deviceId === state.device) return;
-        await stopHubLive();
+        stopHubLive();
         stopRecordPlayback();
         state.device = deviceId;
         state.date = "";
         state.photoSelection.clear();
+        daysRequest += 1;
+        recordsRequest += 1;
+        photosRequest += 1;
+        ui.refreshPhotos.disabled = false;
+        state.photos = [];
+        renderPhotos();
+        renderRecords([]);
         renderDevices();
         renderDeviceSelect();
         await loadDays();
+        if (deviceId !== state.device) return;
         if (state.view === "photos") await loadPhotos();
     }
 
+    let daysRequest = 0;
+    let recordsRequest = 0;
+    let photosRequest = 0;
+
     async function loadDays() {
+        const request = ++daysRequest;
+        const deviceId = state.device;
         ui.dateSelect.replaceChildren();
         if (!state.device) {
             state.days = [];
@@ -2241,8 +2255,9 @@
         }
         try {
             const body = await api(
-                `/api/v1/devices/${encodeURIComponent(state.device)}/records/days`,
+                `/api/v1/devices/${encodeURIComponent(deviceId)}/records/days`,
             );
+            if (request !== daysRequest || deviceId !== state.device) return;
             state.days = Array.isArray(body.days) ? body.days : [];
             if (!state.days.some((item) => item.date === state.date)) {
                 state.date = state.days[0] ? state.days[0].date : "";
@@ -2262,11 +2277,15 @@
             ui.dateSelect.disabled = false;
             await loadRecords();
         } catch (error) {
+            if (request !== daysRequest || deviceId !== state.device) return;
             handleError(error);
         }
     }
 
     async function loadRecords() {
+        const request = ++recordsRequest;
+        const deviceId = state.device;
+        const date = state.date;
         if (!state.device || !state.date) {
             renderRecords([]);
             return;
@@ -2274,11 +2293,13 @@
         ui.summary.textContent = "正在读取远端录像目录…";
         try {
             const body = await api(
-                `/api/v1/devices/${encodeURIComponent(state.device)}` +
-                `/records/${encodeURIComponent(state.date)}`,
+                `/api/v1/devices/${encodeURIComponent(deviceId)}` +
+                `/records/${encodeURIComponent(date)}`,
             );
+            if (request !== recordsRequest || deviceId !== state.device || date !== state.date) return;
             renderRecords(Array.isArray(body.records) ? body.records : []);
         } catch (error) {
+            if (request !== recordsRequest || deviceId !== state.device || date !== state.date) return;
             handleError(error);
         }
     }
@@ -2343,6 +2364,8 @@
     }
 
     async function loadPhotos() {
+        const request = ++photosRequest;
+        const deviceId = state.device;
         if (!state.device) {
             state.photos = [];
             renderPhotos();
@@ -2352,8 +2375,9 @@
         ui.photoSummary.textContent = "正在读取节点 AI 抓拍…";
         try {
             const body = await api(
-                `/api/v1/devices/${encodeURIComponent(state.device)}/photos`,
+                `/api/v1/devices/${encodeURIComponent(deviceId)}/photos`,
             );
+            if (request !== photosRequest || deviceId !== state.device) return;
             state.photos = Array.isArray(body.photos) ? body.photos : [];
             const available = new Set(state.photos.map((photo) => photo.name));
             for (const name of state.photoSelection) {
@@ -2361,11 +2385,12 @@
             }
             renderPhotos();
         } catch (error) {
+            if (request !== photosRequest || deviceId !== state.device) return;
             state.photos = [];
             renderPhotos();
             handleError(error);
         } finally {
-            ui.refreshPhotos.disabled = false;
+            if (request === photosRequest && deviceId === state.device) ui.refreshPhotos.disabled = false;
         }
     }
 
@@ -2912,7 +2937,9 @@
         try {
             playbackAttachment = attachPlaybackSource();
             playbackSource = playbackAttachment.mediaSource;
-            if (!await waitForSourceOpen(playbackSource) || epoch !== playbackEpoch) {
+            const opened = await waitForSourceOpen(playbackSource);
+            if (epoch !== playbackEpoch) return;
+            if (!opened) {
                 fallbackNativePlayback(url, "媒体源打开失败", name, wantedTime);
                 return;
             }
@@ -3183,7 +3210,8 @@
     }
 
     async function startHubLive() {
-        await stopHubLive();
+        stopHubLive();
+        const session = liveSession;
         if (!state.device) {
             setLiveStatus("暂无在线设备");
             return;
@@ -3196,7 +3224,6 @@
         setLiveButtons(liveMode);
         ui.livePlayer.hidden = false;
         ui.moqPlayer.hidden = true;
-        const session = ++liveSession;
         setLiveStatus("正在初始化播放器…");
         try {
             liveAttachment = attachLiveSource();
@@ -3207,6 +3234,7 @@
                 liveAttachment.objectUrl = "";
             }
         } catch (error) {
+            if (session !== liveSession) return;
             liveMode = "";
             setLiveButtons();
             setLiveStatus(`播放器初始化失败：${error.message || error}`);
@@ -3239,7 +3267,8 @@
     }
 
     async function startHubFlv() {
-        await stopHubLive();
+        stopHubLive();
+        const session = liveSession;
         if (!state.device) {
             setLiveStatus("暂无在线设备");
             return;
@@ -3248,7 +3277,6 @@
             setLiveStatus("HTTP-FLV 播放组件尚未加载");
             return;
         }
-        const session = ++liveSession;
         liveMode = "flv";
         setLiveButtons(liveMode);
         ui.livePlayer.hidden = false;
@@ -3293,7 +3321,8 @@
     }
 
     async function startHubWebRtc() {
-        await stopHubLive();
+        stopHubLive();
+        const session = liveSession;
         if (!state.device) {
             setLiveStatus("暂无在线设备");
             return;
@@ -3303,7 +3332,8 @@
             return;
         }
         const deviceId = state.device;
-        const session = ++liveSession;
+        const sessionId = newWebRtcSessionId();
+        liveWebRtcSession = { deviceId, sessionId };
         liveMode = "webrtc";
         setLiveButtons(liveMode);
         ui.livePlayer.hidden = false;
@@ -3340,6 +3370,7 @@
         setLiveStatus("正在创建 camera-hub WebRTC 会话…");
         try {
             const offer = await peer.createOffer();
+            if (peer !== livePeer || session !== liveSession) return;
             await peer.setLocalDescription(offer);
             await waitForIceGathering(peer);
             if (peer !== livePeer || session !== liveSession) return;
@@ -3349,16 +3380,24 @@
                     method: "POST",
                     cache: "no-store",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ sdp: peer.localDescription.sdp }),
+                    body: JSON.stringify({ sdp: peer.localDescription.sdp, session_id: sessionId }),
                 },
             );
             if (!response.ok) throw new Error(await response.text());
             const body = await response.json();
+            if (peer !== livePeer || session !== liveSession) {
+                closeWebRtcSession(deviceId, sessionId);
+                return;
+            }
             await peer.setRemoteDescription({ type: "answer", sdp: body.sdp });
+            if (peer !== livePeer || session !== liveSession) return;
             setLiveStatus("WebRTC ICE/DTLS 连接中…");
         } catch (error) {
             try { peer.close(); } catch (_) {}
+            closeWebRtcSession(deviceId, sessionId);
+            if (session !== liveSession) return;
             if (livePeer === peer) livePeer = null;
+            liveWebRtcSession = null;
             liveMode = "";
             setLiveButtons();
             setLiveStatus(`WebRTC 协商失败：${error.message || error}`);
@@ -3366,7 +3405,9 @@
     }
 
     async function startHubMoq() {
-        await stopHubLive();
+        stopHubLive();
+        const session = liveSession;
+        const deviceId = state.device;
         if (!state.device) {
             setLiveStatus("暂无在线设备");
             return;
@@ -3379,15 +3420,18 @@
             setLiveStatus("MoQ 播放组件尚未加载");
             return;
         }
+        liveMode = "moq";
+        setLiveButtons(liveMode);
+        setLiveStatus("正在检查 MoQ 服务…");
         try {
             const body = await api("/api/v1/moq/status");
+            if (session !== liveSession || deviceId !== state.device) return;
             const moq = body && body.moq || {};
             if (!moq.enabled || !moq.running) {
                 throw new Error(moq.last_error || "MoQ 服务未启动");
             }
             let host = location.hostname;
             if (host.includes(":") && !host.startsWith("[")) host = `[${host}]`;
-            const session = ++liveSession;
             liveMode = "moq";
             setLiveButtons(liveMode);
             ui.livePlayer.hidden = true;
@@ -3397,7 +3441,7 @@
                 ui.moqPlayer,
                 {
                     url: `https://${host}:443/?token=${encodeURIComponent(moq.auth_token || "")}`,
-                    name: `${state.device}.msf`,
+                    name: `${deviceId}.msf`,
                     fingerprints: Array.isArray(moq.fingerprints) ? moq.fingerprints : [],
                     latencyMinMs: 200,
                     latencyMaxMs: 600,
@@ -3414,6 +3458,7 @@
                 },
             );
         } catch (error) {
+            if (session !== liveSession) return;
             ui.livePlayer.hidden = false;
             ui.moqPlayer.hidden = true;
             liveMode = "";
@@ -3422,9 +3467,24 @@
         }
     }
 
-    async function stopHubLive() {
-        const deviceId = state.device;
-        const wasWebRtc = liveMode === "webrtc";
+    let liveWebRtcSession = null;
+
+    function newWebRtcSessionId() {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+
+    function closeWebRtcSession(deviceId, sessionId) {
+        return fetch(
+            `/api/v1/devices/${encodeURIComponent(deviceId)}/webrtc/offer?session_id=${encodeURIComponent(sessionId)}`,
+            { method: "DELETE", cache: "no-store", keepalive: true },
+        ).catch(() => {});
+    }
+
+    function stopHubLive() {
+        const webRtcSession = liveWebRtcSession;
+        liveWebRtcSession = null;
         liveSession += 1;
         const socket = liveSocket;
         liveSocket = null;
@@ -3468,13 +3528,8 @@
         liveStarted = false;
         setLiveButtons();
         setLiveStatus("尚未开始");
-        if (wasWebRtc && deviceId) {
-            try {
-                await fetch(
-                    `/api/v1/devices/${encodeURIComponent(deviceId)}/webrtc/offer`,
-                    { method: "DELETE", cache: "no-store", keepalive: true },
-                );
-            } catch (_) {}
+        if (webRtcSession) {
+            void closeWebRtcSession(webRtcSession.deviceId, webRtcSession.sessionId);
         }
     }
 

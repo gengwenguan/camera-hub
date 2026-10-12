@@ -25,19 +25,24 @@ EDGE_ACME_KEY="/home/android/.ssh/camera-hub-edge-acme-rsa"
     exit 1
 }
 
+STAGED_BINARY="/usr/local/bin/.camera-hub-upgrade-$$"
+trap 'rm -f "$STAGED_BINARY"' EXIT INT TERM
+
 install -d "$VOICE_LIB_DIR"
 for library in "$(dirname "$BINARY")"/libonnxruntime.so* \
     "$(dirname "$BINARY")"/libsherpa-onnx-c-api.so*; do
     [ -f "$library" ] || continue
-    install -m 0755 "$library" "$VOICE_LIB_DIR/$(basename "$library")"
+    destination="$VOICE_LIB_DIR/$(basename "$library")"
+    install -m 0755 "$library" "${destination}.new"
+    mv -f "${destination}.new" "$destination"
 done
 printf '%s\n' "$VOICE_LIB_DIR" > "$VOICE_LD_CONFIG"
 ldconfig
-install -m 0755 "$BINARY" /usr/local/bin/camera-hub
-setcap cap_net_bind_service=+ep /usr/local/bin/camera-hub
-if ldd /usr/local/bin/camera-hub | grep -q 'not found'; then
+install -m 0755 "$BINARY" "$STAGED_BINARY"
+setcap cap_net_bind_service=+ep "$STAGED_BINARY"
+if ldd "$STAGED_BINARY" | grep -q 'not found'; then
     echo "camera-hub has unresolved shared libraries:" >&2
-    ldd /usr/local/bin/camera-hub >&2
+    ldd "$STAGED_BINARY" >&2
     exit 1
 fi
 install -m 0755 "$SCRIPT_DIR/audio.sh" "$VOICE_AUDIO"
@@ -66,14 +71,14 @@ if [ ! -f "$DDNS_CONFIG_FILE" ]; then
             set -a
             . '$DDNS_ENV_FILE'
             set +a
-            /usr/local/bin/camera-hub worker ddns \
+            '$STAGED_BINARY' worker ddns \
                 --config-file '$DDNS_CONFIG_FILE' --write-config
         "
     fi
 fi
 
 su -s /bin/sh android -c \
-    "/usr/local/bin/camera-hub setup mi6 --home /home/android"
+    "'$STAGED_BINARY' setup mi6 --home /home/android"
 chown android:android "$DDNS_CONFIG_FILE"
 chmod 0600 "$DDNS_CONFIG_FILE"
 if [ -f "$DDNS_STATUS_FILE" ]; then
@@ -172,6 +177,9 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
     fi
     sleep 1
 done
+if pgrep -f '^/usr/local/bin/camera-hub( |$)' >/dev/null 2>&1; then
+    pkill -9 -f '^/usr/local/bin/camera-hub( |$)' 2>/dev/null || true
+fi
 pkill -f '[c]amera-hub-mux' 2>/dev/null || true
 pkill -f '[c]amera-hub-opus' 2>/dev/null || true
 sleep 1
@@ -185,6 +193,10 @@ rm -f \
     /usr/local/bin/camera-hub-voice \
     /usr/local/bin/camera-hub-voice-start \
     /usr/local/bin/camera-hub-service-control
+if [ -x /usr/local/bin/camera-hub ]; then
+    install -m 0755 /usr/local/bin/camera-hub /usr/local/bin/camera-hub.previous
+fi
+mv -f "$STAGED_BINARY" /usr/local/bin/camera-hub
 "$VOICE_AUDIO" setup > /home/android/camera-hub-audio.log 2>&1 || {
     echo "warning: MI6 audio routing setup failed; see /home/android/camera-hub-audio.log" >&2
 }
@@ -202,6 +214,16 @@ done
 if [ "$hub_ready" -ne 1 ]; then
     echo "camera-hub failed to become ready" >&2
     tail -n 120 /home/android/camera-hub.log >&2 || true
+    if [ -x /usr/local/bin/camera-hub.previous ]; then
+        pkill -f '[c]amera-hub-start' 2>/dev/null || true
+        pkill -9 -f '^/usr/local/bin/camera-hub( |$)' 2>/dev/null || true
+        install -m 0755 /usr/local/bin/camera-hub.previous "$STAGED_BINARY"
+        setcap cap_net_bind_service=+ep "$STAGED_BINARY"
+        mv -f "$STAGED_BINARY" /usr/local/bin/camera-hub
+        su -s /bin/sh android -c \
+            'nohup /usr/local/bin/camera-hub-start >> /home/android/camera-hub.log 2>&1 &'
+        echo "restored previous camera-hub binary" >&2
+    fi
     exit 1
 fi
 curl -g -fsS 'http://[::1]/health'; echo
