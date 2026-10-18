@@ -274,6 +274,17 @@
     const VOICE_VIEWS = new Set(["commands", "profile", "public", "status", "aircon"]);
     const ROOT_VIEWS = new Set(["overview", "voice", "qq", "ddns"]);
 
+    // Android 9 devices may ship WebView versions without structuredClone.
+    const cloneJson = (value) => {
+        if (value == null) return value;
+        if (typeof structuredClone === "function") return structuredClone(value);
+        return JSON.parse(JSON.stringify(value));
+    };
+
+    const clearChildren = (element) => {
+        while (element.firstChild) element.removeChild(element.firstChild);
+    };
+
     async function api(path, options = {}) {
         const response = await fetch(path, { cache: "no-store", ...options });
         if (response.status === 401) {
@@ -594,7 +605,7 @@
         }
 
         if (!state.voiceDirty && !state.voiceProfileBusy) {
-            state.voiceConfig = structuredClone(config);
+            state.voiceConfig = cloneJson(config);
             ui.voiceEnabled.checked = !!config.enabled;
             ui.voiceCaptureDevice.value = config.capture_device || "hw:0,0";
             ui.voicePlaybackDevice.value = config.playback_device || "plughw:0,0";
@@ -613,7 +624,7 @@
     function renderVoiceStudio(publicStudio) {
         const enabled = publicStudio.enabled !== false;
         const url = publicStudio.url || `${location.origin}/voice-studio`;
-        state.voiceStudio = structuredClone(publicStudio);
+        state.voiceStudio = cloneJson(publicStudio);
         ui.voiceStudioStatus.textContent = enabled ? "已开放" : "已关闭";
         ui.voiceStudioStatus.className = `chip ${enabled ? "active" : "offline"}`;
         if (!state.voiceStudioDirty) {
@@ -737,7 +748,7 @@
     };
 
     function renderAircon(aircon, available) {
-        state.aircon = structuredClone(aircon || {});
+        state.aircon = cloneJson(aircon || {});
         const current = aircon.state || {};
         ui.airconStateKnown.textContent = aircon.state_known ? "已有发送记录" : "使用默认值";
         ui.airconStatePower.textContent = current.power ? "开启" : "关闭";
@@ -994,7 +1005,7 @@
     }
 
     function renderVoiceAssets(assets) {
-        state.voiceAssets = structuredClone(assets);
+        state.voiceAssets = cloneJson(assets);
         state.voiceAssetsInstalling = !!assets.busy;
         const entries = [
             ["voice-tts", assets.voice_tts || {}],
@@ -1293,7 +1304,7 @@
     }
 
     function collectVoiceConfig() {
-        const config = structuredClone(state.voiceConfig || {});
+        const config = cloneJson(state.voiceConfig || {});
         config.enabled = ui.voiceEnabled.checked;
         config.capture_device = ui.voiceCaptureDevice.value.trim();
         config.playback_device = ui.voicePlaybackDevice.value.trim();
@@ -1336,7 +1347,7 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify(collectVoiceConfig()),
             });
-            state.voiceConfig = structuredClone(body.config);
+            state.voiceConfig = cloneJson(body.config);
             state.voiceDirty = false;
             showToast("语音控制配置已保存");
             await loadVoice(true);
@@ -1516,7 +1527,7 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ audio_base64: await blobToBase64(wav) }),
             });
-            state.voiceConfig = structuredClone(response.config);
+            state.voiceConfig = cloneJson(response.config);
             state.voiceDirty = false;
             showToast("声纹已录入，正在重新生成全部回复");
         } catch (error) {
@@ -1541,7 +1552,7 @@
         setVoiceProfileBusy(true);
         try {
             const response = await api("/api/v1/voice/reference", { method: "DELETE" });
-            state.voiceConfig = structuredClone(response.config);
+            state.voiceConfig = cloneJson(response.config);
             state.voiceDirty = false;
             if (state.voicePreviewUrl) URL.revokeObjectURL(state.voicePreviewUrl);
             state.voicePreviewUrl = "";
@@ -1651,7 +1662,7 @@
         );
 
         if (!state.qqDirty) {
-            state.qqConfig = structuredClone(config);
+            state.qqConfig = cloneJson(config);
             ui.qqEnabled.checked = !!config.enabled;
             ui.qqAppId.value = config.app_id || "";
             ui.qqAppSecret.value = "";
@@ -1738,8 +1749,8 @@
     }
 
     function renderQqGroups(groups, defaultGroup) {
-        ui.qqDefaultGroup.replaceChildren();
-        ui.qqTestTarget.replaceChildren();
+        clearChildren(ui.qqDefaultGroup);
+        clearChildren(ui.qqTestTarget);
         ui.qqTestTarget.add(new Option("默认群", "default"));
         if (!groups.length) {
             ui.qqDefaultGroup.add(new Option("尚未发现群", ""));
@@ -1948,7 +1959,7 @@
         renderDdnsComponent(components.ddns || {}, !!components.control_available);
 
         if (!state.ddnsDirty) {
-            state.ddnsConfig = structuredClone(config);
+            state.ddnsConfig = cloneJson(config);
             ui.ddnsEnabled.checked = !!config.enabled;
             ui.ddnsDomain.value = config.domain || "";
             ui.ddnsSecretId.value = config.secret_id || "";
@@ -2197,7 +2208,7 @@
             ui.liveDeviceSelect,
             ui.photoDeviceSelect,
         ]) {
-            select.replaceChildren();
+            clearChildren(select);
             if (!state.devices.length) {
                 select.add(new Option("暂无设备", ""));
                 select.disabled = true;
@@ -2244,7 +2255,7 @@
     async function loadDays() {
         const request = ++daysRequest;
         const deviceId = state.device;
-        ui.dateSelect.replaceChildren();
+        clearChildren(ui.dateSelect);
         if (!state.device) {
             state.days = [];
             state.date = "";
@@ -3490,7 +3501,7 @@
         liveSocket = null;
         try { window.CameraHubFlv && window.CameraHubFlv.stop(); } catch (_) {}
         try { window.CameraHubMoq && window.CameraHubMoq.stop(); } catch (_) {}
-        ui.moqPlayer.replaceChildren();
+        clearChildren(ui.moqPlayer);
         ui.moqPlayer.hidden = true;
         ui.livePlayer.hidden = false;
         if (socket) {
@@ -3590,11 +3601,11 @@
 
     function esc(value) {
         return String(value == null ? "" : value)
-            .replaceAll("&", "&amp;")
-            .replaceAll("<", "&lt;")
-            .replaceAll(">", "&gt;")
-            .replaceAll('"', "&quot;")
-            .replaceAll("'", "&#039;");
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
     }
 
     ui.refresh.addEventListener("click", () => refreshAll());

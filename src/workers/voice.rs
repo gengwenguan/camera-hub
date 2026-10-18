@@ -200,7 +200,7 @@ pub async fn run(args: Vec<OsString>) -> Result<()> {
     };
     write_status(&args.status, &status)?;
 
-    let client = Client::builder()
+    let client = camera_hub::http_client::builder()?
         .connect_timeout(Duration::from_secs(3))
         .build()
         .context("build HTTP client")?;
@@ -617,7 +617,7 @@ async fn transcribe_once(
     let mut stdout = child
         .stdout
         .take()
-        .ok_or_else(|| anyhow::anyhow!("无法读取 arecord 音频输出"))?;
+        .ok_or_else(|| anyhow::anyhow!("无法读取录音输出"))?;
     let stream = recognizer.create_stream();
     let mut buffer = vec![0u8; 8192];
     let mut pending_pcm_byte = None;
@@ -631,12 +631,12 @@ async fn transcribe_once(
         let count = match tokio::time::timeout(Duration::from_millis(500), stdout.read(&mut buffer))
             .await
         {
-            Ok(result) => result.context("read arecord audio")?,
+            Ok(result) => result.context("读取录音数据")?,
             Err(_) => continue,
         };
         if count == 0 {
-            let exit = child.wait().await.context("wait for arecord")?;
-            break Err(anyhow::anyhow!("arecord 已退出：{exit}"));
+            let exit = child.wait().await.context("等待录音进程退出")?;
+            break Err(anyhow::anyhow!("录音进程已退出：{exit}"));
         }
         let samples = pcm_i16_to_f32(&buffer[..count], &mut pending_pcm_byte);
         status.audio_rms = rms(&samples);
@@ -669,7 +669,7 @@ async fn capture_once(
     let mut stdout = child
         .stdout
         .take()
-        .ok_or_else(|| anyhow::anyhow!("无法读取 arecord 音频输出"))?;
+        .ok_or_else(|| anyhow::anyhow!("无法读取录音输出"))?;
     // Without fixed commands, the model's default keyword is also 小雨. Do not
     // create a second stream that could consume it as an unmapped command.
     let command_stream = config
@@ -737,7 +737,7 @@ async fn capture_once(
 
         let count =
             match tokio::time::timeout(Duration::from_secs(1), stdout.read(&mut buffer)).await {
-                Ok(result) => result.context("read arecord audio")?,
+                Ok(result) => result.context("读取录音数据")?,
                 Err(_) => {
                     if last_status.elapsed() >= STATUS_INTERVAL {
                         write_status(&context.args.status, status)?;
@@ -747,8 +747,8 @@ async fn capture_once(
                 }
             };
         if count == 0 {
-            let exit = child.wait().await.context("wait for arecord")?;
-            bail!("arecord 已退出：{exit}");
+            let exit = child.wait().await.context("等待录音进程退出")?;
+            bail!("录音进程已退出：{exit}");
         }
 
         let samples = pcm_i16_to_f32(&buffer[..count], &mut pending_pcm_byte);
@@ -894,6 +894,19 @@ fn command_for_phrase(config: &VoiceConfig, phrase: &str) -> Option<VoiceCommand
         })
 }
 
+#[cfg(feature = "android-app")]
+fn spawn_capture(config: &VoiceConfig) -> Result<Child> {
+    Command::new(std::env::current_exe()?)
+        .arg("android-capture")
+        .arg(config.capture_rate.to_string())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true)
+        .spawn()
+        .context("启动 Android AudioRecord 采集")
+}
+
+#[cfg(not(feature = "android-app"))]
 fn spawn_capture(config: &VoiceConfig) -> Result<Child> {
     let capture_rate = config.capture_rate.to_string();
     Command::new("arecord")
@@ -922,6 +935,8 @@ fn spawn_capture(config: &VoiceConfig) -> Result<Child> {
 async fn stop_capture(child: &mut Child) {
     let _ = child.kill().await;
     let _ = child.wait().await;
+    #[cfg(feature = "android-app")]
+    tokio::time::sleep(Duration::from_millis(150)).await;
 }
 
 fn cooling_down(
@@ -1146,6 +1161,12 @@ async fn speak(
     Ok(None)
 }
 
+#[cfg(feature = "android-app")]
+async fn speak_espeak(text: &str, _device: &str, volume: u8, _wav: &Path) -> Result<()> {
+    crate::platform::android::speak(text, volume).await
+}
+
+#[cfg(not(feature = "android-app"))]
 async fn speak_espeak(
     text: &str,
     playback_device: &str,
@@ -1171,6 +1192,12 @@ async fn speak_espeak(
     result
 }
 
+#[cfg(feature = "android-app")]
+async fn play_wav(wav: &Path, _device: &str) -> Result<()> {
+    crate::platform::android::play(wav).await
+}
+
+#[cfg(not(feature = "android-app"))]
 async fn play_wav(wav: &Path, playback_device: &str) -> Result<()> {
     let status = Command::new("aplay")
         .args(["-q", "-D", playback_device])

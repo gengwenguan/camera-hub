@@ -68,7 +68,7 @@ impl VoiceTtsClient {
         }
         let base_url = base_url.trim_end_matches('/').to_owned();
         Ok(Self {
-            client: Client::builder()
+            client: camera_hub::http_client::builder()?
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(300))
                 .build()?,

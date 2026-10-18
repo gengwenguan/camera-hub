@@ -19,6 +19,7 @@ await Promise.all(
       bundle: true,
       format: "esm",
       minify: true,
+      target: "chrome80",
       banner: {
         js: `// Generated from web-src/${name}.ts by npm run build. Do not edit.`,
       },

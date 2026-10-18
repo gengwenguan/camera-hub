@@ -22,6 +22,7 @@ const API_VERSION: &str = "2021-03-23";
 const CONTENT_TYPE_JSON: &str = "application/json; charset=utf-8";
 const SIGNED_HEADERS: &str = "content-type;host;x-tc-action";
 const ADDRESS_FLAG_TEMPORARY: u32 = 0x01;
+const ADDRESS_FLAG_OPTIMISTIC: u32 = 0x04;
 const ADDRESS_FLAG_DAD_FAILED: u32 = 0x08;
 const ADDRESS_FLAG_DEPRECATED: u32 = 0x20;
 const ADDRESS_FLAG_TENTATIVE: u32 = 0x40;
@@ -380,7 +381,7 @@ impl DdnsConfigStore {
 
 impl DnspodClient {
     fn new(config: &DdnsConfig, endpoint: &str) -> Result<Self> {
-        let http = reqwest::Client::builder()
+        let http = crate::http_client::builder()?
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(20))
             .user_agent(concat!("camera-hub-ddns/", env!("CARGO_PKG_VERSION")))
@@ -764,7 +765,16 @@ fn valid_record_name(name: &str) -> bool {
 }
 
 fn read_stable_global_ipv6(interface: &str) -> Result<Ipv6Addr> {
+    #[cfg(not(feature = "android-app"))]
     let contents = fs::read_to_string("/proc/net/if_inet6").context("读取 /proc/net/if_inet6")?;
+    #[cfg(feature = "android-app")]
+    let contents = {
+        let (response, _) = crate::android_bridge::exchange(json!({"op": "network"}))?;
+        response["if_inet6"]
+            .as_str()
+            .context("Android IPv6 interface data")?
+            .to_owned()
+    };
     stable_global_ipv6(&contents, interface)
 }
 
@@ -779,11 +789,16 @@ fn stable_global_ipv6(contents: &str, interface: &str) -> Result<Ipv6Addr> {
         let prefix_len = u8::from_str_radix(fields[2], 16)?;
         let scope = u8::from_str_radix(fields[3], 16)?;
         let flags = u32::from_str_radix(fields[4], 16)?;
-        let rejected_flags = ADDRESS_FLAG_TEMPORARY
-            | ADDRESS_FLAG_DAD_FAILED
-            | ADDRESS_FLAG_DEPRECATED
-            | ADDRESS_FLAG_TENTATIVE;
-        if prefix_len == 64 && scope == 0 && flags & rejected_flags == 0 && value >> 125 == 1 {
+        let rejected_flags =
+            ADDRESS_FLAG_TEMPORARY | ADDRESS_FLAG_DAD_FAILED | ADDRESS_FLAG_DEPRECATED;
+        let unusable_tentative =
+            flags & ADDRESS_FLAG_TENTATIVE != 0 && flags & ADDRESS_FLAG_OPTIMISTIC == 0;
+        if prefix_len == 64
+            && scope == 0
+            && flags & rejected_flags == 0
+            && !unusable_tentative
+            && value >> 125 == 1
+        {
             return Ok(Ipv6Addr::from(value));
         }
     }
@@ -938,6 +953,20 @@ fe80000000000000528f4cfffeefdd90 1a 40 20 80 wlan0
     fn selects_stable_global_address_and_ignores_temporary_deprecated() {
         assert_eq!(
             stable_global_ipv6(PROC_IPV6, "wlan0").unwrap(),
+            "2409:8a1e:7a52:c9b0:528f:4cff:feef:dd90"
+                .parse::<Ipv6Addr>()
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn accepts_android_optimistic_stable_address() {
+        let android = "\
+24098a1e7a52c9b08048176b83437ea7 00 40 00 45 wlan0
+24098a1e7a52c9b0528f4cfffeefdd90 00 40 00 44 wlan0
+";
+        assert_eq!(
+            stable_global_ipv6(android, "wlan0").unwrap(),
             "2409:8a1e:7a52:c9b0:528f:4cff:feef:dd90"
                 .parse::<Ipv6Addr>()
                 .unwrap()

@@ -147,7 +147,7 @@ impl IrAction {
         }
     }
 
-    fn definition(self) -> IrActionDefinition {
+    pub(crate) fn definition(self) -> IrActionDefinition {
         match self {
             Self::AcOn => IrActionDefinition {
                 id: self.id(),

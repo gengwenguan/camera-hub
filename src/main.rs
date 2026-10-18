@@ -16,6 +16,7 @@ mod live;
 mod media;
 mod moq_live;
 mod mux;
+mod platform;
 mod qq;
 mod record_file;
 mod settings;
@@ -91,6 +92,14 @@ struct ComponentAutostartUpdate {
 #[tokio::main]
 async fn main() -> Result<()> {
     let arguments = std::env::args_os().collect::<Vec<_>>();
+    #[cfg(feature = "android-app")]
+    {
+        let command = arguments.get(1).and_then(|value| value.to_str());
+        platform::android::initialize(matches!(command, None | Some("server")))?;
+        if command == Some("android-capture") {
+            return platform::android::run_capture(&arguments);
+        }
+    }
     if arguments.get(1).and_then(|value| value.to_str()) == Some("setup") {
         let setup_arguments = std::iter::once(OsString::from("camera-hub setup"))
             .chain(arguments.iter().skip(2).cloned())
@@ -325,6 +334,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         let tls_app = app.clone().layer(Extension(auth::TransportSecurity {
             secure: true,
             tls_available: true,
+            tls_port: config.tls_bind.port(),
         }));
         info!(%bind, "camera-hub HTTPS started");
         tls_task = Some(tokio::spawn(async move {
@@ -355,6 +365,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         app.layer(Extension(auth::TransportSecurity {
             secure: false,
             tls_available,
+            tls_port: config.tls_bind.port(),
         }))
         .into_make_service_with_connect_info::<SocketAddr>(),
     )

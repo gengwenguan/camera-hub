@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Read;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -21,6 +21,7 @@ const COOKIE_NAME: &str = "camera_hub_session";
 pub struct TransportSecurity {
     pub secure: bool,
     pub tls_available: bool,
+    pub tls_port: u16,
 }
 
 pub struct WebAuth {
@@ -113,18 +114,20 @@ pub async fn require_auth(request: Request, next: Next) -> Response {
         .unwrap_or(TransportSecurity {
             secure: false,
             tls_available: false,
+            tls_port: 443,
         });
+    let local = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|peer| is_loopback(peer.0.ip()));
     if voice_studio_path(request.uri().path()) && !transport.secure {
-        if transport.tls_available {
+        if should_redirect_to_https(transport, local) {
             return https_redirect(
                 request.headers(),
                 request.uri().path_and_query().map(|value| value.as_str()),
+                transport.tls_port,
             );
         }
-        let local = request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .is_some_and(|peer| peer.0.ip().is_loopback());
         if !local {
             return (
                 StatusCode::UPGRADE_REQUIRED,
@@ -139,10 +142,11 @@ pub async fn require_auth(request: Request, next: Next) -> Response {
     if public_path(request.method().as_str(), request.uri().path()) {
         return next.run(request).await;
     }
-    if !transport.secure && transport.tls_available {
+    if should_redirect_to_https(transport, local) {
         return https_redirect(
             request.headers(),
             request.uri().path_and_query().map(|v| v.as_str()),
+            transport.tls_port,
         );
     }
     let authorized = request
@@ -195,10 +199,11 @@ fn public_path(method: &str, path: &str) -> bool {
 pub async fn login_page(
     Extension(auth): Extension<Arc<WebAuth>>,
     Extension(transport): Extension<TransportSecurity>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if !transport.secure && transport.tls_available {
-        return https_redirect(&headers, Some("/login"));
+    if should_redirect_to_https(transport, is_loopback(peer.ip())) {
+        return https_redirect(&headers, Some("/login"), transport.tls_port);
     }
     if auth.authorized(&headers) {
         return redirect("/", StatusCode::SEE_OTHER);
@@ -209,11 +214,12 @@ pub async fn login_page(
 pub async fn login(
     Extension(auth): Extension<Arc<WebAuth>>,
     Extension(transport): Extension<TransportSecurity>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Response {
-    if !transport.secure && transport.tls_available {
-        return https_redirect(&headers, Some("/login"));
+    if should_redirect_to_https(transport, is_loopback(peer.ip())) {
+        return https_redirect(&headers, Some("/login"), transport.tls_port);
     }
     if !auth.verify(&request.username, &request.password) {
         return (
@@ -241,16 +247,30 @@ pub async fn logout(Extension(transport): Extension<TransportSecurity>) -> Respo
     response
 }
 
-fn https_redirect(headers: &HeaderMap, path: Option<&str>) -> Response {
+fn https_redirect(headers: &HeaderMap, path: Option<&str>, tls_port: u16) -> Response {
     let host = headers
         .get(HOST)
         .and_then(|value| value.to_str().ok())
         .map(without_port)
         .unwrap_or("mi6.gwghome.site");
+    let authority = if tls_port == 443 {
+        host.to_owned()
+    } else {
+        format!("{host}:{tls_port}")
+    };
     redirect(
-        &format!("https://{host}{}", path.unwrap_or("/")),
+        &format!("https://{authority}{}", path.unwrap_or("/")),
         StatusCode::TEMPORARY_REDIRECT,
     )
+}
+
+fn should_redirect_to_https(transport: TransportSecurity, local: bool) -> bool {
+    !transport.secure && transport.tls_available && !local
+}
+
+fn is_loopback(ip: IpAddr) -> bool {
+    ip.is_loopback()
+        || matches!(ip, IpAddr::V6(value) if value.to_ipv4_mapped().is_some_and(|v4| v4.is_loopback()))
 }
 
 fn redirect(location: &str, status: StatusCode) -> Response {
@@ -389,6 +409,40 @@ mod tests {
     fn strips_http_port_but_preserves_ipv6_brackets() {
         assert_eq!(without_port("mi6.gwghome.site:80"), "mi6.gwghome.site");
         assert_eq!(without_port("[2409::1]:80"), "[2409::1]");
+    }
+
+    #[test]
+    fn redirects_to_configured_tls_port() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HOST, HeaderValue::from_static("mi6.gwghome.site:8080"));
+        let response = https_redirect(&headers, Some("/login"), 8443);
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers().get(LOCATION).unwrap(),
+            "https://mi6.gwghome.site:8443/login"
+        );
+
+        headers.insert(HOST, HeaderValue::from_static("[2409::1]:8080"));
+        let response = https_redirect(&headers, Some("/"), 8443);
+        assert_eq!(
+            response.headers().get(LOCATION).unwrap(),
+            "https://[2409::1]:8443/"
+        );
+    }
+
+    #[test]
+    fn permits_loopback_http_without_disabling_remote_https() {
+        let transport = TransportSecurity {
+            secure: false,
+            tls_available: true,
+            tls_port: 8443,
+        };
+        assert!(!should_redirect_to_https(transport, true));
+        assert!(should_redirect_to_https(transport, false));
+        assert!(is_loopback("127.0.0.1".parse().unwrap()));
+        assert!(is_loopback("::1".parse().unwrap()));
+        assert!(is_loopback("::ffff:127.0.0.1".parse().unwrap()));
+        assert!(!is_loopback("192.168.1.18".parse().unwrap()));
     }
 
     #[test]

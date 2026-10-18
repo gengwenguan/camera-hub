@@ -76,57 +76,9 @@ async fn run_muxer(
     let audio = connected_udp_sender(audio_port).await?;
     let video_url = format!("udp://127.0.0.1:{video_port}?fifo_size=1000000&overrun_nonfatal=1");
     let audio_url = format!("udp://127.0.0.1:{audio_port}?fifo_size=1000000&overrun_nonfatal=1");
-    let mut child = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-fflags",
-            "+genpts",
-            "-thread_queue_size",
-            "512",
-            "-framerate",
-            "30",
-            "-f",
-            "h264",
-            "-i",
-            &video_url,
-            "-thread_queue_size",
-            "512",
-            "-f",
-            "aac",
-            "-i",
-            &audio_url,
-            "-map",
-            "0:v:0",
-            "-map",
-            "1:a:0",
-            "-c",
-            "copy",
-            "-bsf:a",
-            "aac_adtstoasc",
-            "-metadata",
-            "comment=camera-hub-mux",
-            "-video_track_timescale",
-            "90000",
-            "-max_interleave_delta",
-            "1000000",
-            "-movflags",
-            "delay_moov+default_base_moof+frag_keyframe",
-            "-frag_duration",
-            "1000000",
-            "-flush_packets",
-            "1",
-            "-f",
-            "mp4",
-            "pipe:1",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .context("start FFmpeg H264/AAC muxer")?;
+    let mut command = Command::from(crate::platform::ffmpeg_command());
+    configure_muxer_command(&mut command, &video_url, &audio_url);
+    let mut child = command.spawn().context("start FFmpeg H264/AAC muxer")?;
     let stdout = child.stdout.take().context("open FFmpeg muxer stdout")?;
     let keyframes = Arc::new(std::sync::Mutex::new(VecDeque::<EncodedFrame>::new()));
     let output_device = device_id.to_owned();
@@ -179,6 +131,58 @@ async fn run_muxer(
     let _ = child.wait().await;
     let _ = output.await;
     Ok(())
+}
+
+fn configure_muxer_command(command: &mut Command, video_url: &str, audio_url: &str) {
+    command
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-fflags",
+            "+genpts",
+            "-thread_queue_size",
+            "512",
+            "-r",
+            "30",
+            "-f",
+            "h264",
+            "-i",
+            &video_url,
+            "-thread_queue_size",
+            "512",
+            "-f",
+            "aac",
+            "-i",
+            &audio_url,
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
+            "-c",
+            "copy",
+            "-bsf:a",
+            "aac_adtstoasc",
+            "-metadata",
+            "comment=camera-hub-mux",
+            "-video_track_timescale",
+            "90000",
+            "-max_interleave_delta",
+            "1000000",
+            "-movflags",
+            "delay_moov+default_base_moof+frag_keyframe",
+            "-frag_duration",
+            "1000000",
+            "-flush_packets",
+            "1",
+            "-f",
+            "mp4",
+            "pipe:1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .kill_on_drop(true);
 }
 
 fn reserve_udp_ports() -> Result<(u16, u16)> {
@@ -381,7 +385,8 @@ async fn read_mp4_box(output: &mut ChildStdout) -> Result<Option<Vec<u8>>> {
 
 #[cfg(test)]
 mod tests {
-    use super::video_tfdt;
+    use super::{configure_muxer_command, video_tfdt};
+    use tokio::process::Command;
 
     fn mp4_box(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
         let size = u32::try_from(8 + payload.len()).unwrap();
@@ -411,5 +416,18 @@ mod tests {
         let mut fragment = mp4_box(b"moof", &traf(1, 90_000));
         fragment.pop();
         assert_eq!(video_tfdt(&fragment), None);
+    }
+
+    #[test]
+    fn configures_raw_h264_input_rate() {
+        let mut command = Command::new("ffmpeg");
+        configure_muxer_command(&mut command, "udp://video", "udp://audio");
+        let args = command
+            .as_std()
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.windows(2).any(|pair| pair == ["-r", "30"]));
+        assert!(!args.iter().any(|arg| arg == "-framerate"));
     }
 }

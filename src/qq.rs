@@ -410,7 +410,7 @@ impl QqService {
         let initial = store.current.clone();
         let (config_tx, config_rx) = watch::channel(initial);
         let (notify_tx, notify_rx) = mpsc::channel(NOTIFY_QUEUE_CAPACITY);
-        let http = reqwest::Client::builder()
+        let http = camera_hub::http_client::builder()?
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(15))
             .build()

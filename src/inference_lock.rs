@@ -2,8 +2,6 @@ use anyhow::{Context, Result};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 
-const LOCK_PATH: &str = "/tmp/camera-hub-inference.lock";
-
 pub struct InferenceLock {
     file: File,
 }
@@ -14,13 +12,14 @@ pub struct InferenceGuard<'a> {
 
 impl InferenceLock {
     pub fn open() -> Result<Self> {
+        let path = std::env::temp_dir().join("camera-hub-inference.lock");
         let file = OpenOptions::new()
             .create(true)
             .truncate(false)
             .read(true)
             .write(true)
-            .open(LOCK_PATH)
-            .with_context(|| format!("open inference lock {LOCK_PATH}"))?;
+            .open(&path)
+            .with_context(|| format!("open inference lock {}", path.display()))?;
         Ok(Self { file })
     }
 

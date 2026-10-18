@@ -537,7 +537,7 @@ impl ComponentManager {
             .unwrap_or_else(|| self.voice_lib_dir.as_os_str().to_owned());
         command.env("LD_LIBRARY_PATH", library_path);
         self.configure_worker(&mut command, id);
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "android"))]
         unsafe {
             command.pre_exec(|| {
                 if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
@@ -640,7 +640,8 @@ impl ComponentManager {
     }
 
     async fn tts_health(&self) -> Option<Value> {
-        let client = reqwest::Client::builder()
+        let client = camera_hub::http_client::builder()
+            .ok()?
             .connect_timeout(Duration::from_secs(2))
             .timeout(Duration::from_secs(3))
             .build()
@@ -666,7 +667,10 @@ impl ComponentManager {
         if !running {
             return false;
         }
-        let Some(client) = reqwest::Client::builder()
+        let Ok(builder) = camera_hub::http_client::builder() else {
+            return false;
+        };
+        let Some(client) = builder
             .connect_timeout(Duration::from_secs(1))
             .timeout(Duration::from_secs(2))
             .build()
@@ -687,7 +691,16 @@ impl ComponentManager {
     fn installed(&self, id: ComponentId) -> bool {
         match id {
             ComponentId::Ddns => true,
-            ComponentId::Ir => self.config.ir_device.exists(),
+            ComponentId::Ir => {
+                #[cfg(feature = "android-app")]
+                {
+                    std::env::var("CAMERA_HUB_ANDROID_IR").is_ok_and(|value| value == "1")
+                }
+                #[cfg(not(feature = "android-app"))]
+                {
+                    self.config.ir_device.exists()
+                }
+            }
             ComponentId::Tts => {
                 cfg!(feature = "voice-workers")
                     && self.config.tts_model_dir.join("tokens.txt").is_file()

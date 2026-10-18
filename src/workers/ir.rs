@@ -1,4 +1,8 @@
-use crate::ir::{AirconCommand, IrAction, IrTransmission, PeelIrTransmitter, action_catalog};
+#[cfg(not(feature = "android-app"))]
+use crate::ir::PeelIrTransmitter;
+use crate::ir::{AirconCommand, IrAction, IrTransmission, action_catalog};
+#[cfg(feature = "android-app")]
+use crate::platform::android::IrTransmitter as PeelIrTransmitter;
 use anyhow::{Context, Result, bail};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;

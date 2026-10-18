@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -312,7 +312,7 @@ fn run_ai(
 }
 
 fn decode_h264(access_unit: &[u8]) -> Result<Vec<u8>> {
-    let mut child = Command::new("ffmpeg")
+    let mut child = crate::platform::ffmpeg_command()
         .args([
             "-hide_banner",
             "-loglevel",
@@ -508,7 +508,7 @@ fn save_snapshot(
     );
     let path = directory.join(name);
     let filter = snapshot_filter(detections);
-    let mut child = Command::new("ffmpeg")
+    let mut child = crate::platform::ffmpeg_command()
         .args([
             "-nostdin",
             "-hide_banner",

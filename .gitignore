@@ -1,5 +1,12 @@
 /target
 /web-src/node_modules
+/android/.gradle/
+/android/.kotlin/
+/android/.idea/
+/android/**/build/
+/android/local.properties
+/android/*.iml
+/android/**/captures/
 .DS_Store
 *.log
 .env

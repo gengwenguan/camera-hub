@@ -363,7 +363,7 @@ async fn transcode_aac_to_opus(
     let output_port = output.local_addr()?.port();
     let input_url = format!("udp://127.0.0.1:{input_port}?fifo_size=500000&overrun_nonfatal=1");
     let output_url = format!("rtp://127.0.0.1:{output_port}?pkt_size=1200");
-    let mut child = Command::new("ffmpeg")
+    let mut child = Command::from(crate::platform::ffmpeg_command())
         .args([
             "-hide_banner",
             "-loglevel",

@@ -55,7 +55,7 @@ impl IrControl {
             bail!("红外 worker URL 必须使用无路径、无凭据的本机回环 HTTP");
         }
         Ok(Self {
-            client: Client::builder()
+            client: camera_hub::http_client::builder()?
                 .connect_timeout(Duration::from_secs(2))
                 .timeout(Duration::from_secs(5))
                 .redirect(reqwest::redirect::Policy::none())

@@ -308,7 +308,7 @@ impl AssetManager {
             .map(|id| (id, RuntimeStatus::new(id, asset_installed(config, id))))
             .collect();
         #[cfg(feature = "voice-workers")]
-        let client = reqwest::Client::builder()
+        let client = camera_hub::http_client::builder()?
             .connect_timeout(std::time::Duration::from_secs(20))
             .user_agent(concat!("camera-hub-assets/", env!("CARGO_PKG_VERSION")))
             .build()
