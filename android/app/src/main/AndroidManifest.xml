@@ -47,19 +47,6 @@
             </intent-filter>
         </receiver>
         <activity android:name=".EngineActivity" android:exported="false" />
-        <activity android:name=".DashboardActivity" android:exported="false"
-            android:windowSoftInputMode="adjustResize" />
-        <activity android:name=".SettingsActivity" android:exported="false"
-            android:windowSoftInputMode="adjustResize" />
-        <activity android:name=".ModelsActivity" android:exported="false" />
-        <activity android:name=".MediaActivity" android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize" />
-        <activity android:name=".VoiceActivity" android:exported="false"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:windowSoftInputMode="adjustResize" />
-        <activity android:name=".AirconActivity" android:exported="false"
-            android:windowSoftInputMode="adjustResize" />
         <!-- Explicit HTTP endpoints support localhost and private LAN deployments. -->
         <activity
             android:name=".ConsoleActivity"

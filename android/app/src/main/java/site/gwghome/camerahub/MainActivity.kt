@@ -1,10 +1,7 @@
 package site.gwghome.camerahub
 
-import android.app.KeyguardManager
 import android.content.Intent
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.widget.Button
 import android.widget.TextView
 
@@ -12,31 +9,18 @@ class MainActivity : HubActivity() {
     private lateinit var localManage: Button
     private lateinit var localStatusTitle: TextView
     private lateinit var localStatusDetail: TextView
-    private val main = Handler(Looper.getMainLooper())
-    private var localRouteConsumed = false
-    private val localRoute = object : Runnable {
-        override fun run() {
-            if (isFinishing || isDestroyed || localRouteConsumed) return
-            refreshLocalNode()
-            val locked = getSystemService(KeyguardManager::class.java).isKeyguardLocked
-            if (!EngineService.active || locked) {
-                main.postDelayed(this, 500)
-                return
-            }
-            localRouteConsumed = true
-            openLocalNode()
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         fitSystemBars()
-        localRouteConsumed = savedInstanceState?.getBoolean("local_route_consumed") ?: false
         localManage = findViewById(R.id.local_manage)
         localStatusTitle = findViewById(R.id.local_status_title)
         localStatusDetail = findViewById(R.id.local_status_detail)
-        localManage.setOnClickListener { openLocalNode() }
+        localManage.setOnClickListener { openWebManagement() }
+        findViewById<Button>(R.id.local_password).setOnClickListener {
+            LocalPassword.show(this)
+        }
         findViewById<Button>(R.id.local_engine).setOnClickListener {
             startActivity(Intent(this, EngineActivity::class.java))
         }
@@ -45,12 +29,6 @@ class MainActivity : HubActivity() {
     override fun onResume() {
         super.onResume()
         refreshLocalNode()
-        if (!localRouteConsumed) main.post(localRoute)
-    }
-
-    override fun onPause() {
-        main.removeCallbacks(localRoute)
-        super.onPause()
     }
 
     private fun refreshLocalNode() {
@@ -58,14 +36,13 @@ class MainActivity : HubActivity() {
         localStatusTitle.text = if (running) "服务运行中" else "服务未启动"
         localStatusTitle.setTextColor(getColor(if (running) R.color.accent else R.color.warning))
         localStatusDetail.text = if (running) {
-            "${EngineConfig(this).url} · 打开 App 自动进入管理"
+            "${EngineConfig(this).url} · 配置和工具统一在 Web 管理界面中"
         } else {
-            "启动后可直接管理，无需再次登录"
+            "请先进入本机服务设置并启动服务"
         }
-        localManage.text = if (running) "进入本机管理" else "启动本机服务"
     }
 
-    private fun openLocalNode() {
+    private fun openWebManagement() {
         if (!EngineService.active) {
             startActivity(Intent(this, EngineActivity::class.java))
             return
@@ -74,17 +51,7 @@ class MainActivity : HubActivity() {
             startForegroundService(Intent(this, EngineService::class.java)
                 .setAction(EngineService.RESUME_VOICE))
         }
-        startActivity(Intent(this, DashboardActivity::class.java)
+        startActivity(Intent(this, ConsoleActivity::class.java)
             .putExtra("server", EngineConfig(this).url))
-    }
-
-    override fun onSaveInstanceState(outState: Bundle) {
-        outState.putBoolean("local_route_consumed", localRouteConsumed)
-        super.onSaveInstanceState(outState)
-    }
-
-    override fun onDestroy() {
-        main.removeCallbacks(localRoute)
-        super.onDestroy()
     }
 }

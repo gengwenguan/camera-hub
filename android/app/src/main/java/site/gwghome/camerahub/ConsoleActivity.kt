@@ -11,6 +11,7 @@ import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.os.SystemClock
 import android.view.View
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
@@ -23,13 +24,14 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
-import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
+import org.json.JSONObject
+import java.util.concurrent.Executors
 
 class ConsoleActivity : HubActivity() {
     private lateinit var server: ServerAddress
@@ -43,6 +45,8 @@ class ConsoleActivity : HubActivity() {
     private var pendingDownload: Download? = null
     private var fullscreenView: View? = null
     private var fullscreenCallback: WebChromeClient.CustomViewCallback? = null
+    private val authExecutor = Executors.newSingleThreadExecutor()
+    @Volatile private var authenticating = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -55,16 +59,62 @@ class ConsoleActivity : HubActivity() {
         progress = findViewById(R.id.page_progress)
         findViewById<TextView>(R.id.console_address).text = server.url
         findViewById<View>(R.id.close_console).setOnClickListener { finish() }
-        findViewById<View>(R.id.retry_page).setOnClickListener { loadPage() }
+        findViewById<View>(R.id.retry_page).setOnClickListener { authenticateAndLoad() }
         findViewById<View>(R.id.error_open_browser).setOnClickListener { openBrowser(pageUrl) }
         findViewById<View>(R.id.console_menu).setOnClickListener(::showMenu)
         pageUrl = savedInstanceState?.getString("page")?.takeIf(server::contains)
             ?: intent.getStringExtra("page")?.takeIf { it.startsWith("/#") }
                 ?.let { server.url + it } ?: "${server.url}/"
-        // Publish the native session only to this server before the first navigation.
-        val cookie = HubSessions.cookie(server)
-        if (cookie == null) loadPage()
-        else try {
+        authenticateAndLoad()
+    }
+
+    private fun authenticateAndLoad() {
+        if (authenticating || isFinishing || isDestroyed) return
+        authenticating = true
+        errorPanel.visibility = View.GONE
+        progress.visibility = View.VISIBLE
+        authExecutor.execute {
+            val result = runCatching { authenticate() }
+            runOnUiThread {
+                authenticating = false
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                result.fold(::publishSession) { error ->
+                    showError(when (error) {
+                        is java.net.ConnectException -> getString(R.string.health_connect)
+                        is java.net.SocketTimeoutException -> "本机服务连接超时，请稍后重试。"
+                        else -> error.message ?: getString(R.string.web_error)
+                    })
+                }
+            }
+        }
+    }
+
+    private fun authenticate(): String {
+        val api = ApiClient(server)
+        val body = JSONObject().put("username", "admin")
+            .put("password", EngineConfig(this).password)
+        val deadline = SystemClock.elapsedRealtime() + 20_000
+        HubSessions.clear(server)
+        try {
+            while (true) {
+                try {
+                    api.request("/api/v1/auth/login", "POST", body)
+                    return checkNotNull(HubSessions.cookie(server)) { "服务未返回登录凭据" }
+                } catch (error: Exception) {
+                    HubSessions.clear(server)
+                    if (error is ApiException || !EngineService.active ||
+                        SystemClock.elapsedRealtime() >= deadline
+                    ) throw error
+                    Thread.sleep(500)
+                }
+            }
+        } finally {
+            api.close()
+        }
+    }
+
+    private fun publishSession(cookie: String) {
+        try {
             CookieManager.getInstance().setCookie(server.url,
                 "$cookie; Path=/; HttpOnly; SameSite=Strict" + if (server.url.startsWith("https:")) "; Secure" else "") {
                 if (!isDestroyed && !isFinishing) loadPage()
@@ -114,6 +164,11 @@ class ConsoleActivity : HubActivity() {
                 if (!server.contains(url)) {
                     view.stopLoading()
                     showError(getString(R.string.health_redirect))
+                    return
+                }
+                if (Uri.parse(url).path == "/login") {
+                    view.stopLoading()
+                    authenticateAndLoad()
                     return
                 }
                 pageUrl = url
@@ -248,33 +303,14 @@ class ConsoleActivity : HubActivity() {
         PopupMenu(this, anchor).apply {
             menu.add(0, 1, 0, R.string.reload)
             menu.add(0, 2, 1, R.string.open_browser)
-            menu.add(0, 3, 2, R.string.clear_session).isEnabled = web != null
             setOnMenuItemClickListener {
                 when (it.itemId) {
                     1 -> loadPage()
                     2 -> openBrowser(pageUrl)
-                    3 -> clearSession()
                 }
                 true
             }
         }.show()
-    }
-
-    private fun clearSession() {
-        cancelPendingRequests()
-        HubSessions.clear(server)
-        web?.stopLoading()
-        CookieManager.getInstance().removeAllCookies {
-            CookieManager.getInstance().flush()
-            WebStorage.getInstance().deleteAllData()
-            web?.clearCache(true)
-            web?.clearHistory()
-            pageUrl = "${server.url}/"
-            if (!isDestroyed && !isFinishing) {
-                loadPage()
-                toast(R.string.session_cleared)
-            }
-        }
     }
 
     private data class Download(val url: String, val userAgent: String, val disposition: String?, val mime: String?)
@@ -385,6 +421,7 @@ class ConsoleActivity : HubActivity() {
             it.destroy()
         }
         web = null
+        authExecutor.shutdownNow()
         super.onDestroy()
     }
 

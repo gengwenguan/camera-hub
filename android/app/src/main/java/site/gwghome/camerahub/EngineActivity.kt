@@ -11,7 +11,6 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
-import android.view.View
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.EditText
@@ -65,7 +64,7 @@ class EngineActivity : HubActivity() {
         status = text(R.string.engine_stopped, 18f)
         port = ui.field(content, getString(R.string.engine_port),
             savedInstanceState?.getString("port") ?: config.port.toString(), InputType.TYPE_CLASS_NUMBER)
-        button(R.string.engine_change_password) { showPasswordDialog() }
+        button(R.string.engine_change_password) { LocalPassword.show(this) }
         text(R.string.engine_access_hint)
         start = button(R.string.engine_start) { startEngine() }
         stop = button(R.string.engine_stop) {
@@ -77,7 +76,7 @@ class EngineActivity : HubActivity() {
             refreshState()
         }
         button(R.string.engine_console) {
-            startActivity(Intent(this, DashboardActivity::class.java).putExtra("server", config.url))
+            startActivity(Intent(this, ConsoleActivity::class.java).putExtra("server", config.url))
         }
         button(R.string.engine_logs) { showLogs() }
         content = ui.card(wrapper)
@@ -135,7 +134,7 @@ class EngineActivity : HubActivity() {
         setContentView(scroll)
         fitSystemBars()
         if (savedInstanceState == null && intent.getBooleanExtra("change_password", false)) {
-            handler.post { showPasswordDialog() }
+            handler.post { LocalPassword.show(this) }
         }
     }
 
@@ -228,50 +227,6 @@ class EngineActivity : HubActivity() {
             permissions += Manifest.permission.POST_NOTIFICATIONS
         }
         if (permissions.isEmpty()) launchEngine() else requestPermissions(permissions.toTypedArray(), 20)
-    }
-
-    private fun showPasswordDialog() {
-        val ui = NativeUi(this)
-        val form = ui.column(20)
-        ui.text(form, "账号固定为 admin。新密码仅保存在 App 私有配置中。", muted = true)
-        val first = ui.field(form, "新密码（至少 5 个字符）", secret = true)
-        val second = ui.field(form, "再次输入新密码", secret = true)
-        val error = ui.text(form, "", 13f).apply {
-            setTextColor(getColor(R.color.warning))
-            visibility = View.GONE
-        }
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(R.string.engine_change_password)
-            .setView(form)
-            .setNegativeButton("取消", null)
-            .setPositiveButton("保存", null)
-            .create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val wanted = first.text.toString()
-                val repeated = second.text.toString()
-                val message = when {
-                    wanted.length < 5 -> "密码至少需要 5 个字符"
-                    wanted != repeated -> "两次输入的密码不一致"
-                    else -> null
-                }
-                if (message != null) {
-                    error.text = message
-                    error.visibility = View.VISIBLE
-                    return@setOnClickListener
-                }
-                config.savePassword(wanted)
-                HubSessions.clear(ServerAddress.parse(config.url))
-                if (EngineService.active) {
-                    startService(Intent(this, EngineService::class.java).setAction(EngineService.RESTART))
-                    Toast.makeText(this, "密码已保存，正在重新加载本机服务", Toast.LENGTH_LONG).show()
-                } else {
-                    Toast.makeText(this, "密码已保存，将在下次启动服务时生效", Toast.LENGTH_LONG).show()
-                }
-                dialog.dismiss()
-            }
-        }
-        dialog.show()
     }
 
     private fun launchEngine(action: String = EngineService.START) {
