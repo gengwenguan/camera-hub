@@ -3,7 +3,7 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
-## 0.5.10 精简界面
+## 0.5.11 浏览器管理
 
 App 只保留 Android 平台必须提供的能力：
 
@@ -17,23 +17,26 @@ App 只保留 Android 平台必须提供的能力：
 
 首页提供三个入口：
 
-1. `打开 Web 管理`：使用 App 私有密码自动登录本机服务，然后打开内置 WebView。
-2. `修改登录密码`：输入两次新密码；服务运行中会原地重启 Rust 核心并清除旧会话。
+1. `在浏览器中管理`：系统浏览器打开本机地址，默认 `http://127.0.0.1:8080`，端口取自设置。
+2. `修改登录密码`：输入两次新密码；服务运行中会原地重启 Rust 核心，使旧会话失效。
 3. `本机服务设置`：处理端口、服务启停、后台恢复、权限和日志。
 
-WebView 会在服务启动期间有限等待。会话失效并跳转到 `/login` 时，App 自动重新认证。
-WebView 支持上传、下载、麦克风、全屏媒体及受控的外部浏览器跳转；只允许加载当前本机服务来源。
+App 不再嵌入 WebView，也不管理浏览器的 Cookie、上传下载和媒体权限。
+浏览器通过现有 Web 登录页认证并保存会话；跳转 URL 不携带密码或 Token。
+浏览器关闭后 Android 前台服务继续运行。
 
 ## 本机使用
 
 1. 安装 APK。
 2. 打开 `本机服务设置`，确认 HTTP 端口并启动服务。
 3. 按系统提示允许麦克风和通知权限。
-4. 返回首页，点击 `打开 Web 管理`。
-5. 在 Web 界面完成录像、AI、DDNS、QQ、语音、模型和设备控制配置。
+4. 首次使用先在首页设置登录密码，再点击 `在浏览器中管理`。
+5. 浏览器使用 `admin` 和设置的密码登录，完成录像、AI、DDNS、QQ、语音、模型和设备控制配置。
 
 账号固定为 `admin`。初次安装会生成随机密码，密码仅保存在 App 私有配置中。
-通过首页可直接修改密码。手机或电脑的外部浏览器不会获得 App 私有会话，需要使用当前密码登录。
+通过首页可直接修改密码。浏览器未登录或服务重启后需要用当前密码登录。
+电脑请访问手机的网络地址；MI6 已部署地址为 `https://mi6.gwghome.site:8443`。
+`127.0.0.1` 只指向正在使用的设备，不能用于从电脑连接手机。
 
 默认端口：
 
@@ -70,13 +73,13 @@ Android 强行停止 App 后，系统不会允许应用自行恢复。
 ## 代码入口
 
 - `MainActivity.kt`：精简首页。
-- `ConsoleActivity.kt`：自动登录、WebView、上传下载、媒体权限和安全导航。
+- `HubActivity.kt`：系统浏览器跳转、系统栏和返回行为。
 - `LocalPassword.kt`：本机密码编辑和 Rust 核心重载。
 - `EngineActivity.kt`、`FeatureStatus.kt`：服务、权限、后台策略和日志。
 - `EngineService.kt`：前台服务、Rust 进程监督和健康检查。
 - `EngineConfig.kt`：私有目录、端口、密码及 Rust 运行环境。
 - `HardwareBridge.kt`、`BridgeReply.kt`：Android 硬件桥接。
-- `ApiClient.kt`：本机自动登录和内存会话。
+- `HealthClient.kt`：前台服务使用的本机健康检查。
 - `build-native.py`：Rust 与原生依赖交叉编译及 APK 打包。
 
 ## 构建与检查
@@ -94,13 +97,14 @@ APK 输出：
 android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-WebView 集成检查仅接受独立模拟器：
+App 集成检查仅接受独立模拟器（需要系统浏览器）：
 
 ```sh
-python3 tests/integration/android_webview.py \
+python3 tests/integration/android_app.py \
   --serial emulator-5580 \
   --apk android/app/build/outputs/apk/debug/app-debug.apk \
-  --output /tmp/camera-hub-webview/results
+  --output /tmp/camera-hub-android/results
 ```
 
-该脚本验证精简首页、隐藏密码字段以及 App 私有凭据自动登录 WebView，不连接正式节点。
+脚本验证首页、隐藏密码字段、密码保存与服务登录、外部浏览器跳转，不连接正式节点。
+更多目录和测试说明见 [工程导航](../docs/README.md) 与 [集成测试](../tests/integration/README.md)。

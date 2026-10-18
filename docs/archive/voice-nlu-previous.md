@@ -1,5 +1,7 @@
 # 自然语言语音控制设计
 
+> 历史方案，已于 2026-10-19 归档。下文的“已选定”、待实现状态和速度数字不代表当前方案或 MI6 实测结果。规则 NLU 曾因效果不佳回滚；当前已具备 ASR 和参数化空调 API，自由转写尚未接到执行器。当前分析见 [语音控制模型可行性](../voice-control-feasibility.md)。
+
 本文档记录把语音控制从「固定关键词」升级为「自然语句 → 结构化意图」的方案，
 以及相关的红外协议查证结论，供后续分阶段实现直接引用。
 
@@ -7,14 +9,14 @@
 
 改造前的语音链路只有关键词识别（KWS），不支持语音转写：
 
-- [`src/workers/voice.rs`](../src/workers/voice.rs) 使用 sherpa-onnx `KeywordSpotter`，
+- [`src/workers/voice.rs`](../../src/workers/voice.rs) 使用 sherpa-onnx `KeywordSpotter`，
   只在音频中命中预注册的固定短语，再由 `command_for_phrase()` 做精确字符串匹配。
 - 模型不输出自由文本，因此拿不到「20 度」「两小时」这类槽位值。这是识别层瓶颈，
   与触发阈值无关。
 
 红外侧是第二个独立瓶颈：
 
-- [`src/ir.rs`](../src/ir.rs) 中温度/模式是写死常量（`RN02_COOL_26 = 0x0B`、
+- [`src/ir.rs`](../../src/ir.rs) 中温度/模式是写死常量（`RN02_COOL_26 = 0x0B`、
   `RN02_DRY_26 = 0x2B`），`action_pattern()` 按枚举拼固定整帧。即使 NLU 正确解析出
   温度，编码器目前也无法生成对应帧。
 
@@ -79,7 +81,7 @@
 ### 6.1 帧结构
 
 - 载波 38kHz；引导码 4400us/4400us；数据位 0 = 500/550us、1 = 500/1600us；
-  分隔 500/5220us。与 [`src/ir.rs`](../src/ir.rs) 完全一致。
+  分隔 500/5220us。与 [`src/ir.rs`](../../src/ir.rs) 完全一致。
 - 每帧发送 `A A' B B' C C'`（各字节紧跟反码），整帧重复两次。
 - **数据字节按 LSB-first 发送**（见 `push_byte(..., msb_first=false)`），因此下面的
   「显示字节」需按位反转才是线上字节。

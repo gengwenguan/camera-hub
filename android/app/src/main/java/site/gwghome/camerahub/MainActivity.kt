@@ -36,7 +36,7 @@ class MainActivity : HubActivity() {
         localStatusTitle.text = if (running) "服务运行中" else "服务未启动"
         localStatusTitle.setTextColor(getColor(if (running) R.color.accent else R.color.warning))
         localStatusDetail.text = if (running) {
-            "${EngineConfig(this).url} · 配置和工具统一在 Web 管理界面中"
+            "${EngineConfig(this).url}\n浏览器登录账号：admin；密码可在下方设置。"
         } else {
             "请先进入本机服务设置并启动服务"
         }
@@ -51,7 +51,6 @@ class MainActivity : HubActivity() {
             startForegroundService(Intent(this, EngineService::class.java)
                 .setAction(EngineService.RESUME_VOICE))
         }
-        startActivity(Intent(this, ConsoleActivity::class.java)
-            .putExtra("server", EngineConfig(this).url))
+        openBrowser(EngineConfig(this).url)
     }
 }

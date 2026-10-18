@@ -4,6 +4,9 @@
 Android/Termux 等环境，不绑定特定手机或设备型号。它接收采集端上传的 H264/AAC，
 负责录像、实时分发、可选 ONNX AI 和图片回传；开发板 Web 仍是日常控制入口。
 
+Android APK 可独立运行本机服务，只保留密码、服务与权限设置，业务配置统一在系统浏览器中完成。
+入口：[Android 使用与构建](android/README.md) · [工程与文档导航](docs/README.md) · [集成测试](tests/integration/README.md)。
+
 ## 当前能力
 
 - 使用一条无 Token 持久 WebSocket 承载 H264、AAC、设备状态和 AI JPEG 回传。

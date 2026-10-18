@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Disposable-emulator integration test for the minimal Android shell and WebView."""
+"""Disposable-emulator check: password, embedded service and external browser handoff."""
 
 import argparse
+import json
 import re
 import subprocess
 import time
+import urllib.request
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -81,7 +83,7 @@ def main():
     parser.add_argument("--serial", required=True)
     parser.add_argument("--adb", default=str(Path.home() / "Library/Android/sdk/platform-tools/adb"))
     parser.add_argument("--apk", type=Path, required=True)
-    parser.add_argument("--output", type=Path, default=Path("/tmp/camera-hub-webview/results"))
+    parser.add_argument("--output", type=Path, default=Path("/tmp/camera-hub-android/results"))
     args = parser.parse_args()
     if not args.serial.startswith("emulator-"):
         parser.error("This test requires a disposable emulator.")
@@ -89,6 +91,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     device = Device(args.adb, args.serial, args.output)
     package = "site.gwghome.camerahub"
+    forwarded_port = None
     try:
         device.adb("install", "-r", str(args.apk.resolve()), timeout=60)
         device.adb("shell", "pm", "clear", package)
@@ -96,7 +99,7 @@ def main():
         device.adb("shell", "pm", "grant", package, "android.permission.POST_NOTIFICATIONS")
         device.adb("shell", "am", "start", "-n", package + "/.MainActivity")
 
-        home = device.wait("打开 Web 管理")
+        home = device.wait("在浏览器中管理")
         labels = {node.get("text", "") for node in home}
         assert "修改登录密码" in labels and "本机服务设置" in labels
         assert not labels.intersection({"概览", "配置", "工具", "连接其他节点"})
@@ -116,12 +119,33 @@ def main():
         device.wait("启动本机服务")
         device.tap("启动本机服务")
         device.wait("本机服务运行中", seconds=45)
-        device.tap("打开 Web 管理")
-        web = device.wait("运行概览", seconds=30)
-        assert any(node.get("class") == "android.webkit.WebView" for node in web)
-        device.shot("web-management")
-        print("PASS minimal shell, password editor, embedded service and automatic WebView login")
+        forwarded_port = device.adb("forward", "tcp:0", "tcp:8080").strip()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{forwarded_port}/api/v1/auth/login",
+            data=json.dumps(dict(username="admin", password="test-password")).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            assert response.status == 200
+            assert "camera_hub_session=" in response.headers.get("Set-Cookie", "")
+
+        device.tap("在浏览器中管理")
+        deadline = time.time() + 10
+        while True:
+            activities = device.adb("shell", "dumpsys", "activity", "activities")
+            focused = [line for line in activities.splitlines()
+                       if "mResumedActivity:" in line or "topResumedActivity=" in line]
+            if focused and all(package not in line for line in focused):
+                break
+            assert time.time() < deadline, "The app did not hand control to the browser"
+            time.sleep(0.5)
+        assert re.search(r"act=android.intent.action.VIEW.*dat=http://127\.0\.0\.1:8080(?:[/ }\n])", activities)
+        assert ".ConsoleActivity" not in activities
+        device.shot("browser-handoff")
+        print("PASS password persistence, embedded service and external browser handoff")
     finally:
+        if forwarded_port:
+            device.adb("forward", "--remove", f"tcp:{forwarded_port}")
         device.adb("shell", "am", "force-stop", package)
         device.adb("shell", "rm", "-f", device.xml)
 

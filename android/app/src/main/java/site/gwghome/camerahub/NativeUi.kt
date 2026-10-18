@@ -6,15 +6,12 @@ import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.text.InputType
-import android.view.Gravity
 import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
-import java.util.Locale
 
 /** Small shared style helpers for platform Views; no UI framework dependency. */
 class NativeUi(val context: Context) {
@@ -54,10 +51,6 @@ class NativeUi(val context: Context) {
             if (size >= 18) it.typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
             parent.addView(it, LinearLayout.LayoutParams(-1, -2))
         }
-    fun title(parent: LinearLayout, value: String, subtitle: String = "") {
-        text(parent, value, 22f)
-        if (subtitle.isNotBlank()) text(parent, subtitle, muted = true)
-    }
     fun button(parent: LinearLayout, value: String, primary: Boolean = false, action: () -> Unit): Button =
         Button(context).also {
             it.text = value
@@ -75,24 +68,6 @@ class NativeUi(val context: Context) {
             parent.addView(it, LinearLayout.LayoutParams(-1, -2).apply {
                 topMargin = dp(6)
             })
-        }
-    fun navigation(parent: LinearLayout, value: String, action: () -> Unit): Button =
-        Button(context).also {
-            it.text = value
-            it.textSize = 14f
-            it.isAllCaps = false
-            it.gravity = Gravity.START or Gravity.CENTER_VERTICAL
-            it.minHeight = dp(48)
-            it.minimumHeight = dp(48)
-            it.setPadding(dp(10), 0, dp(10), 0)
-            it.setTextColor(color(R.color.ink))
-            it.background = RippleDrawable(
-                ColorStateList.valueOf(color(R.color.soft_accent)),
-                shape(R.color.surface, 0),
-                null,
-            )
-            it.setOnClickListener { action() }
-            parent.addView(it, LinearLayout.LayoutParams(-1, -2))
         }
     fun field(parent: LinearLayout, label: String, value: String = "",
               type: Int = InputType.TYPE_CLASS_TEXT, secret: Boolean = false): EditText {
@@ -113,41 +88,6 @@ class NativeUi(val context: Context) {
             it.importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
             it.isSaveEnabled = !secret
             parent.addView(it, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(8) })
-        }
-    }
-    @Suppress("UseSwitchCompatOrMaterialCode") // Deliberately use platform widgets, min API 27.
-    fun toggle(parent: LinearLayout, label: String, checked: Boolean): Switch = Switch(context).also {
-        it.text = label
-        it.textSize = 15f
-        it.setTextColor(color(R.color.ink))
-        it.isChecked = checked
-        it.minHeight = dp(48)
-        it.switchPadding = dp(12)
-        parent.addView(it, LinearLayout.LayoutParams(-1, -2))
-    }
-    fun row(parent: LinearLayout): LinearLayout = LinearLayout(context).also {
-        it.orientation = LinearLayout.HORIZONTAL
-        it.gravity = Gravity.CENTER_VERTICAL
-        parent.addView(it, LinearLayout.LayoutParams(-1, -2))
-    }
-    fun compact(button: Button) {
-        button.layoutParams = LinearLayout.LayoutParams(0, -2, 1f).apply {
-            setMargins(dp(3), dp(6), dp(3), dp(6))
-        }
-    }
-
-    companion object {
-        fun bytes(value: Double): String {
-            var number = value.coerceAtLeast(0.0)
-            var unit = 0
-            val units = listOf("B", "KiB", "MiB", "GiB", "TiB")
-            while (number >= 1024 && unit < units.lastIndex) { number /= 1024; unit++ }
-            return String.format(Locale.ROOT, "%.1f %s", number, units[unit])
-        }
-        fun duration(seconds: Long) = when {
-            seconds >= 86400 -> "${seconds / 86400} 天 ${seconds / 3600 % 24} 小时"
-            seconds >= 3600 -> "${seconds / 3600} 小时 ${seconds / 60 % 60} 分钟"
-            else -> "${seconds / 60} 分钟"
         }
     }
 }

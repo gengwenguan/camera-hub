@@ -7,11 +7,11 @@ import android.view.View
 import android.widget.Toast
 
 object LocalPassword {
-    fun show(activity: Activity, saved: () -> Unit = {}) {
+    fun show(activity: Activity) {
         val config = EngineConfig(activity)
         val ui = NativeUi(activity)
         val form = ui.column(20)
-        ui.text(form, "账号固定为 admin。新密码仅保存在 App 私有配置中。", muted = true)
+        ui.text(form, "浏览器登录账号：admin。服务运行时，保存会重启服务并使旧会话失效。", muted = true)
         val first = ui.field(form, "新密码（至少 5 个字符）", secret = true)
         val second = ui.field(form, "再次输入新密码", secret = true)
         val error = ui.text(form, "", 13f).apply {
@@ -38,7 +38,6 @@ object LocalPassword {
                     return@setOnClickListener
                 }
                 config.savePassword(wanted)
-                HubSessions.clear(ServerAddress.parse(config.url))
                 if (EngineService.active) {
                     activity.startService(Intent(activity, EngineService::class.java)
                         .setAction(EngineService.RESTART))
@@ -47,7 +46,6 @@ object LocalPassword {
                     Toast.makeText(activity, "密码已保存，将在下次启动服务时生效", Toast.LENGTH_LONG).show()
                 }
                 dialog.dismiss()
-                saved()
             }
         }
         dialog.show()

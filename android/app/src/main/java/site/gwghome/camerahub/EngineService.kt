@@ -233,7 +233,7 @@ class EngineService : Service() {
         var ready = false
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20)
         while (!stopping && !restartRequested && child.isAlive && System.nanoTime() < deadline) {
-            if (runCatching { HealthClient.check(ServerAddress.parse(config.url), 1500) }.isSuccess) {
+            if (runCatching { HealthClient.check(config.url, 1500) }.isSuccess) {
                 ready = true
                 break
             }
@@ -249,7 +249,7 @@ class EngineService : Service() {
         while (!stopping && !restartRequested && !child.waitFor(250, TimeUnit.MILLISECONDS)) {
             if (stopping) break
             if (SystemClock.elapsedRealtime() < nextHealthCheck) continue
-            if (runCatching { HealthClient.check(ServerAddress.parse(config.url), 1500) }.isSuccess) {
+            if (runCatching { HealthClient.check(config.url, 1500) }.isSuccess) {
                 failures = 0
                 if (SystemClock.elapsedRealtime() - healthySince >= RecoveryPolicy.STABLE_MS &&
                     state.policy.attempts > 0

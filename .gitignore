@@ -8,6 +8,9 @@
 /android/*.iml
 /android/**/captures/
 .DS_Store
+._*
+__pycache__/
+*.pyc
 *.log
 .env
 .env.*

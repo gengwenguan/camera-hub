@@ -12,9 +12,9 @@ class HealthException(val textId: Int, val statusCode: Int = 0) : IOException()
 
 object HealthClient {
     /** Runs on the caller's background thread; /health needs no login cookie. */
-    fun check(server: ServerAddress, timeoutMs: Int = 8_000): HealthStatus {
+    fun check(url: String, timeoutMs: Int = 8_000): HealthStatus {
         val started = SystemClock.elapsedRealtime()
-        val connection = URL("${server.url}/health").openConnection() as HttpURLConnection
+        val connection = URL("$url/health").openConnection() as HttpURLConnection
         try {
             connection.connectTimeout = timeoutMs
             connection.readTimeout = timeoutMs

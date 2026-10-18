@@ -75,8 +75,8 @@ class EngineActivity : HubActivity() {
             } else state.recordStatus("本机服务已停止")
             refreshState()
         }
-        button(R.string.engine_console) {
-            startActivity(Intent(this, ConsoleActivity::class.java).putExtra("server", config.url))
+        button(R.string.local_manage) {
+            openBrowser(config.url)
         }
         button(R.string.engine_logs) { showLogs() }
         content = ui.card(wrapper)
@@ -133,9 +133,6 @@ class EngineActivity : HubActivity() {
         val scroll = ui.scroll(wrapper).apply { id = R.id.root }
         setContentView(scroll)
         fitSystemBars()
-        if (savedInstanceState == null && intent.getBooleanExtra("change_password", false)) {
-            handler.post { LocalPassword.show(this) }
-        }
     }
 
     private fun refreshState() {
