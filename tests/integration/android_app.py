@@ -129,6 +129,29 @@ def main():
             assert response.status == 200
             assert "camera_hub_session=" in response.headers.get("Set-Cookie", "")
 
+        # Replacing the package recreates the service through RESTORE, not START.
+        # Android 11+ must regain microphone eligibility on the visible home page.
+        device.adb("install", "-r", str(args.apk.resolve()), timeout=60)
+        deadline = time.time() + 40
+        while True:
+            service = device.adb("shell", "dumpsys", "activity", "services", package)
+            match = re.search(r"(?:foregroundServiceType|types)=(0x[0-9a-fA-F]+|\d+)", service)
+            if match:
+                assert not int(match.group(1), 0) & 0x80, service
+                break
+            assert time.time() < deadline, "Background service did not restore after replacement"
+            time.sleep(.5)
+        device.adb("shell", "am", "start", "-n", package + "/.MainActivity")
+        device.wait("在浏览器中管理")
+        deadline = time.time() + 10
+        while True:
+            service = device.adb("shell", "dumpsys", "activity", "services", package)
+            match = re.search(r"(?:foregroundServiceType|types)=(0x[0-9a-fA-F]+|\d+)", service)
+            if match and int(match.group(1), 0) & 0x80:
+                break
+            assert time.time() < deadline, "Opening the home page did not restore the microphone"
+            time.sleep(.5)
+
         device.tap("在浏览器中管理")
         deadline = time.time() + 10
         while True:
@@ -142,7 +165,7 @@ def main():
         assert re.search(r"act=android.intent.action.VIEW.*dat=http://127\.0\.0\.1:8080(?:[/ }\n])", activities)
         assert ".ConsoleActivity" not in activities
         device.shot("browser-handoff")
-        print("PASS password persistence, embedded service and external browser handoff")
+        print("PASS password persistence, package restoration, home-page microphone recovery and browser handoff")
     finally:
         if forwarded_port:
             device.adb("forward", "--remove", f"tcp:{forwarded_port}")

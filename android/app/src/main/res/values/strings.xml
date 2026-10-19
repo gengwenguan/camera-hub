@@ -17,7 +17,7 @@
     <string name="engine_logs">查看服务日志</string>
     <string name="engine_no_logs">尚无服务日志。</string>
     <string name="engine_models_hint">AI 模型已内置。首次使用语音时，请在控制台的组件与资源页面安装唤醒、识别及所需音色模型。下载完成后在语音页启用对应功能。</string>
-    <string name="engine_background_hint">核心异常退出或连续健康检查失败时，按 2、4、8、16、30 秒重试，连续运行正常 5 分钟后重置次数。开机恢复默认关闭，且只恢复之前正在运行的服务；手动停止会取消恢复。系统回收或更新 App 后会尝试恢复，但强行停止、厂商后台限制和省电策略仍可能阻止运行。后台重建服务后，请打开此页点击「授权 / 恢复语音」。</string>
+    <string name="engine_background_hint">核心异常退出或连续健康检查失败时，按 2、4、8、16、30 秒重试，连续运行正常 5 分钟后重置次数。开机恢复默认关闭，且只恢复之前正在运行的服务；手动停止会取消恢复。系统回收或更新 App 后会尝试恢复，但强行停止、厂商后台限制和省电策略仍可能阻止运行。Android 9/10 在已授权时自动恢复录音；较新系统请解锁并打开 App 自动恢复语音，也可点击「授权 / 恢复语音」。</string>
     <string name="engine_no_microphone">未获得麦克风权限，其他功能仍可运行；可在本机部署页授权并恢复语音。</string>
     <string name="engine_recovery_title">后台恢复</string>
     <string name="engine_auto_recovery">异常后自动恢复（最多连续 5 次）</string>

@@ -113,10 +113,10 @@ class EngineService : Service() {
         microphoneError = null
         setStatus(if (manual) "正在启动本机服务…" else "正在恢复本机服务…")
         try {
-            // Boot and sticky recreation restore only the network/IR service. Microphone
-            // eligibility is obtained separately from a visible Activity.
+            // Android 9/10 allow an already-authorized foreground service to record
+            // after restoration. Android 11+ needs eligibility from a visible Activity.
             foreground(false)
-            if (manual) enableMicrophone()
+            if (manual || Build.VERSION.SDK_INT < 30) enableMicrophone()
             check(config.root.isDirectory || config.root.mkdirs()) { "无法创建 App 数据目录" }
             hardware = HardwareBridge(applicationContext, config.root) { microphoneEnabled }
             wakeLock = getSystemService(PowerManager::class.java)

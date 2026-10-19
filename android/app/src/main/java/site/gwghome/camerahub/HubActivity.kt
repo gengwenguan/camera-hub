@@ -1,8 +1,11 @@
 package site.gwghome.camerahub
 
+import android.Manifest
 import android.app.Activity
+import android.app.KeyguardManager
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -18,6 +21,29 @@ abstract class HubActivity : Activity() {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(
                 OnBackInvokedDispatcher.PRIORITY_DEFAULT,
             ) { handleBack() }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        resumeMicrophone()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) resumeMicrophone()
+    }
+
+    private fun resumeMicrophone() {
+        if (!EngineService.active || EngineService.microphoneEnabled ||
+            getSystemService(KeyguardManager::class.java).isKeyguardLocked ||
+            checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED
+        ) return
+        runCatching {
+            startForegroundService(Intent(this, EngineService::class.java)
+                .setAction(EngineService.RESUME_VOICE))
+        }.onFailure {
+            EngineState(this).recordFailure("自动恢复语音失败：${it.message}")
         }
     }
 

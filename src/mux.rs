@@ -134,17 +134,25 @@ async fn run_muxer(
 }
 
 fn configure_muxer_command(command: &mut Command, video_url: &str, audio_url: &str) {
+    command.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-fflags",
+        "+genpts",
+        "-thread_queue_size",
+        "512",
+        "-r",
+        "30",
+    ]);
+    if cfg!(target_os = "android") {
+        // The bundled FFmpeg 7 schedules inputs before stream-copy estimates
+        // raw H264 DTS, starving AAC. Stamp packets before that scheduler.
+        // LinuxDeploy's older FFmpeg lacks input BSFs and keeps its old path.
+        command.args(["-bsf:v", "setts=ts=N/(30*TB):duration=1/(30*TB)"]);
+    }
     command
         .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-fflags",
-            "+genpts",
-            "-thread_queue_size",
-            "512",
-            "-r",
-            "30",
             "-f",
             "h264",
             "-i",

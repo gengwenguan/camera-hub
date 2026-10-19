@@ -86,7 +86,9 @@ ffmpeg = fetch(
 extract(ffmpeg, CACHE / "ffmpeg-source")
 ffbuild = CACHE / "ffmpeg-build"
 ffbuild.mkdir(exist_ok=True)
-if not (ffbuild / "ffmpeg").is_file():
+ffconfig = ffbuild / "config_components.h"
+if (not (ffbuild / "ffmpeg").is_file() or not ffconfig.is_file() or
+        "#define CONFIG_SETTS_BSF 1" not in ffconfig.read_text()):
     env = dict(os.environ, PKG_CONFIG_PATH=str(prefix / "lib/pkgconfig"))
     run([CACHE / "ffmpeg-source/ffmpeg-7.1.2/configure",
          "--target-os=android", "--arch=aarch64", "--enable-cross-compile",
@@ -103,7 +105,7 @@ if not (ffbuild / "ffmpeg").is_file():
          "--enable-parser=h264,aac", "--enable-demuxer=h264,aac,rawvideo,wav,mov",
          "--enable-muxer=mp4,rtp,rawvideo,image2,wav",
          "--enable-protocol=file,pipe,udp,rtp",
-         "--enable-bsf=aac_adtstoasc,h264_mp4toannexb",
+         "--enable-bsf=aac_adtstoasc,h264_mp4toannexb,setts",
          "--enable-filter=scale,pad,drawbox,format,aformat,aresample,anull,null"],
         cwd=ffbuild, env=env)
     run(["make", "-j", JOBS], cwd=ffbuild, env=env)
