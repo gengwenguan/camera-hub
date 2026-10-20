@@ -103,6 +103,10 @@ fn setup_mi6(args: &Args) -> Result<()> {
         ("CAMERA_HUB_DATA_DIR", path("camera-data")),
         ("CAMERA_HUB_SETTINGS_FILE", path(".config/camera-hub.json")),
         (
+            "CAMERA_HUB_AUTH_SESSION_FILE",
+            path(".config/camera-hub-auth-session.json"),
+        ),
+        (
             "CAMERA_HUB_QQ_CONFIG_FILE",
             path(".config/camera-hub-qq.json"),
         ),
@@ -345,6 +349,7 @@ mod tests {
         assert!(first.contains("CAMERA_HUB_WEB_PASSWORD='custom'"));
         assert!(first.contains("CAMERA_HUB_PUBLIC_DOMAIN='camera.example'"));
         assert!(first.contains("CAMERA_HUB_IR_DEVICE='/dev/example-ir'"));
+        assert!(first.contains("CAMERA_HUB_AUTH_SESSION_FILE="));
         assert!(first.contains("CAMERA_HUB_AIRCON_CONFIG_FILE="));
         assert!(!first.contains("CAMERA_HUB_VOICE_STUDIO_TOKEN"));
         let token = existing_value(&env_path, "CAMERA_HUB_TTS_TOKEN").unwrap();

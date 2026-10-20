@@ -153,8 +153,12 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
 
     let mut config = Config::parse_from(arguments).normalize();
     let web_auth = Arc::new(
-        auth::WebAuth::new(config.web_username.clone(), config.web_password.clone())
-            .with_device_tokens(&config.device_link_tokens)?,
+        auth::WebAuth::load(
+            config.web_username.clone(),
+            config.web_password.clone(),
+            &config.auth_session_file,
+        )?
+        .with_device_tokens(&config.device_link_tokens)?,
     );
     config.moq_auth_token = web_auth.moq_token().to_owned();
     let settings = Arc::new(HubSettingsStore::load(

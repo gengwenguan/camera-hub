@@ -6,16 +6,18 @@ use axum::http::header::{COOKIE, HOST, LOCATION, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{Html, IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const COOKIE_NAME: &str = "camera_hub_session";
+const SESSION_FILE_VERSION: u32 = 1;
 
 #[derive(Clone, Copy)]
 pub struct TransportSecurity {
@@ -32,6 +34,13 @@ pub struct WebAuth {
     device_tokens: BTreeMap<String, String>,
 }
 
+#[derive(Deserialize, Serialize)]
+struct PersistedSession {
+    version: u32,
+    credential_fingerprint: String,
+    token: String,
+}
+
 #[derive(Deserialize)]
 pub struct LoginRequest {
     username: String,
@@ -39,14 +48,43 @@ pub struct LoginRequest {
 }
 
 impl WebAuth {
-    pub fn new(username: String, password: String) -> Self {
-        Self {
+    pub fn load(username: String, password: String, path: &Path) -> anyhow::Result<Self> {
+        let persisted = match fs::read(path) {
+            Ok(data) => serde_json::from_slice::<PersistedSession>(&data).ok(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let persisted_token = persisted
+            .filter(|session| {
+                session.version == SESSION_FILE_VERSION
+                    && valid_session_token(&session.token)
+                    && constant_time_eq(
+                        session.credential_fingerprint.as_bytes(),
+                        credential_fingerprint(&username, &password, &session.token).as_bytes(),
+                    )
+            })
+            .map(|session| session.token);
+        let (token, needs_write) = match persisted_token {
+            Some(token) => (token, false),
+            None => (session_token(), true),
+        };
+        if needs_write {
+            crate::atomic_file::write_json(
+                path,
+                &PersistedSession {
+                    version: SESSION_FILE_VERSION,
+                    credential_fingerprint: credential_fingerprint(&username, &password, &token),
+                    token: token.clone(),
+                },
+            )?;
+        }
+        Ok(Self {
             username,
             password,
-            token: session_token(),
+            token,
             moq_token: session_token(),
             device_tokens: BTreeMap::new(),
-        }
+        })
     }
 
     pub fn moq_token(&self) -> &str {
@@ -318,6 +356,24 @@ fn session_token() -> String {
     random.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn credential_fingerprint(username: &str, password: &str, token: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"camera-hub-web-auth-v1");
+    digest.update(token.as_bytes());
+    digest.update((username.len() as u64).to_be_bytes());
+    digest.update(username.as_bytes());
+    digest.update((password.len() as u64).to_be_bytes());
+    digest.update(password.as_bytes());
+    hex::encode(digest.finalize())
+}
+
+fn valid_session_token(token: &str) -> bool {
+    token.len() == 64
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 pub(crate) fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     let mut difference = left.len() ^ right.len();
     let length = left.len().max(right.len());
@@ -371,6 +427,17 @@ if(response.ok){{location.replace("/")}}else{{document.getElementById("error").t
 mod tests {
     use super::*;
 
+    fn temporary_session_file(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "camera-hub-auth-{}-{}-{name}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn verifies_credentials_and_cookie() {
         let auth = WebAuth {
@@ -389,7 +456,9 @@ mod tests {
 
     #[test]
     fn photo_return_requires_a_session_or_device_bound_token() {
-        let auth = WebAuth::new("admin".to_owned(), "password".to_owned())
+        let path = temporary_session_file("device-token");
+        let auth = WebAuth::load("admin".to_owned(), "password".to_owned(), &path)
+            .unwrap()
             .with_device_tokens(r#"{"front":"0123456789abcdef0123456789abcdef"}"#)
             .unwrap();
         let headers = HeaderMap::new();
@@ -403,6 +472,46 @@ mod tests {
             HeaderValue::from_str(&format!("{COOKIE_NAME}={}", auth.token)).unwrap(),
         );
         assert!(auth.can_read_device_photos(&session_headers, "front", ""));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn persists_session_for_unchanged_credentials() {
+        let path = temporary_session_file("reuse");
+        let first = WebAuth::load("admin".to_owned(), "password".to_owned(), &path).unwrap();
+        let second = WebAuth::load("admin".to_owned(), "password".to_owned(), &path).unwrap();
+        assert_eq!(first.token, second.token);
+        assert_ne!(first.moq_token, second.moq_token);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn rotates_session_when_credentials_change() {
+        let path = temporary_session_file("credentials");
+        let first = WebAuth::load("admin".to_owned(), "password".to_owned(), &path).unwrap();
+        let second = WebAuth::load("admin".to_owned(), "new-password".to_owned(), &path).unwrap();
+        assert_ne!(first.token, second.token);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn replaces_corrupt_session_file() {
+        let path = temporary_session_file("corrupt");
+        fs::write(&path, b"{not valid json").unwrap();
+        let auth = WebAuth::load("admin".to_owned(), "password".to_owned(), &path).unwrap();
+        assert!(valid_session_token(&auth.token));
+        let persisted: PersistedSession =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted.token, auth.token);
+        let _ = fs::remove_file(path);
     }
 
     #[test]

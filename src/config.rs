@@ -17,6 +17,13 @@ pub struct Config {
     #[arg(long, env = "CAMERA_HUB_WEB_PASSWORD", default_value = "12345")]
     pub web_password: String,
 
+    #[arg(
+        long,
+        env = "CAMERA_HUB_AUTH_SESSION_FILE",
+        default_value = "camera-hub-state/auth-session.json"
+    )]
+    pub auth_session_file: PathBuf,
+
     /// JSON object mapping device IDs to private photo-return tokens.
     #[arg(long, env = "CAMERA_HUB_DEVICE_LINK_TOKENS", default_value = "{}")]
     pub device_link_tokens: String,
