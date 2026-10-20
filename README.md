@@ -412,8 +412,8 @@ AssetManager 只接受程序内置的固定
 未验证的空调内置定时红外字段。红外没有状态回读，Web 显示的是最近成功发送后的
 影子状态。
 
-豆包或 IntentApiBridge 可使用独立 Token 调用动态命令。标准客户端使用 HTTPS、
-Bearer Token 和 JSON POST；仅支持 URL 参数的桥接器可调用兼容 GET：
+外部 AI 助手可使用独立 Token 调用动态命令。标准客户端使用 HTTPS、Bearer Token
+和 JSON POST；只需触发 URL 的客户端可调用兼容 GET：
 
 ```bash
 curl -G 'https://hub.example/api/v1/integrations/aircon/command' \

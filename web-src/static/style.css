@@ -1294,7 +1294,7 @@ textarea:focus {
 .aircon-state-summary dt,
 .aircon-command-form label > span,
 .aircon-token-grid label > span,
-.aircon-intent-field > span {
+.aircon-copy-field > label {
     color: var(--muted);
     font-size: 10px;
 }
@@ -1319,7 +1319,7 @@ textarea:focus {
 
 .aircon-command-form label:not(.toggle),
 .aircon-token-grid label,
-.aircon-intent-field {
+.aircon-copy-field {
     display: grid;
     gap: 7px;
 }
@@ -1327,7 +1327,7 @@ textarea:focus {
 .aircon-command-form input:not([type="checkbox"]),
 .aircon-command-form select,
 .aircon-token-grid input,
-.aircon-intent-field textarea {
+.aircon-copy-field textarea {
     width: 100%;
     padding: 0 11px;
 }
@@ -1400,19 +1400,36 @@ textarea:focus {
     gap: 8px;
 }
 
-.aircon-intent-field {
+.aircon-integration-summary {
+    max-width: 760px;
+    margin: 10px 0 0;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.7;
+}
+
+.aircon-copy-field {
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
     margin-top: 12px;
 }
 
-.aircon-intent-field textarea {
+.aircon-copy-field > label {
+    grid-column: 1 / -1;
+}
+
+.aircon-copy-field textarea {
     min-height: 88px;
     padding-top: 10px;
     padding-bottom: 10px;
     resize: vertical;
 }
 
-.aircon-integration > .button {
-    margin-top: 10px;
+.aircon-guide-field textarea {
+    min-height: 360px;
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 1.65;
 }
 
 .ir-test-groups {
@@ -2608,6 +2625,14 @@ td.file-name {
     .aircon-section-heading {
         align-items: stretch;
         flex-direction: column;
+    }
+
+    .aircon-copy-field {
+        grid-template-columns: 1fr;
+    }
+
+    .aircon-copy-field > label {
+        grid-column: auto;
     }
 
     .ddns-runtime .ddns-error-row {

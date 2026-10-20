@@ -117,8 +117,10 @@
         airconIntegrationToken: $("airconIntegrationToken"),
         rotateAirconToken: $("rotateAirconToken"),
         copyAirconToken: $("copyAirconToken"),
-        airconIntentUri: $("airconIntentUri"),
-        copyAirconIntent: $("copyAirconIntent"),
+        airconTriggerUrl: $("airconTriggerUrl"),
+        copyAirconTrigger: $("copyAirconTrigger"),
+        airconUrlGuide: $("airconUrlGuide"),
+        copyAirconGuide: $("copyAirconGuide"),
         qqStatus: $("qqStatus"),
         qqState: $("qqState"),
         qqBotName: $("qqBotName"),
@@ -766,7 +768,7 @@
         ui.airconIntegrationToken.value = aircon.integration_token || "";
         ui.copyAirconToken.disabled = !ui.airconIntegrationToken.value;
         ui.rotateAirconToken.disabled = state.airconBusy;
-        renderAirconIntent();
+        renderAirconIntegration();
         updateAirconForm();
     }
 
@@ -820,7 +822,7 @@
         ui.airconTemperature.disabled = !setting || state.airconBusy;
         ui.airconEco.disabled = !setting || !supportsEco || state.airconBusy;
         ui.airconAutoOffMinutes.disabled = !setting || state.airconBusy;
-        renderAirconIntent();
+        renderAirconIntegration();
     }
 
     function airconCommandPayload() {
@@ -842,30 +844,96 @@
         };
     }
 
-    function renderAirconIntent() {
-        if (!ui.airconIntentUri) return;
+    function airconIntegrationEndpoint() {
         const aircon = state.aircon || {};
-        const payload = airconCommandPayload();
-        const command = payload.command;
+        return `${location.origin}` +
+            `${aircon.integration_endpoint || "/api/v1/integrations/aircon/command"}`;
+    }
+
+    function airconTriggerUrl(parameters) {
+        const aircon = state.aircon || {};
         const params = new URLSearchParams({
             token: aircon.integration_token || "AIRCON_TOKEN",
-            operation: command.operation,
+            ...parameters,
         });
+        return `${airconIntegrationEndpoint()}?${params}`;
+    }
+
+    function airconUrlGuide() {
+        const examples = [
+            ["制冷 24°C，关闭 ECO", {
+                operation: "set", temperature_c: "24", mode: "cool", eco: "false",
+            }],
+            ["关闭空调", { operation: "off" }],
+            ["打开空调（沿用影子状态）", { operation: "power", enabled: "true" }],
+            ["设置 25°C", { operation: "set_temperature", temperature_c: "25" }],
+            ["降低 2°C", { operation: "adjust_temperature", delta_c: "-2" }],
+            ["切换抽湿模式", { operation: "set_mode", mode: "dry" }],
+            ["关闭 ECO", { operation: "set_eco", enabled: "false" }],
+            ["30 分钟后关闭", { operation: "off", delay_minutes: "30" }],
+            ["制冷 26°C，2 小时后自动关闭", {
+                operation: "set", temperature_c: "26", mode: "cool", eco: "true",
+                auto_off_minutes: "120",
+            }],
+            ["取消全部定时任务", { operation: "cancel_all" }],
+        ];
+        return [
+            "camera-hub 空调触发 URL 使用说明",
+            "",
+            "直接以 HTTPS GET 访问触发 URL；访问即执行控制。",
+            `基础入口：${airconIntegrationEndpoint()}`,
+            `认证参数：token=${state.aircon?.integration_token || "AIRCON_TOKEN"}`,
+            "",
+            "必填参数",
+            "operation：set | off | power | set_temperature | adjust_temperature | " +
+                "set_mode | set_eco | cancel_schedule | cancel_all",
+            "",
+            "操作参数",
+            "set：temperature_c=17..30，mode=cool|dry|heat|auto，eco=true|false",
+            "power / set_eco：enabled=true|false",
+            "set_temperature：temperature_c=17..30",
+            "adjust_temperature：delta_c=-10..-1 或 1..10",
+            "set_mode：mode=cool|dry|heat|auto",
+            "ECO 只支持制冷模式；切换到其他模式会自动关闭 ECO",
+            "cancel_schedule：schedule_id=任务 ID",
+            "",
+            "可选调度参数",
+            "delay_minutes=1..43200（延迟执行）",
+            "execute_at_epoch=未来 30 天内的 Unix 秒时间戳；不能与 delay_minutes 同时使用",
+            "auto_off_minutes=1..10080（开机操作执行后的自动关机）",
+            "request_id=最长 64 位字母、数字、-、_、.；用于定时任务去重",
+            "",
+            "常用触发 URL",
+            ...examples.map(([label, parameters]) =>
+                `${label}：\n${airconTriggerUrl(parameters)}`),
+            "",
+            "注意",
+            "1. Token 是控制凭据，请只交给可信助手。",
+            "2. 相对调温依赖 camera-hub 的影子状态；超时后不要自动重试相对调温。",
+            "3. 返回 physical_confirmed=false 表示红外已发送，但没有空调物理回执。",
+        ].join("\n");
+    }
+
+    function renderAirconIntegration() {
+        if (!ui.airconTriggerUrl || !ui.airconUrlGuide) return;
+        const payload = airconCommandPayload();
+        const command = payload.command;
+        const parameters = {
+            operation: command.operation,
+        };
         if (command.operation === "set") {
-            params.set("temperature_c", String(command.temperature_c));
-            params.set("mode", command.mode);
-            params.set("eco", String(command.eco));
+            parameters.temperature_c = String(command.temperature_c);
+            parameters.mode = command.mode;
+            parameters.eco = String(command.eco);
         }
         if (payload.delay_minutes) {
-            params.set("delay_minutes", String(payload.delay_minutes));
+            parameters.delay_minutes = String(payload.delay_minutes);
         }
         if (payload.auto_off_minutes) {
-            params.set("auto_off_minutes", String(payload.auto_off_minutes));
+            parameters.auto_off_minutes = String(payload.auto_off_minutes);
         }
-        const endpoint = `${location.origin}` +
-            `${aircon.integration_endpoint || "/api/v1/integrations/aircon/command"}`;
-        ui.airconIntentUri.value =
-            `apibridge://request?method=GET&url=${encodeURIComponent(`${endpoint}?${params}`)}`;
+        ui.airconTriggerUrl.value = airconTriggerUrl(parameters);
+        ui.airconUrlGuide.value = airconUrlGuide();
     }
 
     async function submitAirconCommand(event) {
@@ -918,7 +986,7 @@
 
     async function rotateAirconToken() {
         if (state.airconBusy) return;
-        if (!window.confirm("重新生成后，豆包中配置的旧 Token 会立即失效。继续？")) return;
+        if (!window.confirm("重新生成后，外部 AI 助手使用的旧 Token 会立即失效。继续？")) return;
         state.airconBusy = true;
         try {
             await api("/api/v1/aircon/integration-token", { method: "POST" });
@@ -3684,8 +3752,11 @@
     ui.copyAirconToken.addEventListener("click", () => {
         copyAirconValue(ui.airconIntegrationToken, "空调集成 Token 已复制");
     });
-    ui.copyAirconIntent.addEventListener("click", () => {
-        copyAirconValue(ui.airconIntentUri, "Intent URI 已复制");
+    ui.copyAirconTrigger.addEventListener("click", () => {
+        copyAirconValue(ui.airconTriggerUrl, "空调触发 URL 已复制");
+    });
+    ui.copyAirconGuide.addEventListener("click", () => {
+        copyAirconValue(ui.airconUrlGuide, "空调 URL 调用说明已复制");
     });
     ui.reloadVoice.addEventListener("click", async () => {
         state.voiceDirty = false;

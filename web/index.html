@@ -546,9 +546,13 @@
             </section>
             <section class="aircon-integration">
                 <div class="aircon-section-heading">
-                    <h3>豆包接入</h3>
-                    <span class="chip active">HTTPS + Token</span>
+                    <h3>外部 AI 接入</h3>
+                    <span class="chip active">HTTPS URL</span>
                 </div>
+                <p class="aircon-integration-summary">
+                    将触发 URL 或完整调用说明复制给豆包等 AI 助手。这里只提供 HTTPS
+                    控制入口，不限定助手如何发起请求。
+                </p>
                 <div class="aircon-token-grid">
                     <label>
                         <span>集成 Token</span>
@@ -561,12 +565,18 @@
                                 type="button">复制 Token</button>
                     </div>
                 </div>
-                <label class="aircon-intent-field">
-                    <span>当前命令 Intent URI</span>
-                    <textarea id="airconIntentUri" rows="4" readonly></textarea>
-                </label>
-                <button class="button ghost" id="copyAirconIntent"
-                        type="button">复制 Intent URI</button>
+                <div class="aircon-copy-field">
+                    <label for="airconTriggerUrl">当前表单触发 URL</label>
+                    <textarea id="airconTriggerUrl" rows="4" readonly></textarea>
+                    <button class="button ghost" id="copyAirconTrigger"
+                            type="button">复制触发 URL</button>
+                </div>
+                <div class="aircon-copy-field aircon-guide-field">
+                    <label for="airconUrlGuide">URL 参数与控制方式说明</label>
+                    <textarea id="airconUrlGuide" rows="20" readonly></textarea>
+                    <button class="button ghost" id="copyAirconGuide"
+                            type="button">复制完整说明</button>
+                </div>
             </section>
             <p class="ir-voice-phrases">
                 语音命令：<code>小雨开空调</code>、<code>小雨制冷模式</code>、
