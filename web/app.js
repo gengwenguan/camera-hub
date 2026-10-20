@@ -111,6 +111,12 @@
         airconTempDown: $("airconTempDown"),
         airconTempUp: $("airconTempUp"),
         airconEcoButton: $("airconEcoButton"),
+        airconTimerButton: $("airconTimerButton"),
+        airconTimerPanel: $("airconTimerPanel"),
+        airconTimerOperation: $("airconTimerOperation"),
+        airconTimerHours: $("airconTimerHours"),
+        airconTimerMinutes: $("airconTimerMinutes"),
+        airconTimerSubmit: $("airconTimerSubmit"),
         airconRemoteStatus: $("airconRemoteStatus"),
         airconVerificationProgress: $("airconVerificationProgress"),
         airconVerificationList: $("airconVerificationList"),
@@ -808,6 +814,10 @@
         ui.airconEcoButton.disabled =
             state.airconBusy || !available || (!eco && mode !== "cool");
         ui.airconEcoButton.classList.toggle("active", eco);
+        ui.airconTimerButton.disabled = state.airconBusy || !available;
+        ui.airconTimerPanel.querySelectorAll("select, input, button").forEach((control) => {
+            control.disabled = state.airconBusy || !available;
+        });
         ui.airconRemoteStatus.textContent = available
             ? "操作会立即发送红外，请将 MI6 发射口对准空调。"
             : "红外服务未就绪，遥控器暂不可用。";
@@ -867,12 +877,16 @@
     }
 
     function renderAirconSchedules(schedules) {
+        const pendingCount =
+            schedules.filter((schedule) => schedule.status === "pending").length;
+        ui.airconTimerButton.textContent = pendingCount ? `定时 · ${pendingCount}` : "定时";
+        ui.airconTimerButton.classList.toggle("active", pendingCount > 0);
         if (!schedules.length) {
             ui.airconScheduleList.innerHTML = '<div class="empty">暂无定时任务</div>';
             ui.cancelAllAirconSchedules.disabled = true;
             return;
         }
-        const pending = schedules.some((schedule) => schedule.status === "pending");
+        const pending = pendingCount > 0;
         ui.cancelAllAirconSchedules.disabled = state.airconBusy || !pending;
         ui.airconScheduleList.innerHTML = schedules.slice(0, 20).map((schedule) => `
             <div class="aircon-schedule-row">
@@ -1133,6 +1147,56 @@
             state.airconDirty = false;
         } catch (error) {
             ui.irLastResult.textContent = `操作失败：${error.message || error}`;
+            handleError(error);
+        } finally {
+            state.airconBusy = false;
+            await loadVoice(true);
+        }
+    }
+
+    async function submitAirconTimer(event) {
+        event.preventDefault();
+        if (state.airconBusy || !ui.airconTimerPanel.reportValidity()) return;
+        const hours = Math.floor(Number(ui.airconTimerHours.value || 0));
+        const minutes = Math.floor(Number(ui.airconTimerMinutes.value || 0));
+        const delayMinutes = hours * 60 + minutes;
+        if (delayMinutes < 1 || delayMinutes > 43200) {
+            showToast("定时时长需在 1 分钟至 30 天之间");
+            return;
+        }
+        const current = state.aircon?.state || {};
+        const turningOn = ui.airconTimerOperation.value === "set";
+        const command = turningOn
+            ? {
+                operation: "set",
+                temperature_c: Number(current.temperature_c) || 26,
+                mode: current.mode || "cool",
+                eco: !!current.eco && current.mode === "cool",
+            }
+            : { operation: "off" };
+        const duration = [
+            hours ? `${hours} 小时` : "",
+            minutes ? `${minutes} 分钟` : "",
+        ].filter(Boolean).join(" ");
+        const summary = turningOn
+            ? `${duration}后按当前状态开机`
+            : `${duration}后关闭空调`;
+        if (!window.confirm(`创建“${summary}”定时任务？`)) return;
+        state.airconBusy = true;
+        try {
+            const body = await api("/api/v1/aircon/commands", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    command,
+                    delay_minutes: delayMinutes,
+                    request_id: `web-timer-${Date.now()}`,
+                }),
+            });
+            ui.airconTimerPanel.hidden = true;
+            ui.airconTimerButton.setAttribute("aria-expanded", "false");
+            showToast(body.result?.message || "定时任务已创建");
+        } catch (error) {
             handleError(error);
         } finally {
             state.airconBusy = false;
@@ -3922,6 +3986,13 @@
             enabled ? "开启 ECO" : "关闭 ECO",
         );
     });
+    ui.airconTimerButton.addEventListener("click", () => {
+        const opening = ui.airconTimerPanel.hidden;
+        ui.airconTimerPanel.hidden = !opening;
+        ui.airconTimerButton.setAttribute("aria-expanded", String(opening));
+        if (opening) ui.airconTimerOperation.focus();
+    });
+    ui.airconTimerPanel.addEventListener("submit", submitAirconTimer);
     ui.airconVerificationPass.addEventListener("click", () => {
         updateAirconVerification(true);
     });

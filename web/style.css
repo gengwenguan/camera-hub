@@ -1412,7 +1412,7 @@ textarea:focus {
 }
 
 .aircon-mode-controls .button,
-.aircon-eco-button {
+.aircon-remote-secondary-controls .button {
     min-height: 38px;
     padding: 0 8px;
 }
@@ -1422,6 +1422,59 @@ textarea:focus {
     border-color: #5e8b70;
     background: #183126;
     color: #9ae6b7;
+}
+
+.aircon-remote-secondary-controls {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.aircon-timer-button.active,
+.aircon-timer-button[aria-expanded="true"] {
+    border-color: #89733e;
+    background: #28220f;
+    color: #e9cd75;
+}
+
+.aircon-timer-panel {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: #101423;
+}
+
+.aircon-timer-panel[hidden] {
+    display: none;
+}
+
+.aircon-timer-panel label {
+    display: grid;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.aircon-timer-panel select,
+.aircon-timer-panel input {
+    width: 100%;
+    min-height: 36px;
+    padding: 0 10px;
+}
+
+.aircon-timer-duration {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.aircon-timer-panel p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 9px;
+    line-height: 1.6;
 }
 
 .aircon-remote-hint,

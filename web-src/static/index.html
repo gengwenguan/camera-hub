@@ -517,8 +517,37 @@
                         <button class="button ghost" type="button"
                                 data-aircon-mode="auto">自动</button>
                     </div>
-                    <button class="button ghost aircon-eco-button" id="airconEcoButton"
-                            type="button">ECO</button>
+                    <div class="aircon-remote-secondary-controls">
+                        <button class="button ghost aircon-eco-button" id="airconEcoButton"
+                                type="button">ECO</button>
+                        <button class="button ghost aircon-timer-button" id="airconTimerButton"
+                                type="button" aria-expanded="false"
+                                aria-controls="airconTimerPanel">定时</button>
+                    </div>
+                    <form class="aircon-timer-panel" id="airconTimerPanel" hidden>
+                        <label>
+                            <span>定时操作</span>
+                            <select id="airconTimerOperation">
+                                <option value="set">按当前状态开机</option>
+                                <option value="off">关闭空调</option>
+                            </select>
+                        </label>
+                        <div class="aircon-timer-duration">
+                            <label>
+                                <span>小时</span>
+                                <input id="airconTimerHours" type="number"
+                                       min="0" max="720" step="1" value="1">
+                            </label>
+                            <label>
+                                <span>分钟</span>
+                                <input id="airconTimerMinutes" type="number"
+                                       min="0" max="59" step="1" value="0">
+                            </label>
+                        </div>
+                        <button class="button primary" id="airconTimerSubmit"
+                                type="submit">创建定时任务</button>
+                        <p>定时开机使用遥控器当前显示的模式、温度和 ECO 设置。</p>
+                    </form>
                     <p class="aircon-remote-hint" id="airconRemoteStatus">
                         操作会立即发送红外，请将 MI6 发射口对准空调。
                     </p>
