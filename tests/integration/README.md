@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `android_app.py` | 本机密码保存、Rust 服务启动、登录认证、APK 更新恢复、首页恢复麦克风、外部浏览器跳转 | 独立 Android 13+ 模拟器、ADB、带浏览器的镜像、已构建 APK |
 | `deployment_health.py` | 在线组件、语音心跳、摄像头音视频增长、录像、AI 推理、FLV、WebSocket fMP4、DDNS/QQ 状态、模型和红外就绪 | 运行中的 Hub、Python、websocket-client |
-| `runtime_repairs.py` | HTTP/WebSocket 图片鉴权、空调状态与并发配置持久化 | Linux Rust 二进制；临时目录和 mock IR，不发送真实红外 |
+| `runtime_repairs.py` | HTTP/WebSocket 图片鉴权、空调状态、实体验收门禁、外部接口启停与并发配置持久化 | Linux Rust 二进制；临时目录和 mock IR，不发送真实红外 |
 
 ```sh
 python3 tests/integration/android_app.py \

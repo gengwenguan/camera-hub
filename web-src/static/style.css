@@ -1307,6 +1307,208 @@ textarea:focus {
     white-space: nowrap;
 }
 
+.aircon-remote-layout {
+    display: grid;
+    grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+    gap: 20px;
+    align-items: start;
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+}
+
+.aircon-remote,
+.aircon-verification {
+    min-width: 0;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+}
+
+.aircon-remote {
+    display: grid;
+    gap: 14px;
+    background: #0a0d17;
+}
+
+.aircon-remote-display {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: 12px;
+    align-items: center;
+    min-height: 92px;
+    padding: 14px 16px;
+    border: 1px solid #475748;
+    border-radius: 6px;
+    background: #b7c8a8;
+    color: #152116;
+}
+
+.aircon-remote-display > div {
+    display: grid;
+    gap: 4px;
+}
+
+.aircon-remote-display span,
+.aircon-remote-display small {
+    font-family: var(--mono);
+    font-weight: 700;
+}
+
+.aircon-remote-display output {
+    font-family: var(--mono);
+    font-size: 28px;
+    font-weight: 800;
+}
+
+#airconRemoteEco {
+    opacity: .25;
+}
+
+#airconRemoteEco.active {
+    opacity: 1;
+}
+
+.aircon-power-button {
+    width: 52px;
+    height: 52px;
+    justify-self: center;
+    border: 1px solid #8e4653;
+    border-radius: 50%;
+    background: #28141b;
+    color: #ff8291;
+    font-size: 24px;
+    cursor: pointer;
+}
+
+.aircon-power-button.active {
+    border-color: #49a36b;
+    background: #10241a;
+    color: #76dda0;
+}
+
+.aircon-power-button:disabled {
+    cursor: not-allowed;
+    opacity: .45;
+}
+
+.aircon-temperature-controls {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 8px;
+    align-items: center;
+    text-align: center;
+}
+
+.aircon-temperature-controls .button {
+    min-height: 42px;
+    font-size: 20px;
+}
+
+.aircon-mode-controls {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.aircon-mode-controls .button,
+.aircon-eco-button {
+    min-height: 38px;
+    padding: 0 8px;
+}
+
+.aircon-mode-controls .button.active,
+.aircon-eco-button.active {
+    border-color: #5e8b70;
+    background: #183126;
+    color: #9ae6b7;
+}
+
+.aircon-remote-hint,
+.aircon-verification > p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 10px;
+    line-height: 1.6;
+}
+
+.aircon-verification {
+    background: rgba(255, 255, 255, .012);
+}
+
+.aircon-verification > p {
+    margin-top: 8px;
+}
+
+.aircon-verification-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px;
+    margin-top: 12px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--line);
+}
+
+.aircon-verification-item {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 8px;
+    align-items: center;
+    min-height: 42px;
+    padding: 8px 10px;
+    background: #0b0e20;
+    font-size: 10px;
+}
+
+.aircon-verification-item strong {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.aircon-verification-item.verified strong {
+    color: #76dda0;
+}
+
+.aircon-verification-item .button {
+    min-height: 28px;
+    padding: 0 8px;
+    font-size: 9px;
+}
+
+.aircon-verification-prompt {
+    display: grid;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid #7b6a36;
+    border-radius: 6px;
+    background: #1c190e;
+}
+
+.aircon-verification-prompt[hidden] {
+    display: none;
+}
+
+.aircon-verification-prompt > div {
+    display: flex;
+    gap: 8px;
+}
+
+.aircon-advanced {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+}
+
+.aircon-advanced summary {
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 11px;
+    font-weight: 700;
+}
+
 .aircon-command-form {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1406,6 +1608,31 @@ textarea:focus {
     color: var(--muted);
     font-size: 11px;
     line-height: 1.7;
+}
+
+.aircon-integration-gate {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12px;
+    padding: 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+}
+
+.aircon-integration-gate[hidden] {
+    display: none;
+}
+
+.aircon-integration-gate p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.aircon-disable-integration {
+    margin-top: 12px;
 }
 
 .aircon-copy-field {
@@ -2611,6 +2838,7 @@ td.file-name {
     .voice-studio-policy,
     .voice-command-grid,
     .aircon-state-summary,
+    .aircon-remote-layout,
     .aircon-command-form,
     .aircon-token-grid,
     .qq-runtime,
@@ -2633,6 +2861,17 @@ td.file-name {
 
     .aircon-copy-field > label {
         grid-column: auto;
+    }
+
+    .aircon-verification-list,
+    .aircon-mode-controls {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .aircon-integration-gate,
+    .aircon-verification-prompt > div {
+        align-items: stretch;
+        flex-direction: column;
     }
 
     .ddns-runtime .ddns-error-row {

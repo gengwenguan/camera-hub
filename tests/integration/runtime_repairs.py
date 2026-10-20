@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -174,10 +175,43 @@ def run(binary):
                 assert status == 200 and overview["aircon"]["state_known"]
                 assert overview["aircon"]["state"]["power"]
                 assert overview["aircon"]["physical_confirmed"] is False
+                assert overview["aircon"]["integration_enabled"] is False
+                assert overview["aircon"]["integration_token"] == ""
+                assert http(
+                    base,
+                    "/api/v1/integrations/aircon/command?token=blocked&operation=off",
+                )[0] == 403
                 assert http(base, "/api/v1/aircon/commands", {
                     "command": {"operation": "adjust_temperature", "delta_c": 1},
                 }, cookie=cookie)[0] == 200
                 assert MockIr.commands[-1]["temperature_c"] == 27
+                for capability in (
+                    "power_on", "power_off", "cool", "dry", "heat", "auto",
+                    "temperature_up", "temperature_down", "eco_on", "eco_off",
+                ):
+                    assert http(base, "/api/v1/aircon/verification", {
+                        "capability": capability, "verified": True,
+                    }, method="PUT", cookie=cookie)[0] == 200
+                status, enabled, _ = http(base, "/api/v1/aircon/integration", {
+                    "enabled": True,
+                }, method="PUT", cookie=cookie)
+                assert status == 200
+                token = enabled["aircon"]["integration_token"]
+                assert enabled["aircon"]["integration_enabled"] and token.startswith("cha_")
+                query = urllib.parse.urlencode({
+                    "token": token, "operation": "set", "temperature_c": 23,
+                    "mode": "cool", "eco": "false",
+                })
+                assert http(
+                    base, f"/api/v1/integrations/aircon/command?{query}",
+                )[0] == 200
+                assert MockIr.commands[-1]["temperature_c"] == 23
+                assert http(base, "/api/v1/aircon/verification", {
+                    "capability": "eco_off", "verified": False,
+                }, method="PUT", cookie=cookie)[0] == 200
+                assert http(
+                    base, f"/api/v1/integrations/aircon/command?{query}",
+                )[0] == 403
                 barrier = threading.Barrier(2)
                 results = []
                 def update_settings(patch):
@@ -196,7 +230,7 @@ def run(binary):
                 persisted = json.loads((root / "camera-hub-state/settings.json").read_text())
                 assert persisted["retain_days"] == 13 and persisted["segment_seconds"] == 123
                 assert http(base, "/api/v1/devices/../link", method="GET")[0] != 101
-                print("PASS: photo access; local voice authentication; shared aircon state; concurrent settings persistence")
+                print("PASS: photo access; local voice auth; gated aircon integration; settings persistence")
             finally:
                 process.terminate()
                 try:

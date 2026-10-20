@@ -33,7 +33,8 @@ mod workers;
 
 use crate::ai::AiService;
 use crate::aircon::{
-    AirconCommandRequest, AirconError, AirconIntegrationQuery, AirconOperation, AirconService,
+    AirconCommandRequest, AirconError, AirconIntegrationQuery, AirconIntegrationUpdate,
+    AirconOperation, AirconService, AirconVerificationUpdate,
 };
 use crate::asset_manager::AssetManager;
 use crate::component_manager::ComponentManager;
@@ -242,6 +243,11 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             post(send_local_voice_aircon),
         )
         .route("/api/v1/aircon/commands", post(send_aircon_command))
+        .route(
+            "/api/v1/aircon/verification",
+            put(update_aircon_verification),
+        )
+        .route("/api/v1/aircon/integration", put(update_aircon_integration))
         .route(
             "/api/v1/aircon/integration-token",
             post(rotate_aircon_token),
@@ -1172,6 +1178,28 @@ async fn send_aircon_command(
     Ok(Json(json!({"ok":true,"result":result})))
 }
 
+async fn update_aircon_verification(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<AirconVerificationUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let aircon = state
+        .aircon
+        .update_verification(update)
+        .map_err(aircon_error)?;
+    Ok(Json(json!({"ok":true,"aircon":aircon})))
+}
+
+async fn update_aircon_integration(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<AirconIntegrationUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let aircon = state
+        .aircon
+        .update_integration(update)
+        .map_err(aircon_error)?;
+    Ok(Json(json!({"ok":true,"aircon":aircon})))
+}
+
 async fn rotate_aircon_token(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -1185,6 +1213,7 @@ async fn aircon_command_external_query(
     Query(query): Query<AirconIntegrationQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_secure_aircon_transport(transport)?;
+    require_aircon_integration_enabled(&state.aircon)?;
     if !state.aircon.verify_token(&query.token) {
         return Err(ApiError::status(
             StatusCode::UNAUTHORIZED,
@@ -1203,6 +1232,7 @@ async fn aircon_command_external_json(
     Json(request): Json<AirconCommandRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     require_secure_aircon_transport(transport)?;
+    require_aircon_integration_enabled(&state.aircon)?;
     let token = headers
         .get(AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -1223,6 +1253,16 @@ fn require_secure_aircon_transport(transport: auth::TransportSecurity) -> Result
         return Err(ApiError::status(
             StatusCode::UPGRADE_REQUIRED,
             "空调集成接口必须使用 HTTPS",
+        ));
+    }
+    Ok(())
+}
+
+fn require_aircon_integration_enabled(aircon: &AirconService) -> Result<(), ApiError> {
+    if !aircon.integration_enabled() {
+        return Err(ApiError::status(
+            StatusCode::FORBIDDEN,
+            "外部空调接口尚未完成实测并启用",
         ));
     }
     Ok(())

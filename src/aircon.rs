@@ -3,6 +3,7 @@ use crate::ir::{AcMode, AirconCommand, IrTransmission};
 use crate::ir_control::IrControl;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,10 +12,57 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::sleep;
 use tracing::{info, warn};
 
-const AIRCON_CONFIG_VERSION: u32 = 1;
+const AIRCON_CONFIG_VERSION: u32 = 2;
 const MAX_DELAY_MINUTES: u32 = 30 * 24 * 60;
 const MAX_AUTO_OFF_MINUTES: u32 = 7 * 24 * 60;
 const MAX_SCHEDULES: usize = 128;
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AirconCapability {
+    PowerOn,
+    PowerOff,
+    Cool,
+    Dry,
+    Heat,
+    Auto,
+    TemperatureUp,
+    TemperatureDown,
+    EcoOn,
+    EcoOff,
+}
+
+const REQUIRED_CAPABILITIES: [AirconCapability; 10] = [
+    AirconCapability::PowerOn,
+    AirconCapability::PowerOff,
+    AirconCapability::Cool,
+    AirconCapability::Dry,
+    AirconCapability::Heat,
+    AirconCapability::Auto,
+    AirconCapability::TemperatureUp,
+    AirconCapability::TemperatureDown,
+    AirconCapability::EcoOn,
+    AirconCapability::EcoOff,
+];
+
+fn verification_complete(capabilities: &BTreeSet<AirconCapability>) -> bool {
+    REQUIRED_CAPABILITIES
+        .iter()
+        .all(|capability| capabilities.contains(capability))
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AirconVerificationUpdate {
+    pub capability: AirconCapability,
+    pub verified: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AirconIntegrationUpdate {
+    pub enabled: bool,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -281,6 +329,10 @@ pub struct AirconOverview {
     pub schedules: Vec<AirconSchedule>,
     pub integration_token: String,
     pub integration_endpoint: &'static str,
+    pub integration_enabled: bool,
+    pub verification_complete: bool,
+    pub verified_capabilities: Vec<AirconCapability>,
+    pub required_capabilities: Vec<AirconCapability>,
     pub temperature_min: u8,
     pub temperature_max: u8,
     pub modes: [&'static str; 4],
@@ -335,6 +387,8 @@ struct AirconDocument {
     version: u32,
     revision: u64,
     integration_token: String,
+    integration_enabled: bool,
+    verified_capabilities: BTreeSet<AirconCapability>,
     state: AirconState,
     state_known: bool,
     next_schedule_id: u64,
@@ -347,6 +401,8 @@ impl Default for AirconDocument {
             version: AIRCON_CONFIG_VERSION,
             revision: 1,
             integration_token: String::new(),
+            integration_enabled: false,
+            verified_capabilities: BTreeSet::new(),
             state: AirconState::default(),
             state_known: false,
             next_schedule_id: 1,
@@ -365,6 +421,11 @@ impl AirconDocument {
             || self.integration_token.chars().any(char::is_control)
         {
             anyhow::bail!("空调集成 Token 格式无效");
+        }
+        self.verified_capabilities
+            .retain(|capability| REQUIRED_CAPABILITIES.contains(capability));
+        if !verification_complete(&self.verified_capabilities) {
+            self.integration_enabled = false;
         }
         if self.state.validate().is_err() {
             self.state = AirconState::default();
@@ -541,13 +602,27 @@ impl AirconService {
 
     pub fn overview(&self) -> AirconOverview {
         let store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        let verification_complete = verification_complete(&store.current.verified_capabilities);
         AirconOverview {
             state: store.current.state.clone(),
             state_known: store.current.state_known,
             physical_confirmed: false,
             schedules: store.current.schedules.iter().rev().cloned().collect(),
-            integration_token: store.current.integration_token.clone(),
+            integration_token: if store.current.integration_enabled {
+                store.current.integration_token.clone()
+            } else {
+                String::new()
+            },
             integration_endpoint: "/api/v1/integrations/aircon/command",
+            integration_enabled: store.current.integration_enabled,
+            verification_complete,
+            verified_capabilities: store
+                .current
+                .verified_capabilities
+                .iter()
+                .copied()
+                .collect(),
+            required_capabilities: REQUIRED_CAPABILITIES.to_vec(),
             temperature_min: 17,
             temperature_max: 30,
             modes: ["cool", "dry", "heat", "auto"],
@@ -557,19 +632,67 @@ impl AirconService {
     }
 
     pub fn verify_token(&self, token: &str) -> bool {
-        let expected = self
-            .store
+        let store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        store.current.integration_enabled
+            && !store.current.integration_token.is_empty()
+            && constant_time_eq(store.current.integration_token.as_bytes(), token.as_bytes())
+    }
+
+    pub fn integration_enabled(&self) -> bool {
+        self.store
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .current
-            .integration_token
-            .clone();
-        !expected.is_empty() && constant_time_eq(expected.as_bytes(), token.as_bytes())
+            .integration_enabled
+    }
+
+    pub fn update_verification(
+        &self,
+        update: AirconVerificationUpdate,
+    ) -> std::result::Result<AirconOverview, AirconError> {
+        let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        let mut next = store.current.clone();
+        if update.verified {
+            next.verified_capabilities.insert(update.capability);
+        } else {
+            next.verified_capabilities.remove(&update.capability);
+            next.integration_enabled = false;
+        }
+        next.revision = next.revision.saturating_add(1);
+        store.commit(next).map_err(internal_error)?;
+        drop(store);
+        Ok(self.overview())
+    }
+
+    pub fn update_integration(
+        &self,
+        update: AirconIntegrationUpdate,
+    ) -> std::result::Result<AirconOverview, AirconError> {
+        let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        let mut next = store.current.clone();
+        if update.enabled {
+            if !verification_complete(&next.verified_capabilities) {
+                return Err(AirconError::Invalid(
+                    "请先完成全部空调遥控功能实测".to_owned(),
+                ));
+            }
+            if !next.integration_enabled {
+                next.integration_token = generate_token().map_err(internal_error)?;
+            }
+        }
+        next.integration_enabled = update.enabled;
+        next.revision = next.revision.saturating_add(1);
+        store.commit(next).map_err(internal_error)?;
+        drop(store);
+        Ok(self.overview())
     }
 
     pub fn rotate_token(&self) -> std::result::Result<String, AirconError> {
         let token = generate_token().map_err(internal_error)?;
         let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
+        if !store.current.integration_enabled {
+            return Err(AirconError::Invalid("外部空调接口尚未启用".to_owned()));
+        }
         let mut next = store.current.clone();
         next.integration_token.clone_from(&token);
         next.revision = next.revision.saturating_add(1);
@@ -1061,6 +1184,72 @@ mod tests {
         assert_eq!(reloaded.current.integration_token, token);
         assert_eq!(reloaded.current.state.temperature_c, 23);
         assert_eq!(reloaded.current.schedules.len(), 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn gates_external_integration_on_persisted_physical_verification() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let path = temporary_config("verification-gate");
+        let service = AirconService {
+            store: Mutex::new(AirconStore::load(path.clone()).unwrap()),
+            ir: Arc::new(IrControl::from_url("http://127.0.0.1:1", PathBuf::new()).unwrap()),
+            execution: AsyncMutex::new(()),
+        };
+        let original_token = service
+            .store
+            .lock()
+            .unwrap()
+            .current
+            .integration_token
+            .clone();
+        assert!(!service.overview().integration_enabled);
+        assert!(!service.verify_token(&original_token));
+        assert!(matches!(
+            service.update_integration(AirconIntegrationUpdate { enabled: true }),
+            Err(AirconError::Invalid(_))
+        ));
+
+        for capability in REQUIRED_CAPABILITIES {
+            service
+                .update_verification(AirconVerificationUpdate {
+                    capability,
+                    verified: true,
+                })
+                .unwrap();
+        }
+        let verified = service.overview();
+        assert!(verified.verification_complete);
+        assert!(!verified.integration_enabled);
+        assert!(verified.integration_token.is_empty());
+
+        let enabled = service
+            .update_integration(AirconIntegrationUpdate { enabled: true })
+            .unwrap();
+        assert!(enabled.integration_enabled);
+        assert_ne!(enabled.integration_token, original_token);
+        assert!(service.verify_token(&enabled.integration_token));
+
+        let disabled = service
+            .update_verification(AirconVerificationUpdate {
+                capability: AirconCapability::EcoOff,
+                verified: false,
+            })
+            .unwrap();
+        assert!(!disabled.integration_enabled);
+        assert!(!disabled.verification_complete);
+        assert!(disabled.integration_token.is_empty());
+        assert!(!service.verify_token(&enabled.integration_token));
+
+        drop(service);
+        let reloaded = AirconStore::load(path.clone()).unwrap();
+        assert!(!reloaded.current.integration_enabled);
+        assert!(
+            !reloaded
+                .current
+                .verified_capabilities
+                .contains(&AirconCapability::EcoOff)
+        );
         fs::remove_file(path).unwrap();
     }
 
