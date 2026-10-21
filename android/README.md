@@ -3,6 +3,11 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.18 HTTP 代理调用示例
+
+HTTP 代理页使用 `https://www.baidu.com` 展示原始目标 URL、URL 编码结果以及可直接复制的
+GET、POST 调用说明，方便将完整上下文交给外部 AI。
+
 ## 0.5.17 通用 HTTP 转发
 
 HTTP 代理取消 Origin 白名单，独立 Token 可访问 Hub 网络可达的任意 HTTP(S) 地址。

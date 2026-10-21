@@ -2534,12 +2534,21 @@
     }
 
     function httpProxyCurlGuide() {
-        const target = httpProxyUrl("TARGET_URL");
+        const exampleUrl = "https://www.baidu.com";
+        const encodedUrl = encodeURIComponent(exampleUrl);
+        const target = httpProxyUrl(exampleUrl);
         return [
-            "GET",
+            "HTTP 代理调用说明",
+            "",
+            "url 参数必须使用 URL 编码，再作为 Hub 接口的 url 查询参数。",
+            `示例目标 URL：${exampleUrl}`,
+            `编码后的 url：${encodedUrl}`,
+            "Hub 收到请求后会解码 url，并使用相同 HTTP 方法访问目标地址。",
+            "",
+            "GET 示例",
             `curl '${target}'`,
             "",
-            "POST JSON",
+            "POST JSON 示例",
             `curl -X POST '${target}' \\`,
             "  -H 'Authorization: Bearer TARGET_TOKEN' \\",
             "  -H 'Content-Type: application/json' \\",
