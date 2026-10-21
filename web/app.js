@@ -208,7 +208,6 @@
         httpProxyStatus: $("httpProxyStatus"),
         httpProxyForm: $("httpProxyForm"),
         httpProxyEnabled: $("httpProxyEnabled"),
-        httpProxyAllowedOrigins: $("httpProxyAllowedOrigins"),
         reloadHttpProxy: $("reloadHttpProxy"),
         saveHttpProxy: $("saveHttpProxy"),
         httpProxyAccess: $("httpProxyAccess"),
@@ -218,7 +217,10 @@
         httpProxyTemplate: $("httpProxyTemplate"),
         copyHttpProxyTemplate: $("copyHttpProxyTemplate"),
         httpProxyTestForm: $("httpProxyTestForm"),
+        httpProxyTestMethod: $("httpProxyTestMethod"),
         httpProxyTestUrl: $("httpProxyTestUrl"),
+        httpProxyTestHeaders: $("httpProxyTestHeaders"),
+        httpProxyTestBody: $("httpProxyTestBody"),
         testHttpProxy: $("testHttpProxy"),
         httpProxyTestResult: $("httpProxyTestResult"),
         liveDeviceSelect: $("liveDeviceSelect"),
@@ -2519,7 +2521,7 @@
 
     function httpProxyEndpoint() {
         return `${location.origin}${
-            state.httpProxy?.endpoint || "/api/v1/integrations/http-proxy/fetch"
+            state.httpProxy?.endpoint || "/api/v1/integrations/http-proxy/request"
         }`;
     }
 
@@ -2531,6 +2533,20 @@
         return `${httpProxyEndpoint()}?${params}`;
     }
 
+    function httpProxyCurlGuide() {
+        const target = httpProxyUrl("TARGET_URL");
+        return [
+            "GET",
+            `curl '${target}'`,
+            "",
+            "POST JSON",
+            `curl -X POST '${target}' \\`,
+            "  -H 'Authorization: Bearer TARGET_TOKEN' \\",
+            "  -H 'Content-Type: application/json' \\",
+            "  --data '{\"enabled\":true}'",
+        ].join("\n");
+    }
+
     function renderHttpProxy(proxy) {
         state.httpProxy = cloneJson(proxy);
         const enabled = !!proxy.enabled;
@@ -2538,33 +2554,19 @@
         ui.httpProxyStatus.className = `chip ${enabled ? "active" : "offline"}`;
         ui.httpProxyAccess.hidden = !enabled;
         ui.httpProxyToken.value = enabled ? proxy.token || "" : "";
-        ui.httpProxyTemplate.value = enabled ? httpProxyUrl("TARGET_URL") : "";
+        ui.httpProxyTemplate.value = enabled ? httpProxyCurlGuide() : "";
         ui.copyHttpProxyToken.disabled = !enabled || !ui.httpProxyToken.value;
         ui.copyHttpProxyTemplate.disabled = !enabled || !ui.httpProxyTemplate.value;
         ui.rotateHttpProxyToken.disabled = state.httpProxyBusy || !enabled;
         ui.testHttpProxy.disabled = state.httpProxyBusy || !enabled;
         if (!state.httpProxyDirty) {
             ui.httpProxyEnabled.checked = enabled;
-            ui.httpProxyAllowedOrigins.value =
-                (Array.isArray(proxy.allowed_origins) ? proxy.allowed_origins : []).join("\n");
         }
-        updateHttpProxyRequirements();
-    }
-
-    function updateHttpProxyRequirements() {
-        ui.httpProxyAllowedOrigins.required = ui.httpProxyEnabled.checked;
-    }
-
-    function collectHttpProxyOrigins() {
-        return ui.httpProxyAllowedOrigins.value
-            .split(/\r?\n/)
-            .map((origin) => origin.trim())
-            .filter(Boolean);
+        updateHttpProxyTestForm();
     }
 
     async function saveHttpProxy(event) {
         event.preventDefault();
-        updateHttpProxyRequirements();
         if (!ui.httpProxyForm.reportValidity()) return;
         const enabled = ui.httpProxyEnabled.checked;
         if (!enabled && state.httpProxy?.enabled &&
@@ -2577,10 +2579,7 @@
             const body = await api("/api/v1/http-proxy", {
                 method: "PUT",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    enabled,
-                    allowed_origins: collectHttpProxyOrigins(),
-                }),
+                body: JSON.stringify({ enabled }),
             });
             state.httpProxyDirty = false;
             renderHttpProxy(body.http_proxy || {});
@@ -2610,20 +2609,54 @@
         }
     }
 
+    function updateHttpProxyTestForm() {
+        const method = ui.httpProxyTestMethod.value;
+        const bodyAllowed = !["GET", "HEAD"].includes(method);
+        ui.httpProxyTestBody.disabled = !bodyAllowed;
+        ui.testHttpProxy.textContent = `发起 ${method}`;
+    }
+
+    function httpProxyTestHeaders() {
+        const value = ui.httpProxyTestHeaders.value.trim();
+        if (!value) return {};
+        const parsed = JSON.parse(value);
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") {
+            throw new Error("请求头必须是 JSON 对象");
+        }
+        const headers = {};
+        for (const [name, headerValue] of Object.entries(parsed)) {
+            if (typeof headerValue !== "string") {
+                throw new Error(`请求头 ${name} 的值必须是字符串`);
+            }
+            headers[name] = headerValue;
+        }
+        return headers;
+    }
+
     async function testHttpProxy(event) {
         event.preventDefault();
         if (!ui.httpProxyTestForm.reportValidity() || !state.httpProxy?.enabled) return;
+        const method = ui.httpProxyTestMethod.value;
         state.httpProxyBusy = true;
         ui.testHttpProxy.disabled = true;
         ui.httpProxyTestResult.textContent = "请求中…";
         try {
-            const response = await fetch(httpProxyUrl(ui.httpProxyTestUrl.value.trim()), {
+            const options = {
+                method,
+                headers: httpProxyTestHeaders(),
                 cache: "no-store",
-            });
+            };
+            if (!["GET", "HEAD"].includes(method) && ui.httpProxyTestBody.value) {
+                options.body = ui.httpProxyTestBody.value;
+            }
+            const response = await fetch(
+                httpProxyUrl(ui.httpProxyTestUrl.value.trim()),
+                options,
+            );
             const body = await response.text();
             const contentType = response.headers.get("Content-Type") || "未知类型";
             ui.httpProxyTestResult.textContent = [
-                `HTTP ${response.status}`,
+                `${method} · HTTP ${response.status}`,
                 contentType,
                 "",
                 body.slice(0, 10_000),
@@ -4278,7 +4311,6 @@
     });
     ui.httpProxyForm.addEventListener("input", () => {
         state.httpProxyDirty = true;
-        updateHttpProxyRequirements();
     });
     ui.httpProxyForm.addEventListener("submit", saveHttpProxy);
     ui.reloadHttpProxy.addEventListener("click", async () => {
@@ -4290,8 +4322,9 @@
         copyAirconValue(ui.httpProxyToken, "HTTP 代理 Token 已复制");
     });
     ui.copyHttpProxyTemplate.addEventListener("click", () => {
-        copyAirconValue(ui.httpProxyTemplate, "HTTP 代理调用模板已复制");
+        copyAirconValue(ui.httpProxyTemplate, "HTTP 代理调用示例已复制");
     });
+    ui.httpProxyTestMethod.addEventListener("change", updateHttpProxyTestForm);
     ui.httpProxyTestForm.addEventListener("submit", testHttpProxy);
     ui.deviceSelect.addEventListener("change", () => selectDevice(ui.deviceSelect.value));
     ui.liveDeviceSelect.addEventListener("change", () => {

@@ -1679,9 +1679,10 @@ textarea:focus {
 }
 
 .proxy-panel form,
-.proxy-origins-field,
 .proxy-token-grid label,
-.proxy-copy-field {
+.proxy-copy-field,
+.proxy-test-grid label,
+#httpProxyTestForm > label {
     display: grid;
     gap: 8px;
 }
@@ -1697,7 +1698,8 @@ textarea:focus {
 }
 
 .proxy-panel textarea,
-.proxy-panel input:not([type="checkbox"]) {
+.proxy-panel input:not([type="checkbox"]),
+.proxy-panel select {
     width: 100%;
 }
 
@@ -1732,16 +1734,15 @@ textarea:focus {
     margin-top: 10px;
 }
 
-.proxy-test-form {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 12px !important;
-    align-items: end;
+.proxy-test-grid {
+    display: grid;
+    grid-template-columns: 150px minmax(0, 1fr);
+    gap: 12px;
 }
 
-.proxy-test-form label {
-    display: grid;
-    gap: 8px;
+#httpProxyTestBody:disabled {
+    cursor: not-allowed;
+    opacity: .45;
 }
 
 .proxy-test-result {
@@ -2983,7 +2984,7 @@ td.file-name {
     .qq-test-form,
     .ddns-runtime,
     .proxy-token-grid,
-    .proxy-test-form {
+    .proxy-test-grid {
         grid-template-columns: 1fr;
     }
 

@@ -35,6 +35,20 @@ class MockIr(BaseHTTPRequestHandler):
             "pulse_count": 500, "duration_us": 560000, "spi_bytes": 67584,
         }})
 
+    def do_PUT(self):
+        self.do_POST()
+
+    def do_PATCH(self):
+        self.do_POST()
+
+    def do_DELETE(self):
+        self.do_POST()
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def respond(self, body):
         data = json.dumps(body).encode()
         self.send_response(200)
@@ -220,48 +234,72 @@ def run(binary):
                     "url": f"http://127.0.0.1:{mock.server_port}/proxy-target",
                 })
                 assert http(
-                    base, f"/api/v1/integrations/http-proxy/fetch?{blocked_proxy_query}",
+                    base, f"/api/v1/integrations/http-proxy/request?{blocked_proxy_query}",
                 )[0] == 403
                 status, proxy, _ = http(base, "/api/v1/http-proxy", {
                     "enabled": True,
-                    "allowed_origins": [f"http://127.0.0.1:{mock.server_port}"],
                 }, method="PUT", cookie=cookie)
                 assert status == 200
                 proxy = proxy["http_proxy"]
                 proxy_token = proxy["token"]
                 assert proxy["enabled"] and proxy_token.startswith("chp_")
+                assert proxy["unrestricted_targets"]
+                assert proxy["supported_methods"] == [
+                    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD",
+                ]
                 target = f"http://127.0.0.1:{mock.server_port}/proxy-target?value=ok"
                 proxy_query = urllib.parse.urlencode({
                     "token": proxy_token,
                     "url": target,
                 })
                 proxy_status, proxy_body, proxy_headers = http(
-                    base, f"/api/v1/integrations/http-proxy/fetch?{proxy_query}",
+                    base, f"/api/v1/integrations/http-proxy/request?{proxy_query}",
                 )
                 assert (proxy_status, proxy_body) == (200, {"ok": True})
                 assert proxy_headers["X-Content-Type-Options"] == "nosniff"
                 assert "sandbox" in proxy_headers["Content-Security-Policy"]
+                assert http(
+                    base, f"/api/v1/integrations/http-proxy/fetch?{proxy_query}",
+                )[0] == 200
+                post_target = f"http://localhost:{mock.server_port}/proxy-target"
+                post_query = urllib.parse.urlencode({
+                    "token": proxy_token,
+                    "url": post_target,
+                })
+                proxy_status, proxy_body, _ = http(
+                    base,
+                    f"/api/v1/integrations/http-proxy/request?{post_query}",
+                    {"proxy_test": True},
+                    method="POST",
+                )
+                assert proxy_status == 200 and proxy_body["ok"]
+                assert MockIr.commands[-1] == {"proxy_test": True}
+                for method in ("PUT", "PATCH", "DELETE"):
+                    proxy_status, proxy_body, _ = http(
+                        base,
+                        f"/api/v1/integrations/http-proxy/request?{post_query}",
+                        {"method": method},
+                        method=method,
+                    )
+                    assert proxy_status == 200 and proxy_body["ok"]
+                    assert MockIr.commands[-1] == {"method": method}
+                assert http(
+                    base,
+                    f"/api/v1/integrations/http-proxy/request?{post_query}",
+                    method="HEAD",
+                )[0] == 200
                 wrong_proxy_query = urllib.parse.urlencode({
                     "token": "wrong",
                     "url": target,
                 })
                 assert http(
-                    base, f"/api/v1/integrations/http-proxy/fetch?{wrong_proxy_query}",
+                    base, f"/api/v1/integrations/http-proxy/request?{wrong_proxy_query}",
                 )[0] == 401
-                denied_proxy_query = urllib.parse.urlencode({
-                    "token": proxy_token,
-                    "url": f"http://localhost:{mock.server_port}/proxy-target",
-                })
-                assert http(
-                    base, f"/api/v1/integrations/http-proxy/fetch?{denied_proxy_query}",
-                )[0] == 403
                 persisted_proxy = json.loads(
                     (root / "camera-hub-state/http-proxy.json").read_text()
                 )
                 assert persisted_proxy["enabled"]
-                assert persisted_proxy["allowed_origins"] == [
-                    f"http://127.0.0.1:{mock.server_port}"
-                ]
+                assert "allowed_origins" not in persisted_proxy
                 barrier = threading.Barrier(2)
                 results = []
                 def update_settings(patch):

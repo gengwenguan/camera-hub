@@ -246,6 +246,15 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             get(http_proxy_external),
         )
         .route(
+            "/api/v1/integrations/http-proxy/request",
+            get(http_proxy_external)
+                .post(http_proxy_external)
+                .put(http_proxy_external)
+                .patch(http_proxy_external)
+                .delete(http_proxy_external)
+                .head(http_proxy_external),
+        )
+        .route(
             "/api/v1/http-proxy",
             get(http_proxy_overview).put(update_http_proxy),
         )
@@ -1318,6 +1327,9 @@ async fn http_proxy_external(
     State(state): State<Arc<AppState>>,
     Extension(transport): Extension<auth::TransportSecurity>,
     Query(query): Query<HttpProxyQuery>,
+    method: Method,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
 ) -> Result<Response, ApiError> {
     require_secure_http_proxy_transport(transport)?;
     state
@@ -1326,7 +1338,7 @@ async fn http_proxy_external(
         .map_err(http_proxy_error)?;
     let result = state
         .http_proxy
-        .fetch(&query.url)
+        .forward(method, &query.url, &headers, body)
         .await
         .map_err(http_proxy_error)?;
     let mut response = Response::builder()
@@ -1373,9 +1385,11 @@ fn require_secure_http_proxy_transport(transport: auth::TransportSecurity) -> Re
 fn http_proxy_error(error: HttpProxyError) -> ApiError {
     let status = match &error {
         HttpProxyError::Invalid(_) => StatusCode::BAD_REQUEST,
-        HttpProxyError::Disabled | HttpProxyError::Forbidden(_) => StatusCode::FORBIDDEN,
+        HttpProxyError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
+        HttpProxyError::Disabled => StatusCode::FORBIDDEN,
         HttpProxyError::Unauthorized => StatusCode::UNAUTHORIZED,
         HttpProxyError::Busy => StatusCode::TOO_MANY_REQUESTS,
+        HttpProxyError::RequestTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
         HttpProxyError::Upstream(_) | HttpProxyError::TooLarge => StatusCode::BAD_GATEWAY,
     };
     ApiError::status(status, error.to_string())

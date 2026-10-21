@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <title>camera-hub</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260811-5">
-    <link rel="stylesheet" href="/style.css?v=20261021-1">
+    <link rel="stylesheet" href="/style.css?v=20261021-2">
 </head>
 <body>
     <div class="backdrop"></div>
@@ -1077,14 +1077,14 @@
         <section class="view-heading" data-view="proxy" hidden>
             <p class="eyebrow">OUTBOUND HTTP</p>
             <h1>HTTP 代理</h1>
-            <p>管理独立的外部 GET 转发入口。</p>
+            <p>管理独立的通用 HTTP(S) 转发入口。</p>
         </section>
 
         <section class="panel proxy-panel" data-view="proxy" hidden>
             <div class="panel-heading">
                 <div>
                     <p class="eyebrow">ACCESS POLICY</p>
-                    <h2>访问策略</h2>
+                    <h2>代理开关</h2>
                 </div>
                 <span class="chip offline" id="httpProxyStatus">等待加载</span>
             </div>
@@ -1093,13 +1093,7 @@
                     <input type="checkbox" id="httpProxyEnabled">
                     <span>启用外部 HTTP 代理接口</span>
                 </label>
-                <label class="proxy-origins-field">
-                    <span>允许的 Origin</span>
-                    <textarea id="httpProxyAllowedOrigins" rows="6" required
-                              spellcheck="false"
-                              placeholder="https://api.example.com&#10;http://192.168.1.20:8080"></textarea>
-                </label>
-                <small>每行一个，只填写协议、主机和端口；目标 URL 的路径与参数由调用方提供。</small>
+                <small>启用后，代理 Token 可访问 Hub 所在网络能够到达的任意 HTTP(S) 地址。</small>
                 <div class="settings-actions">
                     <button class="button ghost" id="reloadHttpProxy"
                             type="button">重新加载</button>
@@ -1121,11 +1115,11 @@
                     </div>
                 </div>
                 <label class="proxy-copy-field">
-                    <span>调用模板</span>
-                    <textarea id="httpProxyTemplate" rows="4" readonly></textarea>
+                    <span>调用示例</span>
+                    <textarea id="httpProxyTemplate" rows="8" readonly></textarea>
                 </label>
                 <button class="button ghost" id="copyHttpProxyTemplate"
-                        type="button">复制调用模板</button>
+                        type="button">复制调用示例</button>
             </div>
         </section>
 
@@ -1136,14 +1130,37 @@
                     <h2>代理测试</h2>
                 </div>
             </div>
-            <form class="proxy-test-form" id="httpProxyTestForm">
+            <form id="httpProxyTestForm">
+                <div class="proxy-test-grid">
+                    <label>
+                        <span>方法</span>
+                        <select id="httpProxyTestMethod">
+                            <option>GET</option>
+                            <option>POST</option>
+                            <option>PUT</option>
+                            <option>PATCH</option>
+                            <option>DELETE</option>
+                            <option>HEAD</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span>目标 URL</span>
+                        <input id="httpProxyTestUrl" type="url" maxlength="4096"
+                               placeholder="https://api.example.com/status" required>
+                    </label>
+                </div>
                 <label>
-                    <span>目标 URL</span>
-                    <input id="httpProxyTestUrl" type="url" maxlength="4096"
-                           placeholder="https://api.example.com/status" required>
+                    <span>请求头 JSON</span>
+                    <textarea id="httpProxyTestHeaders" rows="5" spellcheck="false"
+                              placeholder='{"Authorization":"Bearer target-token","Content-Type":"application/json"}'></textarea>
+                </label>
+                <label>
+                    <span>请求体</span>
+                    <textarea id="httpProxyTestBody" rows="7" spellcheck="false"
+                              placeholder='{"enabled":true}'></textarea>
                 </label>
                 <button class="button primary" id="testHttpProxy"
-                        type="submit">发起 GET</button>
+                        type="submit">发起请求</button>
             </form>
             <pre class="proxy-test-result" id="httpProxyTestResult">尚未测试</pre>
         </section>
@@ -1358,6 +1375,6 @@
     <script type="module" src="/generated/flv-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/moq-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/evaluation.js?v=20260813-2"></script>
-    <script src="/app.js?v=20261021-1" defer></script>
+    <script src="/app.js?v=20261021-2" defer></script>
 </body>
 </html>

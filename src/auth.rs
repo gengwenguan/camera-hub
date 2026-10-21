@@ -228,6 +228,8 @@ fn public_path(method: &str, path: &str) -> bool {
         || (method == "POST" && path == "/api/v1/integrations/qq/notify")
         || (matches!(method, "GET" | "POST") && path == "/api/v1/integrations/aircon/command")
         || (method == "GET" && path == "/api/v1/integrations/http-proxy/fetch")
+        || (matches!(method, "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "HEAD")
+            && path == "/api/v1/integrations/http-proxy/request")
         || (method == "POST" && path.starts_with("/api/v1/internal/voice/aircon/"))
         || path == "/health"
         || path == "/certificate.sha256"
@@ -566,6 +568,16 @@ mod tests {
         assert!(!public_path(
             "POST",
             "/api/v1/integrations/http-proxy/fetch"
+        ));
+        for method in ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] {
+            assert!(public_path(
+                method,
+                "/api/v1/integrations/http-proxy/request"
+            ));
+        }
+        assert!(!public_path(
+            "CONNECT",
+            "/api/v1/integrations/http-proxy/request"
         ));
         assert!(!public_path(
             "GET",

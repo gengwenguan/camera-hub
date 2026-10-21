@@ -3,10 +3,15 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.17 通用 HTTP 转发
+
+HTTP 代理取消 Origin 白名单，独立 Token 可访问 Hub 网络可达的任意 HTTP(S) 地址。
+通用入口支持 GET、POST、PUT、PATCH、DELETE 和 HEAD，可转发请求体与安全请求头。
+
 ## 0.5.16 HTTP 代理集成
 
-Web 增加独立的 HTTP 代理设置页，使用单独的开关、Origin 白名单和 Token。
-外部调用只支持 GET，不跟随重定向，并限制请求并发、超时和响应大小。
+Web 增加独立的 HTTP 代理设置页和单独 Token；初版使用 Origin 白名单及 GET 转发，
+后续由 0.5.17 升级为通用 HTTP 转发。
 
 ## 0.5.15 登录会话持久化
 

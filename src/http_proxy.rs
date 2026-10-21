@@ -1,30 +1,30 @@
 use crate::auth::constant_time_eq;
 use crate::config::Config;
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use futures_util::StreamExt;
-use reqwest::Url;
-use reqwest::header::CONTENT_TYPE;
+use reqwest::header::{CONTENT_TYPE, HeaderMap};
+use reqwest::{Method, Url};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Semaphore;
 
-const CONFIG_VERSION: u32 = 1;
-const MAX_ALLOWED_ORIGINS: usize = 32;
+const CONFIG_VERSION: u32 = 2;
 const MAX_URL_BYTES: usize = 4096;
+const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const MAX_REQUEST_HEADERS: usize = 64;
+const MAX_REQUEST_HEADER_BYTES: usize = 16 * 1024;
 const MAX_CONCURRENT_REQUESTS: usize = 4;
 const REQUEST_TIMEOUT_SECONDS: u64 = 10;
+const SUPPORTED_METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
 
 #[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HttpProxyUpdate {
     pub enabled: bool,
-    #[serde(default)]
-    pub allowed_origins: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -38,9 +38,12 @@ pub struct HttpProxyQuery {
 pub struct HttpProxyOverview {
     pub enabled: bool,
     pub token: String,
-    pub allowed_origins: Vec<String>,
     pub endpoint: &'static str,
+    pub legacy_get_endpoint: &'static str,
+    pub unrestricted_targets: bool,
+    pub supported_methods: [&'static str; 6],
     pub max_url_bytes: usize,
+    pub max_request_bytes: usize,
     pub max_response_bytes: usize,
     pub max_concurrent_requests: usize,
     pub timeout_seconds: u64,
@@ -55,23 +58,26 @@ pub struct HttpProxyResponse {
 #[derive(Debug)]
 pub enum HttpProxyError {
     Invalid(String),
+    MethodNotAllowed,
     Disabled,
     Unauthorized,
-    Forbidden(String),
     Busy,
     Upstream(String),
+    RequestTooLarge,
     TooLarge,
 }
 
 impl std::fmt::Display for HttpProxyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Invalid(message) | Self::Forbidden(message) | Self::Upstream(message) => {
-                formatter.write_str(message)
+            Self::Invalid(message) | Self::Upstream(message) => formatter.write_str(message),
+            Self::MethodNotAllowed => {
+                formatter.write_str("HTTP 代理仅支持 GET、POST、PUT、PATCH、DELETE 和 HEAD")
             }
             Self::Disabled => formatter.write_str("HTTP 代理接口尚未启用"),
             Self::Unauthorized => formatter.write_str("invalid HTTP proxy token"),
             Self::Busy => formatter.write_str("HTTP 代理并发请求已满"),
+            Self::RequestTooLarge => formatter.write_str("代理请求体超过 1 MiB 限制"),
             Self::TooLarge => formatter.write_str("目标响应超过 1 MiB 限制"),
         }
     }
@@ -86,7 +92,6 @@ struct HttpProxyDocument {
     revision: u64,
     enabled: bool,
     token: String,
-    allowed_origins: Vec<String>,
 }
 
 impl Default for HttpProxyDocument {
@@ -96,7 +101,6 @@ impl Default for HttpProxyDocument {
             revision: 1,
             enabled: false,
             token: String::new(),
-            allowed_origins: Vec::new(),
         }
     }
 }
@@ -109,17 +113,6 @@ impl HttpProxyDocument {
         }
         if self.token.len() > 128 || self.token.chars().any(char::is_control) {
             anyhow::bail!("HTTP 代理 Token 格式无效");
-        }
-        if self.allowed_origins.len() > MAX_ALLOWED_ORIGINS {
-            anyhow::bail!("HTTP 代理最多允许 {MAX_ALLOWED_ORIGINS} 个 Origin");
-        }
-        let mut origins = BTreeSet::new();
-        for origin in &self.allowed_origins {
-            origins.insert(normalize_origin(origin)?);
-        }
-        self.allowed_origins = origins.into_iter().collect();
-        if self.enabled && self.allowed_origins.is_empty() {
-            anyhow::bail!("启用 HTTP 代理前至少配置一个允许的 Origin");
         }
         Ok(self)
     }
@@ -188,9 +181,12 @@ impl HttpProxyService {
             } else {
                 String::new()
             },
-            allowed_origins: store.current.allowed_origins.clone(),
-            endpoint: "/api/v1/integrations/http-proxy/fetch",
+            endpoint: "/api/v1/integrations/http-proxy/request",
+            legacy_get_endpoint: "/api/v1/integrations/http-proxy/fetch",
+            unrestricted_targets: true,
+            supported_methods: SUPPORTED_METHODS,
             max_url_bytes: MAX_URL_BYTES,
+            max_request_bytes: MAX_REQUEST_BYTES,
             max_response_bytes: MAX_RESPONSE_BYTES,
             max_concurrent_requests: MAX_CONCURRENT_REQUESTS,
             timeout_seconds: REQUEST_TIMEOUT_SECONDS,
@@ -201,7 +197,6 @@ impl HttpProxyService {
         let mut store = self.store.lock().unwrap_or_else(|error| error.into_inner());
         let mut next = store.current.clone();
         next.enabled = update.enabled;
-        next.allowed_origins = update.allowed_origins;
         if next.enabled && !store.current.enabled {
             next.token = generate_token()?;
         }
@@ -233,26 +228,40 @@ impl HttpProxyService {
         Ok(())
     }
 
-    pub async fn fetch(
+    pub async fn forward(
         &self,
+        method: Method,
         raw_url: &str,
+        headers: &HeaderMap,
+        body: Bytes,
     ) -> std::result::Result<HttpProxyResponse, HttpProxyError> {
-        let allowed_origins = {
+        {
             let store = self.store.lock().unwrap_or_else(|error| error.into_inner());
             if !store.current.enabled {
                 return Err(HttpProxyError::Disabled);
             }
-            store.current.allowed_origins.clone()
-        };
-        let url = validate_target(raw_url, &allowed_origins)?;
+        }
+        validate_method(&method)?;
+        if body.len() > MAX_REQUEST_BYTES {
+            return Err(HttpProxyError::RequestTooLarge);
+        }
+        if matches!(method, Method::GET | Method::HEAD) && !body.is_empty() {
+            return Err(HttpProxyError::Invalid(
+                "GET 和 HEAD 请求不能携带请求体".to_owned(),
+            ));
+        }
+        let url = validate_target(raw_url)?;
+        let headers = filter_request_headers(headers)?;
         let _permit = self
             .concurrency
             .clone()
             .try_acquire_owned()
             .map_err(|_| HttpProxyError::Busy)?;
-        let response = self
-            .client
-            .get(url)
+        let mut request = self.client.request(method, url).headers(headers);
+        if !body.is_empty() {
+            request = request.body(body);
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| HttpProxyError::Upstream(format!("目标请求失败：{error}")))?;
@@ -286,27 +295,18 @@ impl HttpProxyService {
     }
 }
 
-fn normalize_origin(value: &str) -> Result<String> {
-    let url = Url::parse(value.trim()).context("Origin 必须是完整 URL")?;
-    if !matches!(url.scheme(), "http" | "https") {
-        anyhow::bail!("Origin 仅支持 http 或 https");
+fn validate_method(method: &Method) -> std::result::Result<(), HttpProxyError> {
+    if matches!(
+        *method,
+        Method::GET | Method::POST | Method::PUT | Method::PATCH | Method::DELETE | Method::HEAD
+    ) {
+        Ok(())
+    } else {
+        Err(HttpProxyError::MethodNotAllowed)
     }
-    if url.host_str().is_none() {
-        anyhow::bail!("Origin 缺少主机名");
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        anyhow::bail!("Origin 不能包含用户名或密码");
-    }
-    if !matches!(url.path(), "" | "/") || url.query().is_some() || url.fragment().is_some() {
-        anyhow::bail!("Origin 只能包含协议、主机和端口");
-    }
-    Ok(url.origin().ascii_serialization())
 }
 
-fn validate_target(
-    value: &str,
-    allowed_origins: &[String],
-) -> std::result::Result<Url, HttpProxyError> {
+fn validate_target(value: &str) -> std::result::Result<Url, HttpProxyError> {
     if value.is_empty() || value.len() > MAX_URL_BYTES || value.chars().any(char::is_control) {
         return Err(HttpProxyError::Invalid("目标 URL 格式无效".to_owned()));
     }
@@ -322,13 +322,65 @@ fn validate_target(
             "目标 URL 仅支持无用户信息和片段的 HTTP(S) URL".to_owned(),
         ));
     }
-    let origin = url.origin().ascii_serialization();
-    if !allowed_origins.iter().any(|allowed| allowed == &origin) {
-        return Err(HttpProxyError::Forbidden(format!(
-            "目标 Origin 未在白名单中：{origin}"
-        )));
+    if matches!(
+        url.path(),
+        "/api/v1/integrations/http-proxy/fetch" | "/api/v1/integrations/http-proxy/request"
+    ) {
+        return Err(HttpProxyError::Invalid(
+            "目标 URL 不能指向 HTTP 代理接口自身".to_owned(),
+        ));
     }
     Ok(url)
+}
+
+fn filter_request_headers(headers: &HeaderMap) -> std::result::Result<HeaderMap, HttpProxyError> {
+    if headers.len() > MAX_REQUEST_HEADERS {
+        return Err(HttpProxyError::Invalid(format!(
+            "请求头数量不能超过 {MAX_REQUEST_HEADERS}"
+        )));
+    }
+    let mut total_bytes = 0usize;
+    let mut filtered = HeaderMap::new();
+    for (name, value) in headers {
+        let name_text = name.as_str();
+        total_bytes = total_bytes
+            .saturating_add(name_text.len())
+            .saturating_add(value.as_bytes().len());
+        if total_bytes > MAX_REQUEST_HEADER_BYTES {
+            return Err(HttpProxyError::Invalid(
+                "请求头总大小不能超过 16 KiB".to_owned(),
+            ));
+        }
+        if forbidden_request_header(name_text) {
+            continue;
+        }
+        filtered.append(name.clone(), value.clone());
+    }
+    Ok(filtered)
+}
+
+fn forbidden_request_header(name: &str) -> bool {
+    matches!(
+        name,
+        "host"
+            | "connection"
+            | "keep-alive"
+            | "proxy-authenticate"
+            | "proxy-authorization"
+            | "te"
+            | "trailer"
+            | "transfer-encoding"
+            | "upgrade"
+            | "content-length"
+            | "cookie"
+            | "origin"
+            | "referer"
+            | "accept-encoding"
+            | "forwarded"
+            | "x-real-ip"
+    ) || name.starts_with("x-forwarded-")
+        || name.starts_with("sec-")
+        || name.starts_with("cf-")
 }
 
 fn generate_token() -> Result<String> {
@@ -362,56 +414,79 @@ mod tests {
         config
     }
 
-    #[test]
-    fn normalizes_only_exact_http_origins() {
-        assert_eq!(
-            normalize_origin("https://example.com:8443/").unwrap(),
-            "https://example.com:8443"
-        );
-        assert!(normalize_origin("ftp://example.com").is_err());
-        assert!(normalize_origin("https://user@example.com").is_err());
-        assert!(normalize_origin("https://example.com/path").is_err());
-        assert!(normalize_origin("https://example.com/?query=1").is_err());
+    fn enable(service: &HttpProxyService) -> HttpProxyOverview {
+        service.update(HttpProxyUpdate { enabled: true }).unwrap()
     }
 
     #[test]
-    fn persists_configuration_and_rotates_token_when_enabled() {
+    fn accepts_any_valid_http_target_and_common_methods() {
+        assert!(validate_target("https://example.com/path?q=1").is_ok());
+        assert!(validate_target("http://127.0.0.1:8080/private").is_ok());
+        assert!(validate_target("ftp://example.com/file").is_err());
+        assert!(validate_target("https://user@example.com/path").is_err());
+        assert!(validate_target("https://example.com/path#fragment").is_err());
+        assert!(
+            validate_target("https://example.com/api/v1/integrations/http-proxy/request").is_err()
+        );
+        for method in [
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+            Method::HEAD,
+        ] {
+            validate_method(&method).unwrap();
+        }
+        assert!(matches!(
+            validate_method(&Method::CONNECT),
+            Err(HttpProxyError::MethodNotAllowed)
+        ));
+    }
+
+    #[test]
+    fn migrates_old_allowlist_config_and_rotates_token() {
         let path = temporary_config("persist");
+        fs::write(
+            &path,
+            br#"{"version":1,"revision":3,"enabled":true,"token":"chp_legacy","allowed_origins":["https://example.com"]}"#,
+        )
+        .unwrap();
         let service = HttpProxyService::start(&test_config(path.clone())).unwrap();
-        assert!(!service.overview().enabled);
-        let enabled = service
-            .update(HttpProxyUpdate {
-                enabled: true,
-                allowed_origins: vec![
-                    "https://example.com/".to_owned(),
-                    "https://example.com".to_owned(),
-                ],
-            })
-            .unwrap();
-        assert!(enabled.enabled);
-        assert_eq!(enabled.allowed_origins, ["https://example.com"]);
-        assert!(enabled.token.starts_with("chp_"));
-        let reloaded = HttpProxyService::start(&test_config(path.clone())).unwrap();
-        assert_eq!(reloaded.overview().token, enabled.token);
-        let rotated = reloaded.rotate_token().unwrap();
-        assert_ne!(rotated, enabled.token);
+        let overview = service.overview();
+        assert!(overview.enabled);
+        assert!(overview.unrestricted_targets);
+        assert_eq!(overview.token, "chp_legacy");
+        assert_eq!(overview.supported_methods, SUPPORTED_METHODS);
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(persisted["version"], CONFIG_VERSION);
+        assert!(persisted.get("allowed_origins").is_none());
+        let rotated = service.rotate_token().unwrap();
+        assert_ne!(rotated, overview.token);
         let _ = fs::remove_file(path);
     }
 
     #[test]
-    fn rejects_targets_outside_allowlist() {
-        let allowed = vec!["https://example.com".to_owned()];
-        assert!(validate_target("https://example.com/path?q=1", &allowed).is_ok());
-        assert!(matches!(
-            validate_target("https://other.example/path", &allowed),
-            Err(HttpProxyError::Forbidden(_))
-        ));
-        assert!(validate_target("https://user@example.com/path", &allowed).is_err());
-        assert!(validate_target("https://example.com/path#fragment", &allowed).is_err());
+    fn strips_transport_and_browser_identity_headers() {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer target".parse().unwrap());
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("x-business-id", "42".parse().unwrap());
+        headers.insert("cookie", "camera_hub_session=secret".parse().unwrap());
+        headers.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
+        headers.insert("sec-fetch-site", "same-origin".parse().unwrap());
+        let filtered = filter_request_headers(&headers).unwrap();
+        assert_eq!(filtered["authorization"], "Bearer target");
+        assert_eq!(filtered["content-type"], "application/json");
+        assert_eq!(filtered["x-business-id"], "42");
+        assert!(!filtered.contains_key("cookie"));
+        assert!(!filtered.contains_key("x-forwarded-for"));
+        assert!(!filtered.contains_key("sec-fetch-site"));
     }
 
     #[tokio::test]
-    async fn forwards_allowed_get() {
+    async fn forwards_get_to_any_http_origin() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -429,20 +504,98 @@ mod tests {
         });
         let path = temporary_config("forward");
         let service = HttpProxyService::start(&test_config(path.clone())).unwrap();
-        service
-            .update(HttpProxyUpdate {
-                enabled: true,
-                allowed_origins: vec![format!("http://{address}")],
-            })
-            .unwrap();
+        enable(&service);
         let response = service
-            .fetch(&format!("http://{address}/status?value=ok"))
+            .forward(
+                Method::GET,
+                &format!("http://{address}/status?value=ok"),
+                &HeaderMap::new(),
+                Bytes::new(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status, 201);
         assert_eq!(response.content_type.as_deref(), Some("text/plain"));
         assert_eq!(response.body, b"ready");
         server.await.unwrap();
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn forwards_post_body_and_safe_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let length = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..length]);
+            let lower = request.to_ascii_lowercase();
+            assert!(request.starts_with("POST /commands HTTP/1.1"));
+            assert!(lower.contains("authorization: bearer target-token\r\n"));
+            assert!(lower.contains("content-type: application/json\r\n"));
+            assert!(lower.contains("x-business-id: 42\r\n"));
+            assert!(!lower.contains("camera_hub_session"));
+            assert!(!lower.contains("x-forwarded-for"));
+            assert!(request.ends_with(r#"{"power":true}"#));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                )
+                .await
+                .unwrap();
+        });
+        let path = temporary_config("post");
+        let service = HttpProxyService::start(&test_config(path.clone())).unwrap();
+        enable(&service);
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", "Bearer target-token".parse().unwrap());
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("x-business-id", "42".parse().unwrap());
+        headers.insert("cookie", "camera_hub_session=secret".parse().unwrap());
+        headers.insert("x-forwarded-for", "127.0.0.1".parse().unwrap());
+        let response = service
+            .forward(
+                Method::POST,
+                &format!("http://{address}/commands"),
+                &headers,
+                Bytes::from_static(br#"{"power":true}"#),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, br#"{"ok":true}"#);
+        server.await.unwrap();
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_bodies_before_network_access() {
+        let path = temporary_config("body-limits");
+        let service = HttpProxyService::start(&test_config(path.clone())).unwrap();
+        enable(&service);
+        assert!(matches!(
+            service
+                .forward(
+                    Method::GET,
+                    "https://example.com/",
+                    &HeaderMap::new(),
+                    Bytes::from_static(b"unexpected"),
+                )
+                .await,
+            Err(HttpProxyError::Invalid(_))
+        ));
+        assert!(matches!(
+            service
+                .forward(
+                    Method::POST,
+                    "https://example.com/",
+                    &HeaderMap::new(),
+                    Bytes::from(vec![0; MAX_REQUEST_BYTES + 1]),
+                )
+                .await,
+            Err(HttpProxyError::RequestTooLarge)
+        ));
         let _ = fs::remove_file(path);
     }
 
@@ -463,14 +616,14 @@ mod tests {
         });
         let path = temporary_config("redirect");
         let service = HttpProxyService::start(&test_config(path.clone())).unwrap();
-        service
-            .update(HttpProxyUpdate {
-                enabled: true,
-                allowed_origins: vec![format!("http://{address}")],
-            })
-            .unwrap();
+        enable(&service);
         let response = service
-            .fetch(&format!("http://{address}/redirect"))
+            .forward(
+                Method::GET,
+                &format!("http://{address}/redirect"),
+                &HeaderMap::new(),
+                Bytes::new(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status, 302);
