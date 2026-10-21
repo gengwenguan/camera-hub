@@ -3,6 +3,11 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.16 HTTP 代理集成
+
+Web 增加独立的 HTTP 代理设置页，使用单独的开关、Origin 白名单和 Token。
+外部调用只支持 GET，不跟随重定向，并限制请求并发、超时和响应大小。
+
 ## 0.5.15 登录会话持久化
 
 Web 登录会话保存在 App 私有数据目录，APK 更新或 Rust 核心普通重启后继续有效。

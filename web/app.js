@@ -205,6 +205,22 @@
         saveDdns: $("saveDdns"),
         reconcileDdns: $("reconcileDdns"),
         ddnsPreview: $("ddnsPreview"),
+        httpProxyStatus: $("httpProxyStatus"),
+        httpProxyForm: $("httpProxyForm"),
+        httpProxyEnabled: $("httpProxyEnabled"),
+        httpProxyAllowedOrigins: $("httpProxyAllowedOrigins"),
+        reloadHttpProxy: $("reloadHttpProxy"),
+        saveHttpProxy: $("saveHttpProxy"),
+        httpProxyAccess: $("httpProxyAccess"),
+        httpProxyToken: $("httpProxyToken"),
+        rotateHttpProxyToken: $("rotateHttpProxyToken"),
+        copyHttpProxyToken: $("copyHttpProxyToken"),
+        httpProxyTemplate: $("httpProxyTemplate"),
+        copyHttpProxyTemplate: $("copyHttpProxyTemplate"),
+        httpProxyTestForm: $("httpProxyTestForm"),
+        httpProxyTestUrl: $("httpProxyTestUrl"),
+        testHttpProxy: $("testHttpProxy"),
+        httpProxyTestResult: $("httpProxyTestResult"),
         liveDeviceSelect: $("liveDeviceSelect"),
         livePlayer: $("livePlayer"),
         liveStatus: $("liveStatus"),
@@ -290,6 +306,9 @@
         ddnsBusy: false,
         ddnsComponentBusy: false,
         ddnsWorkerOnline: false,
+        httpProxy: null,
+        httpProxyDirty: false,
+        httpProxyBusy: false,
         busy: false,
         settingsDirty: false,
         toastTimer: 0,
@@ -302,7 +321,7 @@
         "evaluation",
     ]);
     const VOICE_VIEWS = new Set(["commands", "profile", "public", "status", "aircon"]);
-    const ROOT_VIEWS = new Set(["overview", "voice", "qq", "ddns"]);
+    const ROOT_VIEWS = new Set(["overview", "voice", "qq", "ddns", "proxy"]);
 
     // Android 9 devices may ship WebView versions without structuredClone.
     const cloneJson = (value) => {
@@ -948,25 +967,8 @@
     }
 
     function airconUrlGuide() {
-        const examples = [
-            ["制冷 24°C，关闭 ECO", {
-                operation: "set", temperature_c: "24", mode: "cool", eco: "false",
-            }],
-            ["关闭空调", { operation: "off" }],
-            ["打开空调（沿用影子状态）", { operation: "power", enabled: "true" }],
-            ["设置 25°C", { operation: "set_temperature", temperature_c: "25" }],
-            ["降低 2°C", { operation: "adjust_temperature", delta_c: "-2" }],
-            ["切换抽湿模式", { operation: "set_mode", mode: "dry" }],
-            ["关闭 ECO", { operation: "set_eco", enabled: "false" }],
-            ["30 分钟后关闭", { operation: "off", delay_minutes: "30" }],
-            ["制冷 26°C，2 小时后自动关闭", {
-                operation: "set", temperature_c: "26", mode: "cool", eco: "true",
-                auto_off_minutes: "120",
-            }],
-            ["取消全部定时任务", { operation: "cancel_all" }],
-        ];
         return [
-            "camera-hub 空调触发 URL 使用说明",
+            "空调控制说明",
             "",
             "直接以 HTTPS GET 访问触发 URL；访问即执行控制。",
             `基础入口：${airconIntegrationEndpoint()}`,
@@ -992,8 +994,24 @@
             "request_id=最长 64 位字母、数字、-、_、.；用于定时任务去重",
             "",
             "常用触发 URL",
-            ...examples.map(([label, parameters]) =>
-                `${label}：\n${airconTriggerUrl(parameters)}`),
+            "制冷 24°C，关闭 ECO：",
+            airconTriggerUrl({
+                operation: "set", temperature_c: "24", mode: "cool", eco: "false",
+            }),
+            "关闭空调：",
+            "operation=off",
+            "打开空调（沿用影子状态）：",
+            "operation=power&enabled=true",
+            "设置 25°C：",
+            "operation=set_temperature&temperature_c=25",
+            "降低 2°C：",
+            "operation=adjust_temperature&delta_c=-2",
+            "切换抽湿模式：",
+            "operation=set_mode&mode=dry",
+            "30 分钟后关闭：",
+            "operation=off&delay_minutes=30",
+            "取消全部定时任务：",
+            "operation=cancel_all",
             "",
             "注意",
             "1. Token 是控制凭据，请只交给可信助手。",
@@ -2482,6 +2500,142 @@
         } finally {
             ui.reconcileDdns.disabled =
                 !state.ddnsWorkerOnline || !state.ddnsConfig?.enabled || state.ddnsDirty;
+        }
+    }
+
+    async function loadHttpProxy(silent = false) {
+        if (state.httpProxyBusy) return;
+        state.httpProxyBusy = true;
+        try {
+            const body = await api("/api/v1/http-proxy");
+            renderHttpProxy(body && body.http_proxy || {});
+        } catch (error) {
+            if (!silent) handleError(error);
+        } finally {
+            state.httpProxyBusy = false;
+            if (state.httpProxy) renderHttpProxy(state.httpProxy);
+        }
+    }
+
+    function httpProxyEndpoint() {
+        return `${location.origin}${
+            state.httpProxy?.endpoint || "/api/v1/integrations/http-proxy/fetch"
+        }`;
+    }
+
+    function httpProxyUrl(targetUrl) {
+        const params = new URLSearchParams({
+            token: state.httpProxy?.token || "HTTP_PROXY_TOKEN",
+            url: targetUrl,
+        });
+        return `${httpProxyEndpoint()}?${params}`;
+    }
+
+    function renderHttpProxy(proxy) {
+        state.httpProxy = cloneJson(proxy);
+        const enabled = !!proxy.enabled;
+        ui.httpProxyStatus.textContent = enabled ? "已启用" : "已关闭";
+        ui.httpProxyStatus.className = `chip ${enabled ? "active" : "offline"}`;
+        ui.httpProxyAccess.hidden = !enabled;
+        ui.httpProxyToken.value = enabled ? proxy.token || "" : "";
+        ui.httpProxyTemplate.value = enabled ? httpProxyUrl("TARGET_URL") : "";
+        ui.copyHttpProxyToken.disabled = !enabled || !ui.httpProxyToken.value;
+        ui.copyHttpProxyTemplate.disabled = !enabled || !ui.httpProxyTemplate.value;
+        ui.rotateHttpProxyToken.disabled = state.httpProxyBusy || !enabled;
+        ui.testHttpProxy.disabled = state.httpProxyBusy || !enabled;
+        if (!state.httpProxyDirty) {
+            ui.httpProxyEnabled.checked = enabled;
+            ui.httpProxyAllowedOrigins.value =
+                (Array.isArray(proxy.allowed_origins) ? proxy.allowed_origins : []).join("\n");
+        }
+        updateHttpProxyRequirements();
+    }
+
+    function updateHttpProxyRequirements() {
+        ui.httpProxyAllowedOrigins.required = ui.httpProxyEnabled.checked;
+    }
+
+    function collectHttpProxyOrigins() {
+        return ui.httpProxyAllowedOrigins.value
+            .split(/\r?\n/)
+            .map((origin) => origin.trim())
+            .filter(Boolean);
+    }
+
+    async function saveHttpProxy(event) {
+        event.preventDefault();
+        updateHttpProxyRequirements();
+        if (!ui.httpProxyForm.reportValidity()) return;
+        const enabled = ui.httpProxyEnabled.checked;
+        if (!enabled && state.httpProxy?.enabled &&
+            !window.confirm("关闭后，现有 HTTP 代理 Token 会立即停止工作。继续？")) {
+            return;
+        }
+        state.httpProxyBusy = true;
+        ui.saveHttpProxy.disabled = true;
+        try {
+            const body = await api("/api/v1/http-proxy", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    enabled,
+                    allowed_origins: collectHttpProxyOrigins(),
+                }),
+            });
+            state.httpProxyDirty = false;
+            renderHttpProxy(body.http_proxy || {});
+            showToast(enabled ? "HTTP 代理配置已启用" : "HTTP 代理配置已保存");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.httpProxyBusy = false;
+            ui.saveHttpProxy.disabled = false;
+            renderHttpProxy(state.httpProxy || {});
+        }
+    }
+
+    async function rotateHttpProxyToken() {
+        if (!window.confirm("重新生成后，旧 HTTP 代理 Token 会立即失效。继续？")) return;
+        state.httpProxyBusy = true;
+        try {
+            const body = await api("/api/v1/http-proxy/token", { method: "POST" });
+            if (state.httpProxy) state.httpProxy.token = body.token || "";
+            renderHttpProxy(state.httpProxy || {});
+            showToast("HTTP 代理 Token 已更新");
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.httpProxyBusy = false;
+            renderHttpProxy(state.httpProxy || {});
+        }
+    }
+
+    async function testHttpProxy(event) {
+        event.preventDefault();
+        if (!ui.httpProxyTestForm.reportValidity() || !state.httpProxy?.enabled) return;
+        state.httpProxyBusy = true;
+        ui.testHttpProxy.disabled = true;
+        ui.httpProxyTestResult.textContent = "请求中…";
+        try {
+            const response = await fetch(httpProxyUrl(ui.httpProxyTestUrl.value.trim()), {
+                cache: "no-store",
+            });
+            const body = await response.text();
+            const contentType = response.headers.get("Content-Type") || "未知类型";
+            ui.httpProxyTestResult.textContent = [
+                `HTTP ${response.status}`,
+                contentType,
+                "",
+                body.slice(0, 10_000),
+                body.length > 10_000 ? "\n[页面仅显示前 10000 个字符]" : "",
+            ].join("\n");
+            showToast(`代理请求完成：HTTP ${response.status}`);
+        } catch (error) {
+            ui.httpProxyTestResult.textContent = `请求失败：${error.message || error}`;
+            handleError(error);
+        } finally {
+            state.httpProxyBusy = false;
+            ui.testHttpProxy.disabled = !state.httpProxy?.enabled;
         }
     }
 
@@ -4122,6 +4276,23 @@
         if (!checkbox) return;
         setDdnsAutostart(checkbox.checked);
     });
+    ui.httpProxyForm.addEventListener("input", () => {
+        state.httpProxyDirty = true;
+        updateHttpProxyRequirements();
+    });
+    ui.httpProxyForm.addEventListener("submit", saveHttpProxy);
+    ui.reloadHttpProxy.addEventListener("click", async () => {
+        state.httpProxyDirty = false;
+        await loadHttpProxy();
+    });
+    ui.rotateHttpProxyToken.addEventListener("click", rotateHttpProxyToken);
+    ui.copyHttpProxyToken.addEventListener("click", () => {
+        copyAirconValue(ui.httpProxyToken, "HTTP 代理 Token 已复制");
+    });
+    ui.copyHttpProxyTemplate.addEventListener("click", () => {
+        copyAirconValue(ui.httpProxyTemplate, "HTTP 代理调用模板已复制");
+    });
+    ui.httpProxyTestForm.addEventListener("submit", testHttpProxy);
     ui.deviceSelect.addEventListener("change", () => selectDevice(ui.deviceSelect.value));
     ui.liveDeviceSelect.addEventListener("change", () => {
         selectDevice(ui.liveDeviceSelect.value);
@@ -4295,6 +4466,7 @@
         if (target === "voice") loadVoice(true);
         if (target === "qq") loadQq(true);
         if (target === "ddns") loadDdns(true);
+        if (target === "proxy") loadHttpProxy(true);
         if (target === "evaluation") window.CameraHubEvaluation?.refreshDevices();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -4324,6 +4496,7 @@
         if (state.view === "voice") loadVoice(true);
         if (state.view === "qq" && !state.qqDirty) loadQq(true);
         if (state.view === "ddns" && !state.ddnsDirty) loadDdns(true);
+        if (state.view === "proxy" && !state.httpProxyDirty) loadHttpProxy(true);
     }, 5_000);
     setInterval(() => {
         if (state.view === "voice" && state.voiceAssetsInstalling) {

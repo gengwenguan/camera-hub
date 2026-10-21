@@ -9,6 +9,7 @@ mod config;
 mod ddns_control;
 mod flv_live;
 mod frames;
+mod http_proxy;
 mod inference_lock;
 mod ir;
 mod ir_control;
@@ -41,6 +42,7 @@ use crate::component_manager::ComponentManager;
 use crate::config::Config;
 use crate::ddns_control::DdnsControl;
 use crate::frames::FrameHub;
+use crate::http_proxy::{HttpProxyError, HttpProxyQuery, HttpProxyService, HttpProxyUpdate};
 use crate::ir::AcMode;
 use crate::ir_control::IrControl;
 use crate::media::MediaStore;
@@ -177,6 +179,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
     let components = ComponentManager::start(&config)?;
     let ir = Arc::new(IrControl::new(&config)?);
     let aircon = AirconService::start(&config, ir.clone())?;
+    let http_proxy = HttpProxyService::start(&config)?;
     let assets = AssetManager::new(&config, components.clone())?;
     let voice_studio = Arc::new(VoiceStudio::new(&config)?);
     let state = Arc::new(AppState::new(
@@ -189,6 +192,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             ddns,
             ir,
             aircon,
+            http_proxy,
             assets,
             components,
             voice,
@@ -237,6 +241,15 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             "/api/v1/integrations/aircon/command",
             get(aircon_command_external_query).post(aircon_command_external_json),
         )
+        .route(
+            "/api/v1/integrations/http-proxy/fetch",
+            get(http_proxy_external),
+        )
+        .route(
+            "/api/v1/http-proxy",
+            get(http_proxy_overview).put(update_http_proxy),
+        )
+        .route("/api/v1/http-proxy/token", post(rotate_http_proxy_token))
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
         .route("/api/v1/voice/transcribe", post(transcribe_voice))
@@ -1282,6 +1295,92 @@ fn aircon_error(error: AirconError) -> ApiError {
     ApiError::status(status, error.to_string())
 }
 
+async fn http_proxy_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+    Json(json!({"http_proxy":state.http_proxy.overview()}))
+}
+
+async fn update_http_proxy(
+    State(state): State<Arc<AppState>>,
+    Json(update): Json<HttpProxyUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let proxy = state.http_proxy.update(update)?;
+    Ok(Json(json!({"ok":true,"http_proxy":proxy})))
+}
+
+async fn rotate_http_proxy_token(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let token = state.http_proxy.rotate_token()?;
+    Ok(Json(json!({"ok":true,"token":token})))
+}
+
+async fn http_proxy_external(
+    State(state): State<Arc<AppState>>,
+    Extension(transport): Extension<auth::TransportSecurity>,
+    Query(query): Query<HttpProxyQuery>,
+) -> Result<Response, ApiError> {
+    require_secure_http_proxy_transport(transport)?;
+    state
+        .http_proxy
+        .verify_token(&query.token)
+        .map_err(http_proxy_error)?;
+    let result = state
+        .http_proxy
+        .fetch(&query.url)
+        .await
+        .map_err(http_proxy_error)?;
+    let mut response = Response::builder()
+        .status(StatusCode::from_u16(result.status)?)
+        .header(CACHE_CONTROL, "no-store")
+        .header("content-security-policy", "default-src 'none'; sandbox")
+        .header("x-content-type-options", "nosniff")
+        .header(CONTENT_LENGTH, result.body.len());
+    response = response.header(
+        CONTENT_TYPE,
+        safe_http_proxy_content_type(result.content_type.as_deref()),
+    );
+    Ok(response.body(Body::from(result.body))?)
+}
+
+fn safe_http_proxy_content_type(value: Option<&str>) -> String {
+    let value = value.unwrap_or_default();
+    let media_type = value
+        .split_once(';')
+        .map(|(media_type, _)| media_type)
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase();
+    if media_type == "application/json"
+        || media_type.ends_with("+json")
+        || matches!(media_type.as_str(), "text/plain" | "text/csv")
+    {
+        value.to_owned()
+    } else {
+        "application/octet-stream".to_owned()
+    }
+}
+
+fn require_secure_http_proxy_transport(transport: auth::TransportSecurity) -> Result<(), ApiError> {
+    if !transport.secure && transport.tls_available {
+        return Err(ApiError::status(
+            StatusCode::UPGRADE_REQUIRED,
+            "HTTP 代理集成接口必须使用 HTTPS",
+        ));
+    }
+    Ok(())
+}
+
+fn http_proxy_error(error: HttpProxyError) -> ApiError {
+    let status = match &error {
+        HttpProxyError::Invalid(_) => StatusCode::BAD_REQUEST,
+        HttpProxyError::Disabled | HttpProxyError::Forbidden(_) => StatusCode::FORBIDDEN,
+        HttpProxyError::Unauthorized => StatusCode::UNAUTHORIZED,
+        HttpProxyError::Busy => StatusCode::TOO_MANY_REQUESTS,
+        HttpProxyError::Upstream(_) | HttpProxyError::TooLarge => StatusCode::BAD_GATEWAY,
+    };
+    ApiError::status(status, error.to_string())
+}
+
 async fn install_asset(
     State(state): State<Arc<AppState>>,
     Path(asset): Path<String>,
@@ -1567,6 +1666,7 @@ async fn hub_settings(State(state): State<Arc<AppState>>) -> Json<serde_json::Va
             "ai_model": state.config.ai_model,
             "qq_config_file": state.config.qq_config_file,
             "aircon_config_file": state.config.aircon_config_file,
+            "http_proxy_config_file": state.config.http_proxy_config_file,
             "ddns_config_file": state.config.ddns_config_file,
             "ddns_status_file": state.ddns.status_path(),
             "component_manager_enabled": state.config.component_manager_enabled,
@@ -1845,7 +1945,8 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        clear_snapshots, decode_link_packet, delete_selected_snapshots, validate_device_id,
+        clear_snapshots, decode_link_packet, delete_selected_snapshots,
+        safe_http_proxy_content_type, validate_device_id,
     };
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1856,6 +1957,26 @@ mod tests {
         assert!(validate_device_id("..").is_err());
         assert!(validate_device_id("../front").is_err());
         assert!(validate_device_id("front-01.local").is_ok());
+    }
+
+    #[test]
+    fn proxy_content_type_never_exposes_active_browser_content() {
+        assert_eq!(
+            safe_http_proxy_content_type(Some("application/json; charset=utf-8")),
+            "application/json; charset=utf-8"
+        );
+        assert_eq!(
+            safe_http_proxy_content_type(Some("application/problem+json")),
+            "application/problem+json"
+        );
+        assert_eq!(
+            safe_http_proxy_content_type(Some("text/html")),
+            "application/octet-stream"
+        );
+        assert_eq!(
+            safe_http_proxy_content_type(Some("image/svg+xml")),
+            "application/octet-stream"
+        );
     }
 
     fn packet(version: u8, capture_epoch_us: Option<i64>) -> Vec<u8> {

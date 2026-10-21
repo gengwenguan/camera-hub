@@ -12,8 +12,8 @@ android {
         // The bundled ONNX Runtime release is built for Android API 27.
         minSdk = 27
         targetSdk = 35
-        versionCode = 21
-        versionName = "0.5.15"
+        versionCode = 22
+        versionName = "0.5.16"
         ndk { abiFilters += "arm64-v8a" }
     }
 

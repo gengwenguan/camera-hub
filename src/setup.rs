@@ -115,6 +115,10 @@ fn setup_mi6(args: &Args) -> Result<()> {
             path(".config/camera-hub-aircon.json"),
         ),
         (
+            "CAMERA_HUB_HTTP_PROXY_CONFIG_FILE",
+            path(".config/camera-hub-http-proxy.json"),
+        ),
+        (
             "CAMERA_HUB_DDNS_CONFIG_FILE",
             path(".config/camera-hub-ddns.json"),
         ),
@@ -351,6 +355,7 @@ mod tests {
         assert!(first.contains("CAMERA_HUB_IR_DEVICE='/dev/example-ir'"));
         assert!(first.contains("CAMERA_HUB_AUTH_SESSION_FILE="));
         assert!(first.contains("CAMERA_HUB_AIRCON_CONFIG_FILE="));
+        assert!(first.contains("CAMERA_HUB_HTTP_PROXY_CONFIG_FILE="));
         assert!(!first.contains("CAMERA_HUB_VOICE_STUDIO_TOKEN"));
         let token = existing_value(&env_path, "CAMERA_HUB_TTS_TOKEN").unwrap();
         assert_eq!(token.len(), 64);

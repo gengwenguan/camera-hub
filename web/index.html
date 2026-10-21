@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark">
     <title>camera-hub</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=20260811-5">
-    <link rel="stylesheet" href="/style.css?v=20260913-5">
+    <link rel="stylesheet" href="/style.css?v=20261021-1">
 </head>
 <body>
     <div class="backdrop"></div>
@@ -42,6 +42,7 @@
             <button type="button" data-view-target="voice">语音控制</button>
             <button type="button" data-view-target="qq">QQ 机器人</button>
             <button type="button" data-view-target="ddns">DDNS</button>
+            <button type="button" data-view-target="proxy">HTTP 代理</button>
         </nav>
 
         <nav class="context-subnav" id="cameraSubnav"
@@ -1073,6 +1074,80 @@
             </div>
         </section>
 
+        <section class="view-heading" data-view="proxy" hidden>
+            <p class="eyebrow">OUTBOUND HTTP</p>
+            <h1>HTTP 代理</h1>
+            <p>管理独立的外部 GET 转发入口。</p>
+        </section>
+
+        <section class="panel proxy-panel" data-view="proxy" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">ACCESS POLICY</p>
+                    <h2>访问策略</h2>
+                </div>
+                <span class="chip offline" id="httpProxyStatus">等待加载</span>
+            </div>
+            <form id="httpProxyForm">
+                <label class="toggle">
+                    <input type="checkbox" id="httpProxyEnabled">
+                    <span>启用外部 HTTP 代理接口</span>
+                </label>
+                <label class="proxy-origins-field">
+                    <span>允许的 Origin</span>
+                    <textarea id="httpProxyAllowedOrigins" rows="6" required
+                              spellcheck="false"
+                              placeholder="https://api.example.com&#10;http://192.168.1.20:8080"></textarea>
+                </label>
+                <small>每行一个，只填写协议、主机和端口；目标 URL 的路径与参数由调用方提供。</small>
+                <div class="settings-actions">
+                    <button class="button ghost" id="reloadHttpProxy"
+                            type="button">重新加载</button>
+                    <button class="button primary" id="saveHttpProxy"
+                            type="submit">保存配置</button>
+                </div>
+            </form>
+            <div class="proxy-access" id="httpProxyAccess" hidden>
+                <div class="proxy-token-grid">
+                    <label>
+                        <span>代理 Token</span>
+                        <input id="httpProxyToken" type="text" readonly>
+                    </label>
+                    <div class="proxy-token-actions">
+                        <button class="button ghost" id="rotateHttpProxyToken"
+                                type="button">重新生成 Token</button>
+                        <button class="button ghost" id="copyHttpProxyToken"
+                                type="button">复制 Token</button>
+                    </div>
+                </div>
+                <label class="proxy-copy-field">
+                    <span>调用模板</span>
+                    <textarea id="httpProxyTemplate" rows="4" readonly></textarea>
+                </label>
+                <button class="button ghost" id="copyHttpProxyTemplate"
+                        type="button">复制调用模板</button>
+            </div>
+        </section>
+
+        <section class="panel proxy-panel" data-view="proxy" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">REQUEST TEST</p>
+                    <h2>代理测试</h2>
+                </div>
+            </div>
+            <form class="proxy-test-form" id="httpProxyTestForm">
+                <label>
+                    <span>目标 URL</span>
+                    <input id="httpProxyTestUrl" type="url" maxlength="4096"
+                           placeholder="https://api.example.com/status" required>
+                </label>
+                <button class="button primary" id="testHttpProxy"
+                        type="submit">发起 GET</button>
+            </form>
+            <pre class="proxy-test-result" id="httpProxyTestResult">尚未测试</pre>
+        </section>
+
         <section class="view-heading" data-view="settings" hidden>
             <p class="eyebrow">CAMERA POLICY</p>
             <h1>录像与 AI 设置</h1>
@@ -1283,6 +1358,6 @@
     <script type="module" src="/generated/flv-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/moq-player.js?v=20260813-2"></script>
     <script type="module" src="/generated/evaluation.js?v=20260813-2"></script>
-    <script src="/app.js?v=20260913-5" defer></script>
+    <script src="/app.js?v=20261021-1" defer></script>
 </body>
 </html>

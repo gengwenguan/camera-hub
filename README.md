@@ -204,6 +204,7 @@ CAMERA_HUB_DATA_DIR=/srv/camera-hub/data
 CAMERA_HUB_SETTINGS_FILE=/srv/camera-hub/state/settings.json
 CAMERA_HUB_QQ_CONFIG_FILE=/srv/camera-hub/state/qq.json
 CAMERA_HUB_AIRCON_CONFIG_FILE=/srv/camera-hub/state/aircon.json
+CAMERA_HUB_HTTP_PROXY_CONFIG_FILE=/srv/camera-hub/state/http-proxy.json
 CAMERA_HUB_COMPONENT_MANAGER_ENABLED=true
 CAMERA_HUB_COMPONENTS_FILE=/srv/camera-hub/state/components.json
 CAMERA_HUB_LOG_DIR=/srv/camera-hub/log

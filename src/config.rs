@@ -80,6 +80,13 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_HTTP_PROXY_CONFIG_FILE",
+        default_value = "camera-hub-state/http-proxy.json"
+    )]
+    pub http_proxy_config_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_DDNS_CONFIG_FILE",
         default_value = "camera-hub-state/ddns.json"
     )]

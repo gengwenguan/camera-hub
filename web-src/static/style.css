@@ -221,9 +221,9 @@ select {
     top: 84px;
     z-index: 15;
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 6px;
-    max-width: 720px;
+    max-width: 860px;
     margin: 0 0 38px;
     padding: 6px;
     border: 1px solid var(--line);
@@ -1678,6 +1678,89 @@ textarea:focus {
     display: none;
 }
 
+.proxy-panel form,
+.proxy-origins-field,
+.proxy-token-grid label,
+.proxy-copy-field {
+    display: grid;
+    gap: 8px;
+}
+
+.proxy-panel form {
+    margin-top: 18px;
+}
+
+.proxy-panel label > span,
+.proxy-panel form > small {
+    color: var(--muted);
+    font-size: 10px;
+}
+
+.proxy-panel textarea,
+.proxy-panel input:not([type="checkbox"]) {
+    width: 100%;
+}
+
+.proxy-panel textarea {
+    padding: 11px;
+    resize: vertical;
+}
+
+.proxy-access {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+}
+
+.proxy-token-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: end;
+}
+
+.proxy-token-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.proxy-copy-field {
+    margin-top: 14px;
+}
+
+.proxy-access > .button {
+    margin-top: 10px;
+}
+
+.proxy-test-form {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px !important;
+    align-items: end;
+}
+
+.proxy-test-form label {
+    display: grid;
+    gap: 8px;
+}
+
+.proxy-test-result {
+    min-height: 120px;
+    max-height: 420px;
+    margin: 16px 0 0;
+    padding: 14px;
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    color: var(--text);
+    background: #090c17;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
 .aircon-integration-gate p {
     margin: 0;
     color: var(--muted);
@@ -2781,7 +2864,7 @@ td.file-name {
     .section-nav {
         top: 70px;
         width: 100%;
-        grid-template-columns: repeat(5, minmax(108px, 1fr));
+        grid-template-columns: repeat(6, minmax(108px, 1fr));
         margin-bottom: 28px;
         overflow-x: auto;
         scrollbar-width: none;
@@ -2898,12 +2981,15 @@ td.file-name {
     .qq-config-grid,
     .qq-push-grid,
     .qq-test-form,
-    .ddns-runtime {
+    .ddns-runtime,
+    .proxy-token-grid,
+    .proxy-test-form {
         grid-template-columns: 1fr;
     }
 
     .aircon-token-actions,
-    .aircon-section-heading {
+    .aircon-section-heading,
+    .proxy-token-actions {
         align-items: stretch;
         flex-direction: column;
     }

@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::ddns_control::DdnsControl;
 use crate::flv_live::FlvLive;
 use crate::frames::FrameHub;
+use crate::http_proxy::HttpProxyService;
 use crate::ir_control::IrControl;
 use crate::live::LiveStreams;
 use crate::media::MediaStore;
@@ -67,6 +68,7 @@ pub struct AppState {
     pub ddns: Arc<DdnsControl>,
     pub ir: Arc<IrControl>,
     pub aircon: Arc<AirconService>,
+    pub http_proxy: Arc<HttpProxyService>,
     pub assets: Arc<AssetManager>,
     pub components: Arc<ComponentManager>,
     pub ai: Arc<AiService>,
@@ -89,6 +91,7 @@ pub struct AppServices {
     pub ddns: Arc<DdnsControl>,
     pub ir: Arc<IrControl>,
     pub aircon: Arc<AirconService>,
+    pub http_proxy: Arc<HttpProxyService>,
     pub assets: Arc<AssetManager>,
     pub components: Arc<ComponentManager>,
     pub voice: Arc<VoiceService>,
@@ -106,6 +109,7 @@ impl AppState {
             ddns,
             ir,
             aircon,
+            http_proxy,
             assets,
             components,
             voice,
@@ -129,6 +133,7 @@ impl AppState {
             ddns,
             ir,
             aircon,
+            http_proxy,
             assets,
             components,
             frames,

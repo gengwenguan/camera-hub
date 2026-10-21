@@ -212,6 +212,56 @@ def run(binary):
                 assert http(
                     base, f"/api/v1/integrations/aircon/command?{query}",
                 )[0] == 403
+                status, proxy, _ = http(base, "/api/v1/http-proxy", cookie=cookie)
+                assert status == 200 and proxy["http_proxy"]["enabled"] is False
+                assert proxy["http_proxy"]["token"] == ""
+                blocked_proxy_query = urllib.parse.urlencode({
+                    "token": "blocked",
+                    "url": f"http://127.0.0.1:{mock.server_port}/proxy-target",
+                })
+                assert http(
+                    base, f"/api/v1/integrations/http-proxy/fetch?{blocked_proxy_query}",
+                )[0] == 403
+                status, proxy, _ = http(base, "/api/v1/http-proxy", {
+                    "enabled": True,
+                    "allowed_origins": [f"http://127.0.0.1:{mock.server_port}"],
+                }, method="PUT", cookie=cookie)
+                assert status == 200
+                proxy = proxy["http_proxy"]
+                proxy_token = proxy["token"]
+                assert proxy["enabled"] and proxy_token.startswith("chp_")
+                target = f"http://127.0.0.1:{mock.server_port}/proxy-target?value=ok"
+                proxy_query = urllib.parse.urlencode({
+                    "token": proxy_token,
+                    "url": target,
+                })
+                proxy_status, proxy_body, proxy_headers = http(
+                    base, f"/api/v1/integrations/http-proxy/fetch?{proxy_query}",
+                )
+                assert (proxy_status, proxy_body) == (200, {"ok": True})
+                assert proxy_headers["X-Content-Type-Options"] == "nosniff"
+                assert "sandbox" in proxy_headers["Content-Security-Policy"]
+                wrong_proxy_query = urllib.parse.urlencode({
+                    "token": "wrong",
+                    "url": target,
+                })
+                assert http(
+                    base, f"/api/v1/integrations/http-proxy/fetch?{wrong_proxy_query}",
+                )[0] == 401
+                denied_proxy_query = urllib.parse.urlencode({
+                    "token": proxy_token,
+                    "url": f"http://localhost:{mock.server_port}/proxy-target",
+                })
+                assert http(
+                    base, f"/api/v1/integrations/http-proxy/fetch?{denied_proxy_query}",
+                )[0] == 403
+                persisted_proxy = json.loads(
+                    (root / "camera-hub-state/http-proxy.json").read_text()
+                )
+                assert persisted_proxy["enabled"]
+                assert persisted_proxy["allowed_origins"] == [
+                    f"http://127.0.0.1:{mock.server_port}"
+                ]
                 barrier = threading.Barrier(2)
                 results = []
                 def update_settings(patch):
@@ -230,7 +280,7 @@ def run(binary):
                 persisted = json.loads((root / "camera-hub-state/settings.json").read_text())
                 assert persisted["retain_days"] == 13 and persisted["segment_seconds"] == 123
                 assert http(base, "/api/v1/devices/../link", method="GET")[0] != 101
-                print("PASS: photo access; local voice auth; gated aircon integration; settings persistence")
+                print("PASS: photo access; local voice auth; gated integrations; settings persistence")
             finally:
                 process.terminate()
                 try:
