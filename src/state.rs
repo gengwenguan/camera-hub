@@ -2,6 +2,7 @@ use crate::ai::AiService;
 use crate::aircon::AirconService;
 use crate::asset_manager::AssetManager;
 use crate::benchmark::BenchmarkRegistry;
+use crate::certificates::CertificateService;
 use crate::component_manager::ComponentManager;
 use crate::config::Config;
 use crate::ddns_control::DdnsControl;
@@ -66,6 +67,7 @@ pub struct AppState {
     pub moq: Arc<MoqLive>,
     pub qq: Arc<QqService>,
     pub ddns: Arc<DdnsControl>,
+    pub certificates: Arc<CertificateService>,
     pub ir: Arc<IrControl>,
     pub aircon: Arc<AirconService>,
     pub http_proxy: Arc<HttpProxyService>,
@@ -89,6 +91,7 @@ pub struct AppServices {
     pub ai: Arc<AiService>,
     pub qq: Arc<QqService>,
     pub ddns: Arc<DdnsControl>,
+    pub certificates: Arc<CertificateService>,
     pub ir: Arc<IrControl>,
     pub aircon: Arc<AirconService>,
     pub http_proxy: Arc<HttpProxyService>,
@@ -107,6 +110,7 @@ impl AppState {
             ai,
             qq,
             ddns,
+            certificates,
             ir,
             aircon,
             http_proxy,
@@ -131,6 +135,7 @@ impl AppState {
             moq,
             qq,
             ddns,
+            certificates,
             ir,
             aircon,
             http_proxy,

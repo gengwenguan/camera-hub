@@ -101,6 +101,13 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_CERTIFICATES_CONFIG_FILE",
+        default_value = "camera-hub-state/certificates.json"
+    )]
+    pub certificates_config_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_COMPONENT_MANAGER_ENABLED",
         default_value_t = false
     )]

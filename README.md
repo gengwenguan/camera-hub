@@ -598,10 +598,9 @@ HUB_HOST=mi6.gwghome.site HUB_USER=android HUB_PASSWORD=... \
 AssetManager 前，新安装默认关闭 AI，MI6 开发环境可临时执行
 `scripts/dev/mi6-deploy.sh provision-ai` 预置固定版本资源。
 
-LinuxDeploy 适配器还可代资源受限边缘节点管理权威证书。
-`camera-hub-acme-edge` 从设备状态 API 获取指定设备的公网 IPv6，使用 Let’s
-Encrypt short-lived IP 证书，通过 SSH 同步 HTTP-01 challenge 和最终证书，并重启
-当前活动的 Camera C++/Rust 版本。默认关闭；Camera 部署脚本安装专用公钥后启用：
+旧 LinuxDeploy 适配器仍保留 `camera-hub-acme-edge` 兼容脚本，通过 HTTP-01 申请
+V831 域名 shortlived 证书。启用下面的进程内任务时必须关闭旧脚本调度。
+旧部署选项如下：
 
 ```text
 CAMERA_HUB_EDGE_ACME_ENABLED=true
@@ -612,6 +611,51 @@ CAMERA_HUB_EDGE_RUNTIME_DIR=/root/maix_dist
 ```
 
 边缘节点私钥只通过 SSH 下发，不经过无 Token 的媒体 WebSocket。
+
+#### 进程内证书自动续期
+
+Rust 主进程内置 ACME/DNS-01 后台任务，默认关闭。配置路径由
+`CAMERA_HUB_CERTIFICATES_CONFIG_FILE` 指定，默认 `camera-hub-state/certificates.json`：
+
+```json
+{
+  "enabled": true,
+  "email": "",
+  "local_domain": "mi6.gwghome.site",
+  "edge": {
+    "domain": "v831.gwghome.site",
+    "host": "v831.gwghome.site",
+    "port": 22,
+    "user": "root",
+    "key_path": "/private/path/edge-ssh-key",
+    "host_key_sha256": "SHA256:verified-host-fingerprint",
+    "runtime_dir": "/root/maix_dist"
+  },
+  "interval_seconds": 43200,
+  "retry_seconds": 300,
+  "dns_wait_seconds": 60
+}
+```
+
+仅需本机续期时省略 `edge`，仅需 V831 时留空 `local_domain`。
+DNSPod 凭据和主域名读取现有 DDNS JSON；不要求 DDNS 已启用或 worker 在线。
+DNS 凭据需要目标主域名上的 `dnspod:CreateRecord`、`dnspod:DeleteRecord` 权限；
+仅有 DDNS 的 `ModifyRecord` 权限不足以完成续期。任务只删除本轮创建的 TXT 记录，失败或进程中断后
+通过持久记录再次清理。默认 CA 为 Let’s Encrypt production，V831 订单使用 `shortlived`
+profile。本机常规 90 天证书提前 30 天续期；其他证书按实际有效期的最后三分之一续期，
+最多提前 30 天。V831 约 7 天证书因此提前约 2.3 天续期。
+
+每个域名单独处理，失败不阻止其他域名。已签发证书先存入私有缓存，再同步本机或 V831；
+同步失败不会重复申请。HTTPS 在证书更新后热加载，首次签发完成后自动开启监听，
+不重启主进程。V831 使用固定主机指纹的原生 SSH 连接，密钥通过加密通道发送。
+账号、缓存、配置和清理记录为 `0600`，启动时可恢复本机证书双文件写入中断。
+
+认证接口：`GET /api/v1/certificates` 查看配置与状态，`PUT` 保存完整配置并立即检查，
+`POST /api/v1/certificates/check` 提交 `{}` 按阈值检查。显式提交 `{"force":true}`
+会强制申请新证书，用于部署验收；日常使用页面“立即检查”即可。
+迁移时先验证一次真实签发，再关闭旧调度并启用内置定时任务。
+现有证书尚未到期时的普通检查不会验证 DNS 凭据的创建、删除权限。
+测试可配置 `directory` 与 `dnspod_endpoint` 指向本地模拟服务。
 
 #### DNSPod 多设备 DDNS
 

@@ -28,6 +28,7 @@ getrandom = "0.3"
 http-body-util = "0.1"
 hmac = "0.12"
 hex = "0.4"
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "rcgen"] }
 libc = "0.2"
 moq-loc = "=0.2.0"
 moq-msf = "=0.4.0"
@@ -36,6 +37,7 @@ moq-net = "=0.2.10"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-23", "load-dynamic", "ndarray"] }
 pinyin = "0.11"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+russh = { version = "0.63.1", default-features = false, features = ["ring", "rsa"] }
 sherpa-onnx = { version = "1.13.6", default-features = false, features = ["shared"], optional = true }
 tar = { version = "0.4", optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream"] }
@@ -50,6 +52,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 webpki-root-certs = { version = "1", optional = true }
 webrtc = { git = "https://github.com/gengwenguan/webrtc", rev = "a91689c3dd237ea48a0ce5a827a69d3807420a5c" }
+x509-parser = "0.18"
 
 [profile.release]
 opt-level = 2

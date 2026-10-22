@@ -951,6 +951,28 @@
         <section class="panel ddns-panel" data-view="ddns" hidden>
             <div class="panel-heading">
                 <div>
+                    <p class="eyebrow">HTTPS</p>
+                    <h2>证书自动续期</h2>
+                </div>
+                <span class="chip offline" id="certificateStatus">等待加载</span>
+            </div>
+            <p>由 Hub 定期检查证书，通过 DNSPod 验证域名。本机证书热加载，V831 证书自动同步。</p>
+            <dl class="ddns-runtime">
+                <div><dt>最近检查</dt><dd id="certificateLastCheck">--</dd></div>
+                <div><dt>下次检查</dt><dd id="certificateNextCheck">--</dd></div>
+            </dl>
+            <div id="certificateDomains"></div>
+            <div class="settings-actions">
+                <label class="checkbox-label">
+                    <input type="checkbox" id="certificatesEnabled"> 启用自动续期
+                </label>
+                <button type="button" class="button secondary" id="checkCertificates">立即检查</button>
+            </div>
+        </section>
+
+        <section class="panel ddns-panel" data-view="ddns" hidden>
+            <div class="panel-heading">
+                <div>
                     <p class="eyebrow">WORKER STATUS</p>
                     <h2>同步状态</h2>
                 </div>

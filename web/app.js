@@ -2225,10 +2225,12 @@
         if (state.ddnsBusy) return;
         state.ddnsBusy = true;
         try {
-            const [body, componentsBody] = await Promise.all([
+            const [body, componentsBody, certificatesBody] = await Promise.all([
                 api("/api/v1/ddns"),
                 api("/api/v1/components"),
+                api("/api/v1/certificates"),
             ]);
+            renderCertificates(certificatesBody);
             renderDdns(
                 body && body.ddns || {},
                 componentsBody && componentsBody.components || {},
@@ -2237,6 +2239,27 @@
             if (!silent) handleError(error);
         } finally {
             state.ddnsBusy = false;
+        }
+    }
+
+    function renderCertificates(body) {
+        state.certificatesConfig = body.config || {};
+        const status = body.status || {};
+        const enabled = !!state.certificatesConfig.enabled;
+        $("certificatesEnabled").checked = enabled;
+        $("certificateStatus").textContent = !enabled ? "已关闭" : status.checking ? "正在检查" : "已启用";
+        $("certificateStatus").className = `chip ${enabled ? "online" : "offline"}`;
+        $("certificateLastCheck").textContent = formatTimestamp(status.last_check_epoch);
+        $("certificateNextCheck").textContent = formatTimestamp(status.next_attempt_epoch);
+        $("checkCertificates").disabled = !enabled || !!status.checking;
+        const domains = $("certificateDomains");
+        domains.replaceChildren();
+        for (const certificate of status.certificates || []) {
+            const row = document.createElement("p");
+            row.textContent = `${certificate.domain} · 到期 ${formatTimestamp(certificate.not_after_epoch)}` +
+                (certificate.last_error ? ` · ${certificate.last_error}` : " · 正常");
+            row.classList.toggle("error", !!certificate.last_error);
+            domains.append(row);
         }
     }
 
@@ -4322,6 +4345,27 @@
     });
     ui.previewDdns.addEventListener("click", previewDdns);
     ui.reconcileDdns.addEventListener("click", reconcileDdns);
+    $("checkCertificates").addEventListener("click", async () => {
+        try {
+            await api("/api/v1/certificates/check", {
+                method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+            });
+            await loadDdns();
+        } catch (error) { handleError(error); }
+    });
+    $("certificatesEnabled").addEventListener("change", async (event) => {
+        try {
+            const body = await api("/api/v1/certificates", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ...state.certificatesConfig, enabled: event.target.checked }),
+            });
+            renderCertificates(body);
+        } catch (error) {
+            event.target.checked = !!(state.certificatesConfig || {}).enabled;
+            handleError(error);
+        }
+    });
     ui.ddnsServiceControls.addEventListener("click", (event) => {
         const button = event.target.closest("[data-service-control]");
         if (!button) return;

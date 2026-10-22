@@ -4,6 +4,8 @@ mod asset_manager;
 mod atomic_file;
 mod auth;
 mod benchmark;
+mod certificate_edge;
+mod certificates;
 mod component_manager;
 mod config;
 mod ddns_control;
@@ -38,6 +40,7 @@ use crate::aircon::{
     AirconOperation, AirconService, AirconVerificationUpdate,
 };
 use crate::asset_manager::AssetManager;
+use crate::certificates::{CertificateConfig, CertificateService};
 use crate::component_manager::ComponentManager;
 use crate::config::Config;
 use crate::ddns_control::DdnsControl;
@@ -64,11 +67,10 @@ use axum::http::{HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Extension, Json, Router, middleware};
-use axum_server::tls_rustls::RustlsConfig;
 use camera_hub::ddns::{DdnsConfigUpdate, DdnsPreviewRequest};
 use clap::Parser;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
@@ -175,6 +177,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         config.ddns_config_file.clone(),
         config.ddns_status_file.clone(),
     )?);
+    let certificates = CertificateService::load(&config).await?;
     let voice = Arc::new(VoiceService::load(&config)?);
     let components = ComponentManager::start(&config)?;
     let ir = Arc::new(IrControl::new(&config)?);
@@ -190,6 +193,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             ai: ai.clone(),
             qq,
             ddns,
+            certificates: certificates.clone(),
             ir,
             aircon,
             http_proxy,
@@ -236,6 +240,11 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         .route("/api/v1/ddns", get(ddns_overview).put(update_ddns))
         .route("/api/v1/ddns/preview", post(preview_ddns))
         .route("/api/v1/ddns/reconcile", post(reconcile_ddns))
+        .route(
+            "/api/v1/certificates",
+            get(certificates_overview).put(update_certificates),
+        )
+        .route("/api/v1/certificates/check", post(check_certificates))
         .route("/api/v1/integrations/qq/notify", post(qq_notify_external))
         .route(
             "/api/v1/integrations/aircon/command",
@@ -356,34 +365,28 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
         .layer(Extension(web_auth))
         .with_state(state.clone());
 
-    let tls_available = config.tls_cert.is_file() && config.tls_key.is_file();
-    let mut tls_task = None;
-    if tls_available {
-        let tls = RustlsConfig::from_pem_file(&config.tls_cert, &config.tls_key)
-            .await
-            .context("load camera-hub TLS certificate")?;
-        let bind = config.tls_bind;
-        let tls_app = app.clone().layer(Extension(auth::TransportSecurity {
-            secure: true,
-            tls_available: true,
-            tls_port: config.tls_bind.port(),
-        }));
-        info!(%bind, "camera-hub HTTPS started");
-        tls_task = Some(tokio::spawn(async move {
-            if let Err(error) = axum_server::bind_rustls(bind, tls)
-                .serve(tls_app.into_make_service_with_connect_info::<SocketAddr>())
-                .await
-            {
-                error!(%error, %bind, "camera-hub HTTPS stopped");
+    let certificate_task = certificates.spawn();
+    let bind = config.tls_bind;
+    let tls_app = app.clone().layer(Extension(auth::TransportSecurity {
+        secure: true,
+        tls_available: true,
+        tls_port: config.tls_bind.port(),
+    }));
+    let tls_task = tokio::spawn(async move {
+        let tls = loop {
+            if let Some(tls) = certificates.tls_config().await {
+                break tls;
             }
-        }));
-    } else {
-        info!(
-            cert = %config.tls_cert.display(),
-            key = %config.tls_key.display(),
-            "camera-hub HTTPS disabled because certificate is missing"
-        );
-    }
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+        info!(%bind, "camera-hub HTTPS started");
+        if let Err(error) = axum_server::bind_rustls(bind, tls)
+            .serve(tls_app.into_make_service_with_connect_info::<SocketAddr>())
+            .await
+        {
+            error!(%error, %bind, "camera-hub HTTPS stopped");
+        }
+    });
     let listener = TcpListener::bind(config.bind)
         .await
         .with_context(|| format!("bind camera-hub on {}", config.bind))?;
@@ -394,21 +397,32 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
     );
     let serve_result = axum::serve(
         listener,
-        app.layer(Extension(auth::TransportSecurity {
-            secure: false,
-            tls_available,
-            tls_port: config.tls_bind.port(),
-        }))
+        app.layer(middleware::from_fn_with_state(
+            state.clone(),
+            http_transport,
+        ))
         .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal())
     .await;
     state.components.shutdown().await;
-    if let Some(task) = tls_task {
-        task.abort();
-    }
+    certificate_task.abort();
+    tls_task.abort();
     serve_result.context("serve camera-hub")?;
     Ok(())
+}
+
+async fn http_transport(
+    State(state): State<Arc<AppState>>,
+    mut request: axum::extract::Request,
+    next: middleware::Next,
+) -> Response {
+    request.extensions_mut().insert(auth::TransportSecurity {
+        secure: false,
+        tls_available: state.certificates.tls_config().await.is_some(),
+        tls_port: state.config.tls_bind.port(),
+    });
+    next.run(request).await
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
@@ -1015,6 +1029,32 @@ async fn test_qq(
 
 async fn ddns_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(json!({"ddns":state.ddns.overview()}))
+}
+
+async fn certificates_overview(State(state): State<Arc<AppState>>) -> Json<Value> {
+    Json(state.certificates.overview())
+}
+
+async fn update_certificates(
+    State(state): State<Arc<AppState>>,
+    Json(config): Json<CertificateConfig>,
+) -> Result<Json<Value>, ApiError> {
+    state.certificates.update(config)?;
+    Ok(Json(state.certificates.overview()))
+}
+
+#[derive(Default, Deserialize)]
+struct CertificateCheck {
+    #[serde(default)]
+    force: bool,
+}
+
+async fn check_certificates(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<CertificateCheck>,
+) -> Json<Value> {
+    state.certificates.request_check(request.force);
+    Json(json!({"ok": true, "queued": true}))
 }
 
 async fn update_ddns(

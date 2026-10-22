@@ -8,6 +8,7 @@
 | `deployment_health.py` | 在线组件、语音心跳、摄像头音视频增长、录像、AI 推理、FLV、WebSocket fMP4、DDNS/QQ 状态、模型和红外就绪 | 运行中的 Hub、Python、websocket-client |
 | `ai_snapshots.py` | 手机已安装模型与 FFmpeg 的人物推理、识别框 JPEG、相册读取、保存失败保留与恢复 | ADB、手机 APK、桌面 FFmpeg、带人物的 H264 关键帧；独立缓存目录，不影响正式相册 |
 | `runtime_repairs.py` | HTTP/WebSocket 图片鉴权、空调状态、实体验收门禁、外部接口启停与并发配置持久化 | Linux Rust 二进制；临时目录和 mock IR，不发送真实红外 |
+| `certificates.py` | 原生 ACME DNS-01/JWS/CSR、shortlived、签发缓存和 TXT 清理重试、HTTPS 热加载、原生 SSH 同步和固定主机指纹 | 桌面 Rust 二进制、Python cryptography/paramiko；本地模拟 CA/DNS/SSH，不访问真实 CA 或设备 |
 
 ```sh
 python3 tests/integration/android_app.py \
@@ -19,6 +20,17 @@ python3 tests/integration/android_app.py \
 Android 脚本会清除模拟器 App 数据，不能对正式手机执行。它核对外部 Activity 和不带凭据的本机 URL；浏览器首次使用向导可能出现，网页交互仍需浏览器端验收。
 
 JVM 单测留在 `android/app/src/test/`，Rust 单测留在源码模块；不复制到此目录。已删除的原生业务界面与 WebView 专用脚本不再保留兼容入口。
+
+## 证书续期隔离验证
+
+```sh
+python3 -m venv /tmp/camera-hub-acme-venv
+/tmp/camera-hub-acme-venv/bin/pip install cryptography 'paramiko>=3.5,<5'
+cargo +1.94.1 build --locked
+/tmp/camera-hub-acme-venv/bin/python tests/integration/certificates.py --binary target/debug/camera-hub
+```
+
+SSH mock 仅提供 V831 旧版 Dropbear 的 SHA-1 协商选项；Paramiko 5 已移除对应算法，因此固定为 3.5–4.x。
 
 ## 运行环境只读检查
 

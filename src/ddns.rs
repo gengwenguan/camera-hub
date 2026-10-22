@@ -178,7 +178,7 @@ pub struct DdnsLegacyConfig {
     pub force_seconds: u64,
 }
 
-struct DnspodClient {
+pub struct DnspodClient {
     http: reqwest::Client,
     endpoint: String,
     secret_id: String,
@@ -380,7 +380,7 @@ impl DdnsConfigStore {
 }
 
 impl DnspodClient {
-    fn new(config: &DdnsConfig, endpoint: &str) -> Result<Self> {
+    pub fn new(config: &DdnsConfig, endpoint: &str) -> Result<Self> {
         let http = crate::http_client::builder()?
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(20))
@@ -395,7 +395,7 @@ impl DnspodClient {
         })
     }
 
-    async fn call(&self, action: &str, payload: Value) -> Result<Value> {
+    pub async fn call(&self, action: &str, payload: Value) -> Result<Value> {
         let body = serde_json::to_string(&payload)?;
         let timestamp = epoch_seconds() as i64;
         let authorization =

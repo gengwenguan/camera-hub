@@ -108,21 +108,24 @@ Android 强行停止 App 后，系统不会允许应用自行恢复。
 
 ## MI6 部署的证书续期
 
-MI6 使用额外的 Magisk 开机钩子 `/data/adb/service.d/camera-hub-cert-renew.sh`，
-源码为 `deploy/mi6/android-app-cert-renew.sh`。开机等待 3 分钟后，每 12 小时分别检查
-`mi6.gwghome.site` 和 `v831.gwghome.site`；其中一个失败不影响另一个执行。
-DDNS 仍只负责更新 DNS 记录。
+从 0.5.20 起，Rust 核心内置 ACME 后台任务，启动后立即检查，之后每 12 小时检查一次；
+失败 5 分钟后重试，一个域名失败不阻止另一个域名。本机 HTTPS 热加载证书，
+V831 通过原生 SSH 客户端同步证书，仅在证书或私钥变化、或上次重载失败时重载摄像头。
+续期不依赖 Root、Magisk、LinuxDeploy、lego 或手机上的 ssh 命令。
+DDNS 仍只更新地址；证书任务独立复用 DDNS 配置中的 DNSPod 凭据执行 DNS-01。
 
-MI6 证书剩余不足 30 天时续期，证书变化后同步到 App 私有目录并重启 Rust 核心。
-V831 复用 `/usr/local/bin/camera-hub-acme-edge`：以 LinuxDeploy 的 `android` 用户执行，
-短期证书剩余不足 3 天时续期，通过 SSH 同步到 V831，证书变化后重载摄像头服务。
-该部署钩子依赖 Root、Magisk 和 `/data/linux` rootfs；普通 APK 独立运行无需这些依赖。
+配置位于 App 私有 `files/engine/camera-hub-state/certificates.json`，默认关闭。
+具体字段见根目录 README 的“进程内证书自动续期”。ACME 账号、已签发证书和私钥、
+未完成 TXT 清理记录放在相邻的 `certificates.state/`，文件权限为 `0600`。
+首次迁移应复制现有 V831 证书和专用 SSH 密钥，核对并固定 V831 的 SHA-256 主机指纹。
+验证两个域名的真实签发成功后，停用并移除旧 `/data/adb/service.d/camera-hub-cert-renew.sh` 及其循环，
+避免两个续期器同时写入证书。旧 LinuxDeploy 续期循环也应保持停用。
+若 DNSPod 返回 `AuthFailure.UnauthorizedOperation`，应为目标主域名补充
+`dnspod:CreateRecord` 和 `dnspod:DeleteRecord` 权限；补齐前保持内置任务关闭，保留原续期调度。
 
-日志位于 `/data/adb/camera-hub-cert-renew.log`。在手机 Root shell 中可立即检查两个域名：
-
-```sh
-sh /data/adb/service.d/camera-hub-cert-renew.sh --once
-```
+Web 的 DDNS 页面展示每个域名到期时间、下一次检查和失败原因，并提供启停与立即检查。
+日志在 App 的 `files/engine/logs/engine.log`；认证接口
+`GET /api/v1/certificates` 查看状态，`POST /api/v1/certificates/check` 提交 `{}` 请求检查。
 
 ## 数据与硬件
 
