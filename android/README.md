@@ -106,6 +106,24 @@ HTTP 端口不能使用其他预留端口。修改 HTTP 端口前需停止服务
 MIUI 等系统仍需允许自启动、通知和后台活动，并将电池策略设为无限制。
 Android 强行停止 App 后，系统不会允许应用自行恢复。
 
+## MI6 部署的证书续期
+
+MI6 使用额外的 Magisk 开机钩子 `/data/adb/service.d/camera-hub-cert-renew.sh`，
+源码为 `deploy/mi6/android-app-cert-renew.sh`。开机等待 3 分钟后，每 12 小时分别检查
+`mi6.gwghome.site` 和 `v831.gwghome.site`；其中一个失败不影响另一个执行。
+DDNS 仍只负责更新 DNS 记录。
+
+MI6 证书剩余不足 30 天时续期，证书变化后同步到 App 私有目录并重启 Rust 核心。
+V831 复用 `/usr/local/bin/camera-hub-acme-edge`：以 LinuxDeploy 的 `android` 用户执行，
+短期证书剩余不足 3 天时续期，通过 SSH 同步到 V831，证书变化后重载摄像头服务。
+该部署钩子依赖 Root、Magisk 和 `/data/linux` rootfs；普通 APK 独立运行无需这些依赖。
+
+日志位于 `/data/adb/camera-hub-cert-renew.log`。在手机 Root shell 中可立即检查两个域名：
+
+```sh
+sh /data/adb/service.d/camera-hub-cert-renew.sh --once
+```
+
 ## 数据与硬件
 
 - 配置、模型、缓存和录像位于 App 私有的 `files/engine/`。

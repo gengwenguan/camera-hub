@@ -67,15 +67,37 @@ renew_once() {
     [ -z "$pid" ] || kill -TERM "$pid"
 }
 
+renew_edge_once() {
+    if [ ! -x "$ROOTFS/usr/local/bin/camera-hub-acme-edge" ] ||
+        [ ! -x "$ROOTFS/bin/su" ]; then
+        log "edge renewal prerequisites are unavailable"
+        return 1
+    fi
+
+    if ! chroot "$ROOTFS" /bin/su -s /bin/sh android -c \
+        'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; exec /usr/local/bin/camera-hub-acme-edge'; then
+        log "edge ACME renewal failed"
+        return 1
+    fi
+    log "edge certificate check completed"
+}
+
+renew_all_once() {
+    renewal_status=0
+    renew_once || renewal_status=1
+    renew_edge_once || renewal_status=1
+    return "$renewal_status"
+}
+
 if [ "${1:-}" = "--once" ]; then
-    renew_once
+    renew_all_once
     exit $?
 fi
 
 (
     sleep 180
     while :; do
-        renew_once
+        renew_all_once
         sleep 43200
     done
 ) >> "$LOG" 2>&1 &
