@@ -3,6 +3,11 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.19 AI 抓拍保存修复
+
+修复 APK 内置 FFmpeg 缺少 `drawtext` 导致识别到人后仍无法保存照片的问题。
+Android 抓拍使用识别框，不依赖文字滤镜；AI 相册显示推理进度、置信度和保留到恢复成功的抓拍错误。
+
 ## 0.5.18 HTTP 代理调用示例
 
 HTTP 代理页使用 `https://www.baidu.com` 展示原始目标 URL、URL 编码结果以及可直接复制的

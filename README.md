@@ -440,7 +440,8 @@ curl -G 'https://hub.example/api/v1/integrations/aircon/command' \
 检测照片写入 `<data-dir>/<device_id>/snapshot/YYYYMMDD/`，并经同一设备 WebSocket
 回传开发板相册。照片使用推理时的同一帧，按 YOLOX 输出执行 person 框解码和 NMS，
 只保留面积达到原图 `CAMERA_HUB_AI_MIN_PERSON_AREA_RATIO` 比例的框，再对抓拍 JPEG
-绘制识别框与置信度，不改写直播视频。默认值 `0.02` 表示框面积至少占画面 2%；
+绘制识别框，不改写直播视频。普通 FFmpeg 另绘制置信度文字，Android 内置精简 FFmpeg
+只绘制框以避免依赖未打包的 `drawtext` 滤镜。默认值 `0.02` 表示框面积至少占画面 2%；
 Web 设置页使用百分比显示，设为 `0` 可关闭面积过滤。
 
 每台设备的 AI 照片独立执行数量限制，只保留最新

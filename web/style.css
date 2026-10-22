@@ -432,6 +432,16 @@ h2 {
     font-size: 12px;
 }
 
+#photoAiStatus,
+#aiRuntimeStatus {
+    overflow-wrap: anywhere;
+}
+
+#photoAiStatus.error,
+#aiRuntimeStatus.error {
+    color: var(--danger);
+}
+
 .host-panel { border-color: rgba(124, 140, 255, .28); }
 .host-grid {
     display: grid;

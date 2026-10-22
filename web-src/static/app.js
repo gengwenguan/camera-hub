@@ -253,6 +253,7 @@
         deleteSelectedPhotos: $("deleteSelectedPhotos"),
         clearPhotos: $("clearPhotos"),
         photoSummary: $("photoSummary"),
+        photoAiStatus: $("photoAiStatus"),
         photoGrid: $("photoGrid"),
         photoEmpty: $("photoEmpty"),
         photoLightbox: $("photoLightbox"),
@@ -268,6 +269,7 @@
         days: [],
         records: [],
         photos: [],
+        ai: null,
         photoSelection: new Set(),
         currentPhoto: "",
         device: "",
@@ -488,6 +490,7 @@
     function renderSettings(body, aiBody) {
         const settings = body && body.settings || {};
         const ai = aiBody && aiBody.ai || {};
+        state.ai = ai;
         state.segmentSeconds = Number(settings.segment_seconds || 600);
         if (!state.settingsDirty) {
             ui.aiEnabled.checked = !!settings.ai_enabled;
@@ -508,16 +511,27 @@
             );
             setSettingsStatus("已同步", "active");
         }
-        if (!ai.enabled) {
-            ui.aiRuntimeStatus.textContent = "AI 已关闭";
-        } else if (ai.available && ai.running) {
-            ui.aiRuntimeStatus.textContent =
-                `运行中 · 推理 ${ai.inference_count || 0} 次 · ` +
-                `检测 ${ai.detection_count || 0} 次 · ` +
-                `${Number(ai.last_inference_ms || 0).toFixed(0)} ms/次`;
-        } else {
-            ui.aiRuntimeStatus.textContent = ai.last_error || "AI 运行时不可用";
-        }
+        ui.aiRuntimeStatus.textContent = aiStatusText(ai);
+        ui.aiRuntimeStatus.classList.toggle("error", !!(ai.last_error || ai.last_snapshot_error));
+        renderPhotoAiStatus();
+    }
+
+    function aiStatusText(ai) {
+        if (!ai.enabled) return "AI 已关闭";
+        if (!ai.available || !ai.running) return ai.last_error || "AI 运行时不可用";
+        const error = ai.last_snapshot_error || ai.last_error;
+        return `运行中 · 推理 ${ai.inference_count || 0} 次 · ` +
+            `成功抓拍 ${ai.detection_count || 0} 次 · ` +
+            `最高人物置信度 ${(Number(ai.last_confidence || 0) * 100).toFixed(1)}%` +
+            `（阈值 ${(Number(ai.threshold || 0) * 100).toFixed(0)}%）` +
+            ` · ${Number(ai.last_inference_ms || 0).toFixed(0)} ms/次` +
+            (error ? ` · 抓拍失败 ${ai.snapshot_failure_count || 0} 次 · ${error}` : "");
+    }
+
+    function renderPhotoAiStatus() {
+        const ai = state.ai;
+        ui.photoAiStatus.textContent = ai ? aiStatusText(ai) : "等待 AI 状态";
+        ui.photoAiStatus.classList.toggle("error", !!(ai?.last_error || ai?.last_snapshot_error));
     }
 
     function setSettingsStatus(text, stateName = "") {

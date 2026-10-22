@@ -20,9 +20,11 @@ use tracing::warn;
 
 const INPUT: usize = 416;
 const FRAME_BYTES: usize = INPUT * INPUT * 3;
+const CONTENT_HEIGHT: usize = 312;
+const SNAPSHOT_BYTES: usize = INPUT * CONTENT_HEIGHT * 3;
 const SOURCE_WIDTH: f32 = 640.0;
 const SOURCE_HEIGHT: f32 = 480.0;
-const MODEL_CONTENT_HEIGHT: f32 = 312.0;
+const MODEL_CONTENT_HEIGHT: f32 = CONTENT_HEIGHT as f32;
 const MAX_DETECTIONS: usize = 10;
 const NMS_IOU_THRESHOLD: f32 = 0.45;
 const YOLOX_STRIDES: [usize; 3] = [8, 16, 32];
@@ -54,6 +56,9 @@ pub struct AiStatus {
     pub snapshot_quality: u8,
     pub inference_count: u64,
     pub detection_count: u64,
+    pub last_person_count: usize,
+    pub snapshot_failure_count: u64,
+    pub last_snapshot_error: String,
     pub last_device_id: String,
     pub last_confidence: f32,
     pub last_inference_ms: f64,
@@ -88,6 +93,9 @@ impl AiService {
             snapshot_quality: initial.ai_snapshot_quality,
             inference_count: 0,
             detection_count: 0,
+            last_person_count: 0,
+            snapshot_failure_count: 0,
+            last_snapshot_error: String::new(),
             last_device_id: String::new(),
             last_confidence: 0.0,
             last_inference_ms: 0.0,
@@ -288,18 +296,30 @@ fn run_ai(
                         }
                         snapshot = Some(path);
                     }
-                    Err(error) => snapshot_error = Some(format!("保存抓拍失败：{error:#}")),
+                    Err(error) => {
+                        warn!(device_id, error = %format!("{error:#}"), "AI snapshot save failed");
+                        snapshot_error = Some(format!("保存抓拍失败：{error:#}"));
+                    }
                 }
             }
             let mut current = status.lock().unwrap_or_else(|error| error.into_inner());
             current.inference_count = current.inference_count.saturating_add(1);
+            current.last_person_count = result.detections.len();
             current.last_device_id.clone_from(&device_id);
             current.last_confidence = confidence;
             current.last_inference_ms = inference_ms;
+            if snapshot.is_none() {
+                if let Some(error) = &snapshot_error {
+                    current.snapshot_failure_count =
+                        current.snapshot_failure_count.saturating_add(1);
+                    current.last_snapshot_error.clone_from(error);
+                }
+            }
             current.last_error = snapshot_error.unwrap_or_default();
             if let Some(path) = snapshot {
                 current.detection_count = current.detection_count.saturating_add(1);
                 current.last_snapshot = path.to_string_lossy().into_owned();
+                current.last_snapshot_error.clear();
             }
         }
         sleep_interruptible(
@@ -495,6 +515,11 @@ fn save_snapshot(
     detections: &[Detection],
     quality: u8,
 ) -> Result<PathBuf> {
+    // The model's bottom padding is not part of the photograph. Trim raw rows
+    // before encoding so the APK does not need FFmpeg's crop filter.
+    let pixels = frame
+        .get(..SNAPSHOT_BYTES)
+        .context("AI snapshot frame is shorter than its image content")?;
     let china = Utc::now() + ChronoDuration::hours(8);
     let directory = data_dir
         .join(device_id)
@@ -519,7 +544,7 @@ fn save_snapshot(
             "-pixel_format",
             "bgr24",
             "-video_size",
-            "416x416",
+            "416x312",
             "-i",
             "pipe:0",
             "-frames:v",
@@ -540,7 +565,7 @@ fn save_snapshot(
         .stdin
         .take()
         .context("FFmpeg AI snapshot stdin missing")?
-        .write_all(frame)?;
+        .write_all(pixels)?;
     let output = child
         .wait_with_output()
         .context("wait for FFmpeg AI snapshot")?;
@@ -657,7 +682,7 @@ fn jpeg_qscale(quality: u8) -> u8 {
 }
 
 fn snapshot_filter(detections: &[Detection]) -> String {
-    let mut filters = vec!["crop=416:312:0:0".to_owned(), "scale=640:480".to_owned()];
+    let mut filters = vec!["scale=640:480".to_owned()];
     for detection in detections {
         let x = detection.x.round().clamp(0.0, SOURCE_WIDTH - 1.0) as i32;
         let y = detection.y.round().clamp(0.0, SOURCE_HEIGHT - 1.0) as i32;
@@ -669,6 +694,8 @@ fn snapshot_filter(detections: &[Detection]) -> String {
         filters.push(format!(
             "drawbox=x={x}:y={y}:w={width}:h={height}:color=0x36e6a5:t=3"
         ));
+        // The APK's FFmpeg has drawbox, but no drawtext/font dependencies.
+        #[cfg(not(feature = "android-app"))]
         filters.push(format!(
             "drawtext=x={x}:y=max(0\\,{y}-22):text='person {:.2}':\
              expansion=none:fontsize=18:fontcolor=white:box=1:boxcolor=black@0.65",
@@ -779,9 +806,12 @@ mod tests {
             height: 200.0,
             confidence: 0.81,
         }]);
-        assert!(filter.starts_with("crop=416:312:0:0,scale=640:480"));
+        assert!(filter.starts_with("scale=640:480"));
         assert!(filter.contains("drawbox=x=10:y=20:w=100:h=200"));
+        #[cfg(not(feature = "android-app"))]
         assert!(filter.contains("text='person 0.81'"));
+        #[cfg(feature = "android-app")]
+        assert!(!filter.contains("drawtext"));
     }
 
     #[test]
