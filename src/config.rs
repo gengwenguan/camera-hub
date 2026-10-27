@@ -87,6 +87,13 @@ pub struct Config {
 
     #[arg(
         long,
+        env = "CAMERA_HUB_TV_CONTROL_FILE",
+        default_value = "camera-hub-state/tv-control.json"
+    )]
+    pub tv_control_file: PathBuf,
+
+    #[arg(
+        long,
         env = "CAMERA_HUB_DDNS_CONFIG_FILE",
         default_value = "camera-hub-state/ddns.json"
     )]

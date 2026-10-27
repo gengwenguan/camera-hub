@@ -2481,6 +2481,54 @@ textarea:focus {
     font-weight: 800;
 }
 
+.tv-config-grid,
+.tv-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+    margin: 20px 0;
+}
+
+.tv-panel label:not(.toggle) {
+    display: grid;
+    gap: 7px;
+}
+
+.tv-panel label > span,
+.tv-status-grid dt {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.tv-config-grid input,
+.tv-config-grid select {
+    width: 100%;
+    padding: 0 11px;
+}
+
+.tv-origin {
+    grid-column: 1 / -1;
+}
+
+.tv-status-grid dd {
+    margin: 8px 0 0;
+    overflow-wrap: anywhere;
+}
+
+.tv-apk {
+    border-top: 1px solid var(--line);
+    margin-top: 24px;
+    padding-top: 16px;
+}
+
+.tv-apk form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    align-items: end;
+    margin-bottom: 12px;
+}
+
 .ddns-config-grid label:not(.toggle),
 .ddns-record-row label {
     display: grid;

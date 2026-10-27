@@ -23,6 +23,8 @@ Android APK 可独立运行本机服务，只保留密码、服务与权限设�
   H264/AAC；浏览器通过 UDP/443 WebTransport + WebCodecs 播放，不增加独立 relay。
 - 裸公网 IPv6 使用 Let’s Encrypt shortlived IP 证书直接获得浏览器信任并自动续期。
 - 核心默认监听标准端口 80/443；Termux 等无 Root 适配器覆盖为 8080/8443。
+- [电视控制守护](docs/tv-control.md)：检测局域网电视并通过 ADB 自动恢复 ShellAgent，
+  提供远控与 AI 操作指南入口，浏览器关闭后继续运行。
 
 camera-hub 不代理开发板硬件控制。以下能力仍由开发板执行：
 

@@ -43,6 +43,7 @@
             <button type="button" data-view-target="qq">QQ 机器人</button>
             <button type="button" data-view-target="ddns">DDNS</button>
             <button type="button" data-view-target="proxy">HTTP 代理</button>
+            <button type="button" data-view-target="tv">电视控制</button>
         </nav>
 
         <nav class="context-subnav" id="cameraSubnav"
@@ -951,28 +952,6 @@
         <section class="panel ddns-panel" data-view="ddns" hidden>
             <div class="panel-heading">
                 <div>
-                    <p class="eyebrow">HTTPS</p>
-                    <h2>证书自动续期</h2>
-                </div>
-                <span class="chip offline" id="certificateStatus">等待加载</span>
-            </div>
-            <p>由 Hub 定期检查证书，通过 DNSPod 验证域名。本机证书热加载，V831 证书自动同步。</p>
-            <dl class="ddns-runtime">
-                <div><dt>最近检查</dt><dd id="certificateLastCheck">--</dd></div>
-                <div><dt>下次检查</dt><dd id="certificateNextCheck">--</dd></div>
-            </dl>
-            <div id="certificateDomains"></div>
-            <div class="settings-actions">
-                <label class="checkbox-label">
-                    <input type="checkbox" id="certificatesEnabled"> 启用自动续期
-                </label>
-                <button type="button" class="button secondary" id="checkCertificates">立即检查</button>
-            </div>
-        </section>
-
-        <section class="panel ddns-panel" data-view="ddns" hidden>
-            <div class="panel-heading">
-                <div>
                     <p class="eyebrow">WORKER STATUS</p>
                     <h2>同步状态</h2>
                 </div>
@@ -1093,6 +1072,99 @@
             </div>
             <div class="ddns-preview" id="ddnsPreview">
                 <div class="empty">预览后显示本机公网前缀和目标 AAAA 地址</div>
+            </div>
+        </section>
+
+        <section class="view-heading" data-view="tv" hidden>
+            <p class="eyebrow">TV CONTROL</p>
+            <h1>电视控制</h1>
+            <p>电视上线后自动恢复远控服务，浏览器关闭后仍持续检测。</p>
+        </section>
+
+        <section class="panel tv-panel" data-view="tv" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">SERVICE MONITOR</p>
+                    <h2>运行状态</h2>
+                </div>
+                <span class="chip offline" id="tvStatus">等待加载</span>
+            </div>
+            <p id="tvMessage" role="status">正在读取守护状态</p>
+            <dl class="tv-status-grid">
+                <div><dt>最近检测</dt><dd id="tvLastChecked">—</dd></div>
+                <div><dt>最近恢复</dt><dd id="tvLastRecovered">—</dd></div>
+                <div><dt>恢复次数</dt><dd id="tvRecoveryCount">0</dd></div>
+                <div><dt>下次重试</dt><dd id="tvNextRetry">—</dd></div>
+            </dl>
+            <pre class="proxy-test-result" id="tvError" hidden></pre>
+            <div class="settings-actions">
+                <button class="button primary" id="checkTv" type="button">检查并恢复</button>
+                <button class="button ghost" id="reloadTv" type="button">刷新状态</button>
+            </div>
+            <div class="settings-actions" id="tvLinks" hidden>
+                <a class="button ghost" id="tvControlLink" target="_blank" rel="noopener">打开远控</a>
+                <a class="button ghost" id="tvGuideLink" target="_blank" rel="noopener">AI 操作指南</a>
+                <button class="button ghost" id="copyTvGuide" type="button">复制 AI 指南地址</button>
+            </div>
+            <small>远控和指南直接访问电视。使用外网 AI 时，在下方填写 AI 可访问的电视地址。</small>
+        </section>
+
+        <section class="panel tv-panel" data-view="tv" hidden>
+            <div class="panel-heading">
+                <div>
+                    <p class="eyebrow">AUTO RESTORE</p>
+                    <h2>守护设置</h2>
+                </div>
+            </div>
+            <form id="tvForm">
+                <label class="toggle">
+                    <input type="checkbox" id="tvEnabled">
+                    <span>启用自动检测与恢复</span>
+                </label>
+                <div class="tv-config-grid">
+                    <label><span>电视局域网 IP / 主机名</span>
+                        <input id="tvHost" type="text" maxlength="253" placeholder="192.168.1.7">
+                    </label>
+                    <label><span>ADB 端口</span>
+                        <input id="tvAdbPort" type="number" min="1" max="65535" required value="5555">
+                    </label>
+                    <label><span>检测间隔（秒）</span>
+                        <input id="tvPollSeconds" type="number" min="5" max="300" required value="15">
+                    </label>
+                    <label><span>恢复后的 JPEG 质量</span>
+                        <input id="tvQuality" type="number" min="20" max="90" required value="25">
+                    </label>
+                    <label><span>恢复后的截图间隔</span>
+                        <select id="tvFrameInterval">
+                            <option value="200">200 ms</option>
+                            <option value="300" selected>300 ms</option>
+                            <option value="500">500 ms</option>
+                            <option value="800">800 ms</option>
+                            <option value="1000">1000 ms</option>
+                            <option value="1500">1500 ms</option>
+                            <option value="2000">2000 ms</option>
+                        </select>
+                    </label>
+                    <label class="tv-origin"><span>AI 访问地址（可选）</span>
+                        <input id="tvApiOrigin" type="url" placeholder="http://[电视公网IPv6]:9080">
+                    </label>
+                </div>
+                <small>电视需开启网络 ADB，并保留已安装的手机远控 App。控制服务端口固定为 9080；
+                    连续两次检测失败后才尝试恢复。关闭守护不会停止已经运行的电视服务。</small>
+                <div class="settings-actions">
+                    <button class="button primary" id="saveTv" type="submit">保存设置</button>
+                </div>
+            </form>
+            <div class="tv-apk">
+                <h3>恢复用 APK</h3>
+                <p id="tvApkStatus">尚未上传</p>
+                <form id="tvApkForm">
+                    <label><span>手机远控 APK（最大 16 MiB）</span>
+                        <input id="tvApkFile" type="file" accept=".apk,application/vnd.android.package-archive" required>
+                    </label>
+                    <button class="button ghost" id="uploadTvApk" type="submit">上传 APK</button>
+                </form>
+                <small>APK 保存在 Hub 上，恢复时重新传到电视。上传不会立即重启健康服务，也不会安装普通 App。</small>
             </div>
         </section>
 

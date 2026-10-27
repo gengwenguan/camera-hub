@@ -263,6 +263,13 @@
         closePhoto: $("closePhoto"),
         toast: $("toast"),
     };
+    const tvUi = Object.fromEntries([
+        "tvStatus", "tvMessage", "tvLastChecked", "tvLastRecovered", "tvRecoveryCount",
+        "tvNextRetry", "tvError", "checkTv", "reloadTv", "tvLinks", "tvControlLink",
+        "tvGuideLink", "copyTvGuide", "tvForm", "tvEnabled", "tvHost", "tvAdbPort",
+        "tvPollSeconds", "tvQuality", "tvFrameInterval", "tvApiOrigin", "saveTv",
+        "tvApkStatus", "tvApkForm", "tvApkFile", "uploadTvApk",
+    ].map((id) => [id, $(id)]));
     const state = {
         devices: [],
         media: [],
@@ -313,6 +320,9 @@
         httpProxy: null,
         httpProxyDirty: false,
         httpProxyBusy: false,
+        tv: null,
+        tvDirty: false,
+        tvBusy: false,
         busy: false,
         settingsDirty: false,
         toastTimer: 0,
@@ -325,7 +335,7 @@
         "evaluation",
     ]);
     const VOICE_VIEWS = new Set(["commands", "profile", "public", "status", "aircon"]);
-    const ROOT_VIEWS = new Set(["overview", "voice", "qq", "ddns", "proxy"]);
+    const ROOT_VIEWS = new Set(["overview", "voice", "qq", "ddns", "proxy", "tv"]);
 
     // Android 9 devices may ship WebView versions without structuredClone.
     const cloneJson = (value) => {
@@ -2519,6 +2529,125 @@
         }
     }
 
+    function renderTv(tv) {
+        state.tv = tv;
+        const config = tv.config || {};
+        const status = tv.status || {};
+        const phases = {
+            disabled: "守护关闭", pending: "等待检测", checking: "确认状态",
+            online: config.enabled ? "服务正常" : "服务正常 · 守护关闭",
+            recovering: "恢复中", waiting: "等待上线 / 重试",
+        };
+        tvUi.tvStatus.textContent = phases[status.phase] || "等待检测";
+        tvUi.tvStatus.className = `chip ${status.service_online ? "active" : "offline"}`;
+        tvUi.tvMessage.textContent = status.message || "等待检测";
+        tvUi.tvLastChecked.textContent = formatTimestamp(status.last_checked_epoch);
+        tvUi.tvLastRecovered.textContent = formatTimestamp(status.last_recovered_epoch);
+        tvUi.tvRecoveryCount.textContent = status.recovery_count || 0;
+        tvUi.tvNextRetry.textContent = config.enabled ? formatTimestamp(status.next_retry_epoch) : "—";
+        tvUi.tvError.hidden = !status.last_error;
+        tvUi.tvError.textContent = status.last_error || "";
+        tvUi.checkTv.disabled = state.tvBusy || state.tvDirty || !config.host || status.phase === "recovering";
+        tvUi.saveTv.disabled = state.tvBusy;
+        tvUi.uploadTvApk.disabled = state.tvBusy;
+        tvUi.tvApkStatus.textContent = tv.apk_bytes
+            ? `已保存 ${formatBytes(tv.apk_bytes)}，服务恢复时使用`
+            : "尚未上传；恢复时使用电视上已有 APK";
+        tvUi.tvLinks.hidden = !tv.control_url;
+        if (tv.control_url) {
+            tvUi.tvControlLink.href = `${tv.control_url}/`;
+            tvUi.tvGuideLink.href = tv.guide_url;
+        }
+        if (!state.tvDirty) {
+            tvUi.tvEnabled.checked = !!config.enabled;
+            tvUi.tvHost.value = config.host || "";
+            tvUi.tvAdbPort.value = config.adb_port || 5555;
+            tvUi.tvPollSeconds.value = config.poll_seconds || 15;
+            tvUi.tvQuality.value = config.jpeg_quality || 25;
+            tvUi.tvFrameInterval.value = config.frame_interval_ms || 300;
+            tvUi.tvApiOrigin.value = config.api_origin || "";
+        }
+    }
+
+    async function loadTv(silent = false) {
+        if (state.tvBusy) return;
+        try {
+            const body = await api("/api/v1/tv");
+            if (!state.tvBusy) renderTv(body.tv || {});
+        } catch (error) {
+            if (!silent) handleError(error);
+        }
+    }
+
+    async function tvAction(action, success) {
+        if (state.tvBusy) return;
+        state.tvBusy = true;
+        if (state.tv) renderTv(state.tv);
+        try {
+            await action();
+            showToast(success);
+        } catch (error) {
+            handleError(error);
+        } finally {
+            state.tvBusy = false;
+            if (state.tv) renderTv(state.tv);
+            await loadTv(true);
+        }
+    }
+
+    tvUi.tvForm.addEventListener("input", () => {
+        state.tvDirty = true;
+        tvUi.checkTv.disabled = true;
+    });
+    tvUi.tvForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        if (!tvUi.tvForm.reportValidity()) return;
+        const config = {
+            enabled: tvUi.tvEnabled.checked,
+            host: tvUi.tvHost.value.trim(),
+            adb_port: Number(tvUi.tvAdbPort.value),
+            poll_seconds: Number(tvUi.tvPollSeconds.value),
+            jpeg_quality: Number(tvUi.tvQuality.value),
+            frame_interval_ms: Number(tvUi.tvFrameInterval.value),
+            api_origin: tvUi.tvApiOrigin.value.trim(),
+        };
+        tvAction(async () => {
+            const body = await api("/api/v1/tv", {
+                method: "PUT", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(config),
+            });
+            state.tvDirty = false;
+            renderTv(body.tv || {});
+        }, "电视守护设置已保存");
+    });
+    tvUi.reloadTv.addEventListener("click", () => loadTv());
+    tvUi.checkTv.addEventListener("click", () => {
+        if (state.tvDirty) return showToast("请先保存电视设置", true);
+        tvAction(() => api("/api/v1/tv/check", { method: "POST" }), "已请求检查并恢复");
+    });
+    tvUi.tvApkForm.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const file = tvUi.tvApkFile.files[0];
+        if (!file) return;
+        if (file.size > 16 * 1024 * 1024) return showToast("APK 最大为 16 MiB", true);
+        tvAction(async () => {
+            const body = await api("/api/v1/tv/apk", {
+                method: "POST", headers: { "Content-Type": "application/vnd.android.package-archive" },
+                body: file,
+            });
+            renderTv(body.tv || {});
+            tvUi.tvApkForm.reset();
+        }, "恢复用 APK 已保存");
+    });
+    tvUi.copyTvGuide.addEventListener("click", async () => {
+        try {
+            await navigator.clipboard.writeText(state.tv.guide_url);
+            showToast("AI 指南地址已复制");
+        } catch (error) {
+            handleError(error);
+        }
+    });
+
     async function loadHttpProxy(silent = false) {
         if (state.httpProxyBusy) return;
         state.httpProxyBusy = true;
@@ -4523,6 +4652,7 @@
         if (target === "qq") loadQq(true);
         if (target === "ddns") loadDdns(true);
         if (target === "proxy") loadHttpProxy(true);
+        if (target === "tv") loadTv(true);
         if (target === "evaluation") window.CameraHubEvaluation?.refreshDevices();
         window.scrollTo({ top: 0, behavior: "smooth" });
     }
@@ -4553,6 +4683,7 @@
         if (state.view === "qq" && !state.qqDirty) loadQq(true);
         if (state.view === "ddns" && !state.ddnsDirty) loadDdns(true);
         if (state.view === "proxy" && !state.httpProxyDirty) loadHttpProxy(true);
+        if (state.view === "tv") loadTv(true);
     }, 5_000);
     setInterval(() => {
         if (state.view === "voice" && state.voiceAssetsInstalling) {

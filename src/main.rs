@@ -26,6 +26,7 @@ mod settings;
 mod setup;
 mod state;
 mod system;
+mod tv_control;
 mod voice;
 mod voice_config;
 mod voice_studio;
@@ -52,6 +53,7 @@ use crate::media::MediaStore;
 use crate::qq::{QqConfigUpdate, QqNotifyError, QqNotifyRequest, QqService};
 use crate::settings::{HubSettings, HubSettingsPatch, HubSettingsStore};
 use crate::state::{AppServices, AppState, DeviceHeartbeat};
+use crate::tv_control::{MAX_APK_BYTES, TvConfig, TvControlService};
 use crate::voice::{VoiceRevisionConflict, VoiceService};
 use crate::voice_config::{VoiceConfig, VoiceTestRequest};
 use crate::voice_studio::{VoiceStudio, VoiceStudioError};
@@ -183,6 +185,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
     let ir = Arc::new(IrControl::new(&config)?);
     let aircon = AirconService::start(&config, ir.clone())?;
     let http_proxy = HttpProxyService::start(&config)?;
+    let tv_control = TvControlService::start(&config)?;
     let assets = AssetManager::new(&config, components.clone())?;
     let voice_studio = Arc::new(VoiceStudio::new(&config)?);
     let state = Arc::new(AppState::new(
@@ -197,6 +200,7 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             ir,
             aircon,
             http_proxy,
+            tv_control,
             assets,
             components,
             voice,
@@ -268,6 +272,12 @@ async fn run_server(arguments: Vec<OsString>) -> Result<()> {
             get(http_proxy_overview).put(update_http_proxy),
         )
         .route("/api/v1/http-proxy/token", post(rotate_http_proxy_token))
+        .route("/api/v1/tv", get(tv_overview).put(update_tv))
+        .route("/api/v1/tv/check", post(check_tv))
+        .route(
+            "/api/v1/tv/apk",
+            post(upload_tv_apk).layer(DefaultBodyLimit::max(MAX_APK_BYTES)),
+        )
         .route("/api/v1/voice", get(voice_overview).put(update_voice))
         .route("/api/v1/voice/test", post(test_voice))
         .route("/api/v1/voice/transcribe", post(transcribe_voice))
@@ -1361,6 +1371,33 @@ fn aircon_error(error: AirconError) -> ApiError {
 
 async fn http_proxy_overview(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
     Json(json!({"http_proxy":state.http_proxy.overview()}))
+}
+
+async fn tv_overview(State(state): State<Arc<AppState>>) -> Json<Value> {
+    Json(json!({"tv": state.tv_control.overview().await}))
+}
+
+async fn update_tv(
+    State(state): State<Arc<AppState>>,
+    Json(config): Json<TvConfig>,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        json!({"ok": true, "tv": state.tv_control.update(config).await?}),
+    ))
+}
+
+async fn check_tv(State(state): State<Arc<AppState>>) -> Result<Json<Value>, ApiError> {
+    state.tv_control.request_check().await?;
+    Ok(Json(json!({"ok": true, "message": "已请求检查并恢复"})))
+}
+
+async fn upload_tv_apk(
+    State(state): State<Arc<AppState>>,
+    data: Bytes,
+) -> Result<Json<Value>, ApiError> {
+    Ok(Json(
+        json!({"ok": true, "tv": state.tv_control.upload_apk(&data).await?}),
+    ))
 }
 
 async fn update_http_proxy(

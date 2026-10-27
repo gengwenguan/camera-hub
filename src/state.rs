@@ -17,6 +17,7 @@ use crate::mux::MediaMuxers;
 use crate::qq::QqService;
 use crate::settings::HubSettingsStore;
 use crate::system::SystemMonitor;
+use crate::tv_control::TvControlService;
 use crate::voice::VoiceService;
 use crate::voice_studio::VoiceStudio;
 use crate::webrtc_live::WebRtcRelay;
@@ -71,6 +72,7 @@ pub struct AppState {
     pub ir: Arc<IrControl>,
     pub aircon: Arc<AirconService>,
     pub http_proxy: Arc<HttpProxyService>,
+    pub tv_control: Arc<TvControlService>,
     pub assets: Arc<AssetManager>,
     pub components: Arc<ComponentManager>,
     pub ai: Arc<AiService>,
@@ -95,6 +97,7 @@ pub struct AppServices {
     pub ir: Arc<IrControl>,
     pub aircon: Arc<AirconService>,
     pub http_proxy: Arc<HttpProxyService>,
+    pub tv_control: Arc<TvControlService>,
     pub assets: Arc<AssetManager>,
     pub components: Arc<ComponentManager>,
     pub voice: Arc<VoiceService>,
@@ -114,6 +117,7 @@ impl AppState {
             ir,
             aircon,
             http_proxy,
+            tv_control,
             assets,
             components,
             voice,
@@ -139,6 +143,7 @@ impl AppState {
             ir,
             aircon,
             http_proxy,
+            tv_control,
             assets,
             components,
             frames,

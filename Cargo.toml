@@ -24,18 +24,21 @@ bzip2 = { version = "0.4", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 futures-util = "0.3"
+embedded-io-async = { version = "0.6", features = ["std"] }
 getrandom = "0.3"
 http-body-util = "0.1"
 hmac = "0.12"
 hex = "0.4"
 instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "rcgen"] }
 libc = "0.2"
+libadb = { version = "=0.7.0", features = ["tokio", "host-keys"] }
 moq-loc = "=0.2.0"
 moq-msf = "=0.4.0"
 moq-native = { version = "=0.19.9", default-features = false, features = ["quinn", "ring"] }
 moq-net = "=0.2.10"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["api-23", "load-dynamic", "ndarray"] }
 pinyin = "0.11"
+rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 sherpa-onnx = { version = "1.13.6", default-features = false, features = ["shared"], optional = true }
 tar = { version = "0.4", optional = true }

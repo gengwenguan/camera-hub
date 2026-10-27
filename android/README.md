@@ -3,6 +3,13 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.22 电视控制守护
+
+Web 增加“电视控制”页面，由 Rust 常驻检测电视，连续两次健康检查失败后通过
+原生 ADB 协议恢复 ShellAgent；不需要手机安装 adb。支持缓存恢复用 APK、手动检查、
+状态与错误展示以及外网 AI 指南入口。配置和 ADB 密钥在 APK 更新后保留。
+设置和部署说明见 [电视自动恢复](../docs/tv-control.md)。
+
 ## 0.5.21 设备 WS 证书同步与热加载
 
 Rust 核心通过 ACME/DNS-01 申请和续期本机及 V831 证书。本机 HTTPS 热加载，
