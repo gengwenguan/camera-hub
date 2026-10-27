@@ -221,9 +221,12 @@ select {
     top: 84px;
     z-index: 15;
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(108px, 1fr);
     gap: 6px;
     max-width: 860px;
+    overflow-x: auto;
+    scrollbar-width: none;
     margin: 0 0 38px;
     padding: 6px;
     border: 1px solid var(--line);
@@ -239,6 +242,7 @@ select {
     border-radius: 9px;
     color: var(--muted);
     font-weight: 700;
+    white-space: nowrap;
     background: transparent;
 }
 
@@ -2923,10 +2927,7 @@ td.file-name {
     .section-nav {
         top: 70px;
         width: 100%;
-        grid-template-columns: repeat(6, minmax(108px, 1fr));
         margin-bottom: 28px;
-        overflow-x: auto;
-        scrollbar-width: none;
     }
 
     .section-nav button {
