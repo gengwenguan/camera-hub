@@ -1,194 +1,150 @@
 use anyhow::{Context, Result, bail};
-use russh::keys::{
-    Algorithm, HashAlg, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key,
-};
-use russh::{ChannelMsg, Disconnect, Preferred, client};
 use serde::{Deserialize, Serialize};
-use std::borrow::Cow;
-use std::path::PathBuf;
-use std::sync::Arc;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct EdgeCertificateConfig {
     pub domain: String,
-    pub host: String,
-    #[serde(default = "default_port")]
-    pub port: u16,
-    pub user: String,
-    pub key_path: PathBuf,
-    pub host_key_sha256: String,
-    pub runtime_dir: String,
+    #[serde(default = "default_device_id")]
+    pub device_id: String,
 }
 
-fn default_port() -> u16 {
-    22
-}
-
-struct PinnedHost(String);
-
-impl client::Handler for PinnedHost {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        key: &PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(key.public_key().fingerprint(HashAlg::Sha256).to_string() == self.0)
-    }
+fn default_device_id() -> String {
+    "v831cam".to_owned()
 }
 
 pub fn validate(config: &EdgeCertificateConfig) -> Result<()> {
-    if config.host.is_empty()
-        || config.user.is_empty()
-        || !config.host_key_sha256.starts_with("SHA256:")
-        || !config.runtime_dir.starts_with('/')
-        || config.runtime_dir.contains('\0')
-        || config.port == 0
-    {
-        bail!("V831 SSH 配置不完整（需要主机、用户、固定主机指纹和绝对运行目录）");
+    if config.device_id.is_empty() || config.device_id.len() > 128 {
+        bail!("V831 证书需要设备 ID");
     }
     Ok(())
 }
 
-fn quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
+struct Pending {
+    hash: String,
+    reply: oneshot::Sender<Result<bool>>,
 }
 
-async fn exec(
-    session: &client::Handle<PinnedHost>,
-    command: &str,
-    input: &[u8],
-) -> Result<Vec<u8>> {
-    let mut channel = session.channel_open_session().await?;
-    channel.exec(true, command).await?;
-    if !input.is_empty() {
-        channel.data(input).await?;
+struct Link {
+    generation: u64,
+    sender: mpsc::Sender<String>,
+    supported: bool,
+    loaded_hash: String,
+    pending: Option<Pending>,
+}
+
+#[derive(Default)]
+pub struct CertificateLinks {
+    links: Mutex<HashMap<String, Link>>,
+}
+
+impl CertificateLinks {
+    pub fn register(&self, device: &str, generation: u64) -> mpsc::Receiver<String> {
+        let (sender, receiver) = mpsc::channel(1);
+        self.links.lock().unwrap().insert(
+            device.to_owned(),
+            Link {
+                generation,
+                sender,
+                supported: false,
+                loaded_hash: String::new(),
+                pending: None,
+            },
+        );
+        receiver
     }
-    channel.eof().await?;
-    let mut output = Vec::new();
-    let mut code = None;
-    while let Some(message) = channel.wait().await {
-        match message {
-            ChannelMsg::Data { data } => {
-                if output.len() + data.len() > 1024 * 1024 {
-                    bail!("V831 SSH 响应过大");
+
+    pub fn disconnect(&self, device: &str, generation: u64) {
+        let mut links = self.links.lock().unwrap();
+        if links.get(device).is_some_and(|link| link.generation == generation) {
+            links.remove(device);
+        }
+    }
+
+    /// Returns true when a capability/version change needs a cached deployment check.
+    pub fn control(&self, device: &str, generation: u64, value: &Value) -> bool {
+        let mut links = self.links.lock().unwrap();
+        let Some(link) = links.get_mut(device).filter(|link| link.generation == generation) else {
+            return false;
+        };
+        match value["type"].as_str() {
+            Some("hello") => {
+                let supported = value["certificate"]["protocol"].as_u64() == Some(1);
+                let hash = value["certificate"]["bundle_sha256"].as_str().unwrap_or_default();
+                let changed = supported && (!link.supported || link.loaded_hash != hash);
+                link.supported = supported;
+                link.loaded_hash = hash.to_owned();
+                changed
+            }
+            Some("certificate_ack") => {
+                let hash = value["bundle_sha256"].as_str().unwrap_or_default();
+                if !link.pending.as_ref().is_some_and(|pending| pending.hash == hash) {
+                    return false;
                 }
-                output.extend_from_slice(&data);
+                let pending = link.pending.take().unwrap();
+                let result = if value["ok"].as_bool() == Some(true) {
+                    link.loaded_hash = hash.to_owned();
+                    Ok(value["reloaded"].as_bool() == Some(true))
+                } else {
+                    Err(anyhow::anyhow!("V831 证书安装失败：{}",
+                        value["error"].as_str().unwrap_or("设备拒绝安装")))
+                };
+                let _ = pending.reply.send(result);
+                false
             }
-            ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
-            _ => {}
+            _ => false,
         }
     }
-    if code != Some(0) {
-        bail!("V831 SSH 命令失败，退出码 {code:?}");
-    }
-    Ok(output)
-}
 
-/// Both staged files are sent over the encrypted channel, never in exec arguments.
-/// A failed reload is retried even if the files already contain the new certificate.
-pub async fn synchronize(config: &EdgeCertificateConfig, chain: &str, key: &str) -> Result<bool> {
-    tokio::time::timeout(Duration::from_secs(90), async {
-        validate(config)?;
-        let mut preferred = Preferred::default();
-        let mut kex = preferred.kex.to_vec();
-        kex.extend([russh::kex::DH_G14_SHA1, russh::kex::DH_G1_SHA1]);
-        preferred.kex = Cow::Owned(kex);
-        let mut algorithms = preferred.key.to_vec();
-        algorithms.push(Algorithm::Rsa { hash: None });
-        preferred.key = Cow::Owned(algorithms);
-        let mut mac = preferred.mac.to_vec();
-        mac.push(russh::mac::HMAC_SHA1);
-        preferred.mac = Cow::Owned(mac);
-        let mut session = client::connect(
-            Arc::new(client::Config {
-                preferred,
-                inactivity_timeout: Some(Duration::from_secs(30)),
-                ..Default::default()
-            }),
-            (config.host.as_str(), config.port),
-            PinnedHost(config.host_key_sha256.clone()),
-        )
-        .await
-        .context("连接 V831 SSH（固定主机指纹）")?;
-        let hash = session.best_supported_rsa_hash().await?.flatten();
-        let authentication = session
-            .authenticate_publickey(
-                &config.user,
-                PrivateKeyWithHashAlg::new(
-                    Arc::new(load_secret_key(&config.key_path, None)?),
-                    hash,
-                ),
-            )
-            .await?;
-        if !authentication.success() {
-            bail!("V831 SSH 公钥认证失败");
+    pub async fn synchronize(
+        &self,
+        config: &EdgeCertificateConfig,
+        chain: &str,
+        key: &str,
+    ) -> Result<bool> {
+        if chain.len() + key.len() > 64 * 1024 {
+            bail!("V831 证书包超过 64 KiB");
         }
-        let directory = quote(&format!("{}/state/tls", config.runtime_dir));
-        let old = exec(
-            &session,
-            &format!("cat {directory}/fullchain.pem 2>/dev/null || true"),
-            &[],
-        )
-        .await?;
-        let remote_key_hash = exec(
-            &session,
-            &format!("sha256sum {directory}/private.key 2>/dev/null || true"),
-            &[],
-        )
-        .await?;
-        use sha2::{Digest, Sha256};
-        let key_hash = hex::encode(Sha256::digest(key.as_bytes()));
-        let pending = exec(
-            &session,
-            &format!("test ! -e {directory}/reload-pending"),
-            &[],
-        )
-        .await
-        .is_err();
-        let changed = old != chain.as_bytes()
-            || !String::from_utf8_lossy(&remote_key_hash).starts_with(&key_hash);
-        if changed {
-            for (name, data) in [("fullchain.pem", chain), ("private.key", key)] {
-                exec(
-                    &session,
-                    &format!(
-                        "set -e; umask 077; mkdir -p {directory}; cat > {directory}/{name}.new"
-                    ),
-                    data.as_bytes(),
-                )
-                .await?;
+        let mut digest = Sha256::new();
+        digest.update(chain.as_bytes());
+        digest.update([0]);
+        digest.update(key.as_bytes());
+        let hash = hex::encode(digest.finalize());
+        let (sender, reply, generation) = {
+            let mut links = self.links.lock().unwrap();
+            let link = links.get_mut(&config.device_id).context("V831 设备连接离线")?;
+            if !link.supported {
+                bail!("V831 尚未声明证书热加载协议");
             }
-            exec(
-                &session,
-                &format!(
-                    "set -e; touch {directory}/reload-pending; \
-                     mv {directory}/private.key.new {directory}/private.key; \
-                     mv {directory}/fullchain.pem.new {directory}/fullchain.pem"
-                ),
-                &[],
-            )
-            .await?;
+            if link.loaded_hash == hash {
+                return Ok(false);
+            }
+            let (sender, receiver) = oneshot::channel();
+            link.pending = Some(Pending { hash: hash.clone(), reply: sender });
+            (link.sender.clone(), receiver, link.generation)
+        };
+        let command = json!({
+            "type": "certificate_update",
+            "domain": config.domain,
+            "bundle_sha256": hash,
+            "chain": chain,
+            "key": key,
+        }).to_string();
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            sender.send(command).await.context("V831 设备连接已断开")?;
+            reply.await.context("V831 证书确认前连接断开或被替代")?
+        }).await.context("等待 V831 证书安装确认超时");
+        let mut links = self.links.lock().unwrap();
+        if let Some(link) = links.get_mut(&config.device_id).filter(|link| link.generation == generation) {
+            if link.pending.as_ref().is_some_and(|pending| pending.hash == hash) {
+                link.pending = None;
+            }
         }
-        if changed || pending {
-            let runtime = quote(&config.runtime_dir);
-            exec(
-                &session,
-                &format!(
-                    "set -e; cd {runtime}; variant=$(cat active_variant); \
-                     case \"$variant\" in rust|cpp) ./switch_camera.sh \"$variant\" ;; \
-                     *) exit 1 ;; esac; rm -f {directory}/reload-pending"
-                ),
-                &[],
-            )
-            .await?;
-        }
-        session
-            .disconnect(Disconnect::ByApplication, "", "English")
-            .await?;
-        Ok(changed || pending)
-    })
-    .await
-    .context("V831 证书同步超时")?
+        result?
+    }
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise native ACME/DNS-01, HTTPS reload and SSH sync against isolated mocks.
+"""Exercise native ACME/DNS-01, HTTPS reload and device WS sync against isolated mocks.
 
-Requires cryptography and paramiko. No public CA, DNS account or hardware is used.
+Requires cryptography and websocket-client. No public CA, DNS account or hardware is used.
 """
 import argparse
 import base64
@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 from cryptography.x509.oid import NameOID
-import paramiko
+import websocket
 
 
 def b64(data):
@@ -69,12 +69,6 @@ class Mock:
         self.http = ThreadingHTTPServer(("127.0.0.1", 0), self.handler())
         self.base = f"http://127.0.0.1:{self.http.server_port}"
         threading.Thread(target=self.http.serve_forever, daemon=True).start()
-        self.hostkey = paramiko.RSAKey.generate(2048)
-        self.ssh = socket.socket()
-        self.ssh.bind(("127.0.0.1", 0))
-        self.ssh.listen()
-        self.ssh_port = self.ssh.getsockname()[1]
-        threading.Thread(target=self.accept_ssh, daemon=True).start()
 
     def handler(self):
         mock = self
@@ -213,62 +207,57 @@ class Mock:
             result["certificate"] = self.base + "/cert/" + identifier
         return result
 
-    def accept_ssh(self):
-        mock = self
+class Edge:
+    def __init__(self, port, loaded="", protocol=1, mode="ok"):
+        self.loaded = loaded
+        self.mode = mode
+        self.updates = 0
+        self.pending = None
+        self.connection = websocket.create_connection(
+            f"ws://127.0.0.1:{port}/api/v1/devices/v831cam/link",
+            timeout=3, http_no_proxy=["*"],
+        )
+        self.connection.send(json.dumps({
+            "type": "hello", "certificate": {"protocol": protocol, "bundle_sha256": loaded},
+        }))
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
 
-        class Server(paramiko.ServerInterface):
-            def check_auth_publickey(self, username, key):
-                return paramiko.AUTH_SUCCESSFUL
+    def run(self):
+        try:
+            while True:
+                message = self.connection.recv()
+                if not message:
+                    return
+                value = json.loads(message)
+                if value["type"] != "certificate_update":
+                    continue
+                self.updates += 1
+                self.pending = value
+                digest = hashlib.sha256((value["chain"] + "\0" + value["key"]).encode()).hexdigest()
+                assert digest == value["bundle_sha256"]
+                chain = x509.load_pem_x509_certificate(value["chain"].encode())
+                key = serialization.load_pem_private_key(value["key"].encode(), password=None)
+                assert chain.public_key().public_numbers() == key.public_key().public_numbers()
+                if self.mode == "disconnect":
+                    self.close()
+                    return
+                if self.mode == "hold":
+                    continue
+                self.ack(digest if self.mode != "wrong" else "0" * 64, self.mode != "fail")
+        except (OSError, websocket.WebSocketException):
+            return
 
-            def get_allowed_auths(self, username):
-                return "publickey"
+    def ack(self, digest, ok=True):
+        self.connection.send(json.dumps({
+            "type": "certificate_ack", "bundle_sha256": digest, "ok": ok,
+            "reloaded": ok, "error": None if ok else "injected install failure",
+        }))
+        if ok:
+            self.loaded = digest
 
-            def check_channel_request(self, kind, channel_id):
-                return paramiko.OPEN_SUCCEEDED if kind == "session" else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
-
-            def check_channel_exec_request(self, channel, command):
-                def execute():
-                    data = bytearray()
-                    while True:
-                        chunk = channel.recv(65536)
-                        if not chunk:
-                            break
-                        data.extend(chunk)
-                    result = subprocess.run(["sh", "-c", command.decode()], input=data,
-                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
-                    if result.stdout:
-                        channel.sendall(result.stdout)
-                    channel.send_exit_status(result.returncode)
-                    channel.close()
-                threading.Thread(target=execute, daemon=True).start()
-                return True
-
-        def connect(connection):
-            transport = paramiko.Transport(connection)
-            transport.add_server_key(mock.hostkey)
-            # Match the legacy Dropbear algorithms available on the deployed V831.
-            options = transport.get_security_options()
-            options.kex = ("diffie-hellman-group14-sha1",)
-            options.key_types = ("ssh-rsa",)
-            options.digests = ("hmac-sha1",)
-            try:
-                transport.start_server(server=Server())
-                channels = []
-                while transport.is_active():
-                    channel = transport.accept(1)
-                    if channel is not None:
-                        channels.append(channel)
-            except (EOFError, OSError, paramiko.SSHException):
-                pass
-            finally:
-                transport.close()
-
-        while True:
-            try:
-                connection, _ = self.ssh.accept()
-            except OSError:
-                return
-            threading.Thread(target=connect, args=(connection,), daemon=True).start()
+    def close(self):
+        self.connection.close()
 
 
 def main():
@@ -279,14 +268,6 @@ def main():
     with tempfile.TemporaryDirectory(prefix="camera-hub-acme-") as temporary:
         root = Path(temporary)
         mock = Mock(root)
-        edge_dir = root / "edge"
-        edge_dir.mkdir()
-        (edge_dir / "active_variant").write_text("rust\n")
-        (edge_dir / "switch_camera.sh").write_text('#!/bin/sh\nprintf "reload\\n" >> reloads\n')
-        (edge_dir / "switch_camera.sh").chmod(0o700)
-        userkey = paramiko.RSAKey.generate(2048)
-        userkey.write_private_key_file(str(root / "ssh-key"))
-        fingerprint = "SHA256:" + base64.b64encode(hashlib.sha256(mock.hostkey.asbytes()).digest()).decode().rstrip("=")
         state_dir = root / "camera-hub-state"
         state_dir.mkdir()
         (state_dir / "ddns.json").write_text(json.dumps({
@@ -296,9 +277,7 @@ def main():
             "enabled": True, "local_domain": "hub.example.test", "directory": mock.base + "/directory",
             "dnspod_endpoint": mock.base + "/dns", "interval_seconds": 86400,
             "retry_seconds": 10, "dns_wait_seconds": 0,
-            "edge": {"domain": "edge.example.test", "host": "127.0.0.1", "port": mock.ssh_port,
-                     "user": "test", "key_path": str(root / "ssh-key"), "runtime_dir": str(edge_dir),
-                     "host_key_sha256": fingerprint},
+            "edge": {"domain": "edge.example.test", "device_id": "v831cam"},
         }
         (state_dir / "certificates.json").write_text(json.dumps(config))
         http_port, tls_port = free_port(), free_port()
@@ -307,6 +286,7 @@ def main():
                            CAMERA_HUB_WEB_PASSWORD="isolated-test", CAMERA_HUB_COMPONENT_MANAGER_ENABLED="false")
         log = (root / "server.log").open("w")
         process = subprocess.Popen([binary, "server"], cwd=root, env=environment, stdout=log, stderr=log)
+        edge = None
         try:
             base = f"https://127.0.0.1:{tls_port}"
             client = urllib.request.build_opener(
@@ -324,6 +304,7 @@ def main():
 
             wait_for(lambda: api("/health"))
             api("/api/v1/auth/login", {"username": "admin", "password": "isolated-test"})
+            edge = Edge(http_port)
 
             def complete():
                 status = api("/api/v1/certificates")["status"]
@@ -333,7 +314,7 @@ def main():
             assert all(not item["last_error"] for item in status["certificates"]), status
             assert mock.challenges_verified == 2 and not mock.txt
             assert mock.orders["2"]["profile"] == "shortlived"
-            assert (edge_dir / "reloads").read_text().count("reload") == 1
+            assert edge.updates == 1
             engine_pid = process.pid
             first = (state_dir / "cert.pem").read_bytes()
 
@@ -345,7 +326,7 @@ def main():
 
             run_check()
             assert len(mock.orders) == 2
-            assert (edge_dir / "reloads").read_text().count("reload") == 1
+            assert edge.updates == 1
             mock.fail_challenge = True
             failed = run_check(True)
             assert all(item["last_error"] for item in failed["certificates"])
@@ -367,26 +348,48 @@ def main():
                     served = x509.load_der_x509_certificate(tls.getpeercert(binary_form=True))
             assert served.serial_number == x509.load_pem_x509_certificate((state_dir / "cert.pem").read_bytes()).serial_number
             assert process.pid == engine_pid and process.poll() is None
-            remote_tls = edge_dir / "state/tls"
-            (remote_tls / "private.key").unlink()
+            edge.close()
+            offline = run_check()
+            assert offline["certificates"][1]["last_error"] and not offline["certificates"][0]["last_error"]
+            edge = Edge(http_port, protocol=0)
+            unsupported = run_check()
+            assert unsupported["certificates"][1]["last_error"]
+            edge.close()
+            edge = Edge(http_port, mode="fail")
+            rejected = wait_for(lambda: (value := complete()) and value["certificates"][1]["last_error"]
+                                and "injected install failure" in value["certificates"][1]["last_error"] and value)
+            edge.close()
+            edge = Edge(http_port, mode="wrong")
+            wait_for(lambda: edge.pending)
+            time.sleep(1)
+            assert api("/api/v1/certificates")["status"]["checking"], "wrong hash must not confirm installation"
+            edge.mode = "hold"
+            edge.ack(edge.pending["bundle_sha256"])
+            wait_for(lambda: (value := complete()) and not value["certificates"][1]["last_error"])
+            # A reconnect supersedes a waiting connection and cannot inherit its pending reply.
+            edge.close()
+            edge = Edge(http_port, mode="hold")
+            wait_for(lambda: edge.pending)
+            old = edge
+            edge = Edge(http_port, mode="hold")
+            wait_for(lambda: edge.pending)
+            try:
+                old.ack(old.pending["bundle_sha256"])
+            except (OSError, websocket.WebSocketException):
+                pass
+            assert api("/api/v1/certificates")["status"]["checking"]
+            edge.ack(edge.pending["bundle_sha256"])
+            wait_for(lambda: (value := complete()) and not value["certificates"][1]["last_error"])
+            edge.close()
+            edge = Edge(http_port, mode="disconnect")
+            wait_for(lambda: (value := complete()) and value["certificates"][1]["last_error"])
+            edge = Edge(http_port)
+            recovered = wait_for(lambda: (value := complete()) and not value["certificates"][1]["last_error"] and value)
+            loaded = edge.loaded
+            edge.close()
+            edge = Edge(http_port, loaded=loaded)
             run_check()
-            assert (remote_tls / "private.key").is_file()
-            assert len(mock.orders) == orders
-            (remote_tls / "reload-pending").touch()
-            (edge_dir / "switch_camera.sh").write_text("#!/bin/sh\nexit 1\n")
-            reload_failed = run_check()
-            assert reload_failed["certificates"][1]["last_error"]
-            assert (remote_tls / "reload-pending").exists()
-            (edge_dir / "switch_camera.sh").write_text('#!/bin/sh\nprintf "reload\\n" >> reloads\n')
-            recovered = run_check()
-            assert not recovered["certificates"][1]["last_error"]
-            assert not (remote_tls / "reload-pending").exists()
-            assert len(mock.orders) == orders
-            config["edge"]["host_key_sha256"] = "SHA256:" + b64(bytes(32))
-            api("/api/v1/certificates", config, "PUT")
-            rejected = wait_for(lambda: (value := complete()) and value["certificates"][1]["last_error"] and value)
-            assert rejected["certificates"][0]["last_error"] is None
-            assert (edge_dir / "reloads").read_text().count("reload") == 4
+            assert edge.updates == 0 and len(mock.orders) == orders
             assert api("/health")
             assert all(path.stat().st_mode & 0o777 == 0o600 for path in (state_dir / "certificates.state").glob("*.json"))
             config["enabled"] = False
@@ -403,8 +406,9 @@ def main():
                 "DNS-01/JWS/CSR verification", "shortlived profile", "automatic bootstrap",
                 "no-op before renewal threshold", "HTTPS reload without process restart",
                 "challenge failure preserves certificate", "TXT cleanup and retry uses cached issuance",
-                "native SSH sync and no-op", "host fingerprint rejection isolates target failure",
-                "missing remote key repair", "retry failed remote reload without reissuance",
+                "WS install confirmation and no-op", "offline/unsupported isolates target failure",
+                "wrong hash acknowledgement ignored", "superseded connection acknowledgement ignored",
+                "disconnect/rejected install retries cached issuance", "reconnect already loaded no-op",
                 "startup recovers interrupted PEM update", "private account/bundle permissions",
             ]}, ensure_ascii=False, indent=2))
         except BaseException:
@@ -414,9 +418,10 @@ def main():
         finally:
             process.terminate()
             process.wait(timeout=10)
+            if edge:
+                edge.close()
             log.close()
             mock.http.shutdown()
-            mock.ssh.close()
 
 
 if __name__ == "__main__":

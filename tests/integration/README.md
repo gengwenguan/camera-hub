@@ -8,7 +8,8 @@
 | `deployment_health.py` | 在线组件、语音心跳、摄像头音视频增长、录像、AI 推理、FLV、WebSocket fMP4、DDNS/QQ 状态、模型和红外就绪 | 运行中的 Hub、Python、websocket-client |
 | `ai_snapshots.py` | 手机已安装模型与 FFmpeg 的人物推理、识别框 JPEG、相册读取、保存失败保留与恢复 | ADB、手机 APK、桌面 FFmpeg、带人物的 H264 关键帧；独立缓存目录，不影响正式相册 |
 | `runtime_repairs.py` | HTTP/WebSocket 图片鉴权、空调状态、实体验收门禁、外部接口启停与并发配置持久化 | Linux Rust 二进制；临时目录和 mock IR，不发送真实红外 |
-| `certificates.py` | 原生 ACME DNS-01/JWS/CSR、shortlived、签发缓存和 TXT 清理重试、HTTPS 热加载、原生 SSH 同步和固定主机指纹 | 桌面 Rust 二进制、Python cryptography/paramiko；本地模拟 CA/DNS/SSH，不访问真实 CA 或设备 |
+| `certificates.py` | 原生 ACME DNS-01/JWS/CSR、shortlived、签发缓存和 TXT 清理重试、HTTPS 热加载、设备 WS 确认、离线和重连 | 桌面 Rust 二进制、Python cryptography/websocket-client；本地模拟 CA/DNS/设备，不访问真实 CA 或设备 |
+| `v831_certificate_hotload.py` | WS 下发、HTTPS/WSS 换证、旧连接收流、私钥拒绝、PID 与音视频增长、恢复生产证书 | 已部署的 MI6 APK 与 V831、ADB run-as、构建机 SSH、cryptography/websocket-client；会短暂更换缓存，finally 恢复，不申请 ACME |
 
 ```sh
 python3 tests/integration/android_app.py \
@@ -25,12 +26,18 @@ JVM 单测留在 `android/app/src/test/`，Rust 单测留在源码模块；不�
 
 ```sh
 python3 -m venv /tmp/camera-hub-acme-venv
-/tmp/camera-hub-acme-venv/bin/pip install cryptography 'paramiko>=3.5,<5'
+/tmp/camera-hub-acme-venv/bin/python -m pip install cryptography websocket-client
 cargo +1.94.1 build --locked
 /tmp/camera-hub-acme-venv/bin/python tests/integration/certificates.py --binary target/debug/camera-hub
 ```
 
-SSH mock 仅提供 V831 旧版 Dropbear 的 SHA-1 协商选项；Paramiko 5 已移除对应算法，因此固定为 3.5–4.x。
+设备 mock 验证完整证书包、当前连接确认及缓存重试；不会运行 SSH 或重启脚本。
+
+真实设备热加载验收（短暂换证后恢复）：
+
+```sh
+/tmp/camera-hub-acme-venv/bin/python tests/integration/v831_certificate_hotload.py
+```
 
 ## 运行环境只读检查
 

@@ -485,6 +485,7 @@ async fn serve_device_link(
     photos_allowed: bool,
 ) {
     let generation = state.begin_link(&device_id).await;
+    let mut certificate_commands = state.certificates.links.register(&device_id, generation);
     state.frames.reset_clock_sync(&device_id);
     let mut photo_cursor = String::new();
     let mut photo_interval = tokio::time::interval(Duration::from_secs(1));
@@ -503,6 +504,11 @@ async fn serve_device_link(
                     Message::Text(text) => {
                         if !state.link_is_current(&device_id, generation).await {
                             break;
+                        }
+                        if let Ok(value) = serde_json::from_str::<Value>(text.as_str()) {
+                            if state.certificates.links.control(&device_id, generation, &value) {
+                                state.certificates.request_check(false);
+                            }
                         }
                         handle_device_control(
                             &state,
@@ -524,6 +530,14 @@ async fn serve_device_link(
                     _ => Ok(()),
                 };
                 if result.is_err() {
+                    break;
+                }
+            }
+            Some(command) = certificate_commands.recv() => {
+                if !state.link_is_current(&device_id, generation).await {
+                    break;
+                }
+                if socket.send(Message::Text(command.into())).await.is_err() {
                     break;
                 }
             }
@@ -559,6 +573,7 @@ async fn serve_device_link(
             }
         }
     }
+    state.certificates.links.disconnect(&device_id, generation);
 }
 
 async fn handle_device_control(

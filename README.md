@@ -610,7 +610,7 @@ CAMERA_HUB_EDGE_SSH_KEY=/home/android/.ssh/camera-hub-edge-acme-rsa
 CAMERA_HUB_EDGE_RUNTIME_DIR=/root/maix_dist
 ```
 
-边缘节点私钥只通过 SSH 下发，不经过无 Token 的媒体 WebSocket。
+上述旧脚本使用 SSH 下发；下面的原生任务复用设备 WS。
 
 #### 进程内证书自动续期
 
@@ -624,12 +624,7 @@ Rust 主进程内置 ACME/DNS-01 后台任务，默认关闭。配置路径由
   "local_domain": "mi6.gwghome.site",
   "edge": {
     "domain": "v831.gwghome.site",
-    "host": "v831.gwghome.site",
-    "port": 22,
-    "user": "root",
-    "key_path": "/private/path/edge-ssh-key",
-    "host_key_sha256": "SHA256:verified-host-fingerprint",
-    "runtime_dir": "/root/maix_dist"
+    "device_id": "v831cam"
   },
   "interval_seconds": 43200,
   "retry_seconds": 300,
@@ -647,8 +642,11 @@ profile。本机常规 90 天证书提前 30 天续期；其他证书按实际�
 
 每个域名单独处理，失败不阻止其他域名。已签发证书先存入私有缓存，再同步本机或 V831；
 同步失败不会重复申请。HTTPS 在证书更新后热加载，首次签发完成后自动开启监听，
-不重启主进程。V831 使用固定主机指纹的原生 SSH 连接，密钥通过加密通道发送。
-账号、缓存、配置和清理记录为 `0600`，启动时可恢复本机证书双文件写入中断。
+不重启主进程。V831 通过现有无 Token 的设备 WS 接收证书包，验证私钥匹配并热加载
+HTTPS/WSS 上下文，返回匹配证书包指纹的确认后才算部署成功。设备离线、拒绝安装或
+确认超时会重试缓存；重连后声明已加载指纹，相同版本无需重复安装。
+账号、缓存、配置和清理记录为 `0600`，两端启动时可恢复证书双文件写入中断。
+完整消息与版本协议见 [设备连接上的证书同步](docs/deployment/device-certificate-sync.md)。
 
 认证接口：`GET /api/v1/certificates` 查看配置与状态，`PUT` 保存完整配置并立即检查，
 `POST /api/v1/certificates/check` 提交 `{}` 按阈值检查。显式提交 `{"force":true}`

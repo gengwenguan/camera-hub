@@ -1,5 +1,5 @@
 use crate::atomic_file;
-use crate::certificate_edge::{self, EdgeCertificateConfig};
+use crate::certificate_edge::{self, CertificateLinks, EdgeCertificateConfig};
 use crate::config::Config;
 use anyhow::{Context, Result, bail};
 use axum::http::{Request, Response};
@@ -134,6 +134,7 @@ struct ChallengeRecord {
 }
 
 pub struct CertificateService {
+    pub links: CertificateLinks,
     hub: Config,
     directory: PathBuf,
     config: Mutex<CertificateConfig>,
@@ -164,6 +165,7 @@ impl CertificateService {
             .unwrap_or_default();
         status.checking = false;
         let service = Arc::new(Self {
+            links: CertificateLinks::default(),
             hub: hub.clone(),
             directory,
             config: Mutex::new(config.clone()),
@@ -376,7 +378,7 @@ impl CertificateService {
         }
         let bundle = bundle.context("没有可部署的证书")?;
         status.reloaded = if let Some(edge) = edge {
-            certificate_edge::synchronize(edge, &bundle.chain, &bundle.key).await?
+            self.links.synchronize(edge, &bundle.chain, &bundle.key).await?
         } else {
             self.deploy_local(domain, &bundle).await?
         };

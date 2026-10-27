@@ -1,5 +1,10 @@
 # APK 独立证书续期切换
 
+后续更新：MI6 已升级为 0.5.21（versionCode 27），V831 已部署证书 WS 同步与 TLS
+热加载。运行配置现在使用 `edge.domain` + `edge.device_id`，原生任务不再使用 SSH
+下发或重启摄像头；[最新契约及验收](device-certificate-sync.md) 记录了切换结果。
+下文保留 0.5.20 首次 ACME 独立化的签发与旧调度移除记录。
+
 2026-10-27 已完成 MI6 APK 0.5.20（versionCode 26）的独立续期切换。Rust 原生任务已启用，并通过 Let's Encrypt production 对 MI6、V831 两个域名完成真实 DNS-01 签发与部署。续期不再依赖 LinuxDeploy、Magisk、lego 或手机上的 ssh 命令。
 
 ## 腾讯云权限

@@ -3,11 +3,12 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
-## 0.5.20 原生证书续期
+## 0.5.21 设备 WS 证书同步与热加载
 
 Rust 核心通过 ACME/DNS-01 申请和续期本机及 V831 证书。本机 HTTPS 热加载，
-V831 使用固定主机指纹的原生 SSH 连接同步证书。MI6 已完成真实签发和旧调度移除，
+V831 从 0.5.21 起通过现有设备 WS 同步证书并热加载 HTTPS/WSS。MI6 已完成真实签发和旧调度移除，
 配置与验收见 [独立证书续期切换](../docs/deployment/independent-acme-deployment.md)。
+消息契约及换证验收见 [设备连接上的证书同步](../docs/deployment/device-certificate-sync.md)。
 
 ## 0.5.19 AI 抓拍保存修复
 
@@ -116,7 +117,7 @@ Android 强行停止 App 后，系统不会允许应用自行恢复。
 
 从 0.5.20 起，Rust 核心内置 ACME 后台任务，启动后立即检查，之后每 12 小时检查一次；
 失败 5 分钟后重试，一个域名失败不阻止另一个域名。本机 HTTPS 热加载证书，
-V831 通过原生 SSH 客户端同步证书，仅在证书或私钥变化、或上次重载失败时重载摄像头。
+从 0.5.21 起，V831 通过设备 WS 同步证书并热加载 HTTPS/WSS，无需重启摄像头。
 续期不依赖 Root、Magisk、LinuxDeploy、lego 或手机上的 ssh 命令。
 DDNS 仍只更新地址；证书任务独立复用 DDNS 配置中的 DNSPod 凭据执行 DNS-01。
 
@@ -124,7 +125,8 @@ DDNS 仍只更新地址；证书任务独立复用 DDNS 配置中的 DNSPod 凭�
 当前 MI6 部署已启用，DNS 等待时间设为 180 秒，以覆盖本域的 DNS 负缓存。
 具体字段见根目录 README 的“进程内证书自动续期”。ACME 账号、已签发证书和私钥、
 未完成 TXT 清理记录放在相邻的 `certificates.state/`，文件权限为 `0600`。
-首次迁移应复制现有 V831 证书和专用 SSH 密钥，核对并固定 V831 的 SHA-256 主机指纹。
+首次迁移应复制现有 V831 证书缓存，并配置 `edge.device_id`（缺省为 `v831cam`）。
+旧 SSH 配置字段读取时忽略；V831 必须运行支持 `certificate.protocol=1` 的 Rust 程序。
 迁移时先暂停旧续期循环，启用原生任务并验证两个域名的真实签发；
 成功后移除旧 `/data/adb/service.d/camera-hub-cert-renew.sh`，失败时恢复原调度。
 当前 MI6 的旧 Magisk 脚本及循环已移除，LinuxDeploy 续期启动项保持停用。
