@@ -1,5 +1,10 @@
 # MI6 / LinuxDeploy 适配器
 
+这是旧 LinuxDeploy 部署的兼容适配器。当前 MI6 使用
+[独立 Android APK](../../android/README.md)，证书续期已由 Rust 原生任务接管，
+不使用此目录的安装器或 ACME 调度。切换验收见
+[独立证书续期切换](../../docs/deployment/independent-acme-deployment.md)。
+
 该目录只包含小米 6 LinuxDeploy 环境所需的系统级安装与启动逻辑：
 
 - 安装单一 `/usr/local/bin/camera-hub` 可执行文件和 sherpa 共享库。

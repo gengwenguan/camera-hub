@@ -653,7 +653,9 @@ profile。本机常规 90 天证书提前 30 天续期；其他证书按实际�
 认证接口：`GET /api/v1/certificates` 查看配置与状态，`PUT` 保存完整配置并立即检查，
 `POST /api/v1/certificates/check` 提交 `{}` 按阈值检查。显式提交 `{"force":true}`
 会强制申请新证书，用于部署验收；日常使用页面“立即检查”即可。
-迁移时先验证一次真实签发，再关闭旧调度并启用内置定时任务。
+迁移时先暂停旧循环，启用内置任务并验证真实签发；成功后移除旧启动项，
+失败时恢复原调度。MI6 APK 的部署验收见
+[独立证书续期切换](docs/deployment/independent-acme-deployment.md)。
 现有证书尚未到期时的普通检查不会验证 DNS 凭据的创建、删除权限。
 测试可配置 `directory` 与 `dnspod_endpoint` 指向本地模拟服务。
 

@@ -3,6 +3,12 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.20 原生证书续期
+
+Rust 核心通过 ACME/DNS-01 申请和续期本机及 V831 证书。本机 HTTPS 热加载，
+V831 使用固定主机指纹的原生 SSH 连接同步证书。MI6 已完成真实签发和旧调度移除，
+配置与验收见 [独立证书续期切换](../docs/deployment/independent-acme-deployment.md)。
+
 ## 0.5.19 AI 抓拍保存修复
 
 修复 APK 内置 FFmpeg 缺少 `drawtext` 导致识别到人后仍无法保存照片的问题。
@@ -115,11 +121,13 @@ V831 通过原生 SSH 客户端同步证书，仅在证书或私钥变化、或�
 DDNS 仍只更新地址；证书任务独立复用 DDNS 配置中的 DNSPod 凭据执行 DNS-01。
 
 配置位于 App 私有 `files/engine/camera-hub-state/certificates.json`，默认关闭。
+当前 MI6 部署已启用，DNS 等待时间设为 180 秒，以覆盖本域的 DNS 负缓存。
 具体字段见根目录 README 的“进程内证书自动续期”。ACME 账号、已签发证书和私钥、
 未完成 TXT 清理记录放在相邻的 `certificates.state/`，文件权限为 `0600`。
 首次迁移应复制现有 V831 证书和专用 SSH 密钥，核对并固定 V831 的 SHA-256 主机指纹。
-验证两个域名的真实签发成功后，停用并移除旧 `/data/adb/service.d/camera-hub-cert-renew.sh` 及其循环，
-避免两个续期器同时写入证书。旧 LinuxDeploy 续期循环也应保持停用。
+迁移时先暂停旧续期循环，启用原生任务并验证两个域名的真实签发；
+成功后移除旧 `/data/adb/service.d/camera-hub-cert-renew.sh`，失败时恢复原调度。
+当前 MI6 的旧 Magisk 脚本及循环已移除，LinuxDeploy 续期启动项保持停用。
 若 DNSPod 返回 `AuthFailure.UnauthorizedOperation`，应为目标主域名补充
 `dnspod:CreateRecord` 和 `dnspod:DeleteRecord` 权限；补齐前保持内置任务关闭，保留原续期调度。
 

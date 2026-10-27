@@ -1,0 +1,15 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": [
+        "dnspod:CreateRecord",
+        "dnspod:DeleteRecord"
+      ],
+      "resource": [
+        "qcs::dnspod::uin/100044348535:domain/99791949"
+      ]
+    }
+  ]
+}
