@@ -4,6 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use libadb::{Connection, ConnectionConfig, keys, shell, sync};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -19,6 +20,18 @@ use tracing::{info, warn};
 pub const MAX_APK_BYTES: usize = 16 * 1024 * 1024;
 const APK: &str = "/data/local/tmp/phone-control-shell.apk";
 const ENTRY: &str = "site.gwghome.aicontrol.shell.ShellAgent";
+const DATA_CHECK: &str = r#"
+while read device mountpoint filesystem options rest; do
+    if [ "$mountpoint" = /data ]; then
+        case ",$options," in
+            *,ro,*) echo CAMERA_HUB_DATA_READ_ONLY; exit 1 ;;
+            *,rw,*) echo CAMERA_HUB_DATA_RW; exit 0 ;;
+        esac
+    fi
+done < /proc/mounts
+echo CAMERA_HUB_DATA_UNKNOWN
+exit 1
+"#;
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(default)]
@@ -327,8 +340,10 @@ impl TvControlService {
                 return;
             }
             if !manual && status.retry_at.is_some_and(|next| next > Instant::now()) {
-                status.phase = "waiting".into();
-                status.message = "服务不可用，等待下次 ADB 恢复".into();
+                if status.phase != "filesystem_readonly" {
+                    status.phase = "waiting".into();
+                    status.message = "服务不可用，等待下次 ADB 恢复".into();
+                }
                 return;
             }
             status.phase = "recovering".into();
@@ -360,13 +375,24 @@ impl TvControlService {
                 info!(host = config.host, "TV shell agent restored");
             }
             Err(error) => {
-                status.phase = "waiting".into();
-                status.message = "暂时无法恢复；电视需联网并开放 ADB，首次连接可能需授权".into();
-                status.last_error = Some(format!("{error:#}"));
-                status.recovery_failures = status.recovery_failures.saturating_add(1);
+                let detail = format!("{error:#}");
+                let read_only = detail.contains("CAMERA_HUB_DATA_READ_ONLY")
+                    || detail.contains("Read-only file system");
+                status.phase = if read_only { "filesystem_readonly" } else { "waiting" }.into();
+                status.message = if read_only {
+                    "电视 /data 文件系统只读，已停止部署；请重启电视，恢复可写后会自动重试"
+                } else {
+                    "暂时无法恢复，请查看具体错误；网络或 ADB 授权异常时请检查电视"
+                }.into();
+                status.last_error = Some(detail);
+                status.recovery_failures = if read_only {
+                    0
+                } else {
+                    status.recovery_failures.saturating_add(1)
+                };
                 // Keep detecting an offline TV each polling interval. Back off
                 // only expensive/authenticated bootstrap failures.
-                let delay = if status.adb_connected {
+                let delay = if status.adb_connected && !read_only {
                     15_u64.saturating_mul(1 << status.recovery_failures.min(4))
                 } else {
                     config.poll_seconds
@@ -429,36 +455,51 @@ impl TvControlService {
         if self.healthy(config).await.is_ok() {
             return Ok(());
         }
-        match tokio::fs::read(self.data_dir.join("agent.apk")).await {
+        check_data_writable(&mut connection).await?;
+        let replace_apk = match tokio::fs::read(self.data_dir.join("agent.apk")).await {
             Ok(bytes) => {
-                let mut buffer = vec![0_u8; 66_000];
-                let mut session = sync::open(&mut connection, &mut buffer)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("ADB sync：{e}"))?;
-                session
-                    .send(&format!("{APK}.upload"), 0o100644, epoch() as u32, &bytes)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("传输电视 APK：{e}"))?;
-                session
-                    .quit()
-                    .await
-                    .map_err(|e| anyhow::anyhow!("结束 APK 传输：{e}"))?;
-                let output = remote_shell(
-                    &mut connection,
-                    &format!("mv {APK}.upload {APK} && echo CAMERA_HUB_APK_READY"),
-                )
-                .await?;
                 ensure!(
-                    output.contains("CAMERA_HUB_APK_READY"),
-                    "替换电视 APK 失败：{output}"
+                    (4..=MAX_APK_BYTES).contains(&bytes.len()) && bytes.starts_with(b"PK\x03\x04"),
+                    "缓存 APK 无效，请重新上传"
                 );
+                let digest = hex::encode(Sha256::digest(&bytes));
+                if apk_matches(&mut connection, APK, bytes.len(), &digest).await? {
+                    info!(host = config.host, "Reusing unchanged TV APK");
+                    false
+                } else {
+                    let mut buffer = vec![0_u8; 66_000];
+                    let mut session = sync::open(&mut connection, &mut buffer)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("ADB sync：{e}"))?;
+                    session
+                        .send(&format!("{APK}.upload"), 0o100644, epoch() as u32, &bytes)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("传输电视 APK：{e}"))?;
+                    session
+                        .quit()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("结束 APK 传输：{e}"))?;
+                    ensure!(
+                        apk_matches(&mut connection, &format!("{APK}.upload"), bytes.len(), &digest).await?,
+                        "电视临时 APK 校验失败，旧 APK 与进程已保留"
+                    );
+                    true
+                }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(error) => return Err(error.into()),
-        }
+        };
+        // Check again after transfer, before stopping the old process or writing
+        // PID/log files. Never replace an APK still in use by that process.
+        check_data_writable(&mut connection).await?;
+        let replacement = if replace_apk {
+            format!("mv {APK}.upload {APK} || exit 1")
+        } else {
+            String::new()
+        };
         let script = format!(
             r#"
-if [ ! -f {APK} ]; then echo CAMERA_HUB_APK_MISSING; exit 1; fi
+if [ ! -f {candidate} ]; then echo CAMERA_HUB_APK_MISSING; exit 1; fi
 pidfile=/data/local/tmp/phone-control-shell.pid
 if [ -f "$pidfile" ]; then
     pid=$(cat "$pidfile")
@@ -466,18 +507,29 @@ if [ -f "$pidfile" ]; then
     if [ -r /proc/$pid/cmdline ]; then
         name=$(tr '\000' ' ' < /proc/$pid/cmdline)
         case "$name" in
-            *{ENTRY}*) kill "$pid" || exit 1; sleep 1 ;;
+            *{ENTRY}*)
+                kill "$pid" || exit 1
+                attempts=0
+                while kill -0 "$pid" 2>/dev/null; do
+                    name=$(tr '\000' ' ' < /proc/$pid/cmdline 2>/dev/null)
+                    case "$name" in *{ENTRY}*) ;; *) break ;; esac
+                    if [ "$attempts" -ge 5 ]; then echo CAMERA_HUB_STOP_TIMEOUT; exit 1; fi
+                    sleep 1
+                    attempts=$((attempts + 1))
+                done ;;
             *) echo CAMERA_HUB_STALE_PID ;;
         esac
     fi
-    rm -f "$pidfile"
+    rm -f "$pidfile" || exit 1
 fi
+{replacement}
 am force-stop site.gwghome.aicontrol >/dev/null 2>&1 || true
 trap '' HUP
 CLASSPATH={APK} app_process /system/bin {ENTRY} {quality} {interval} > /data/local/tmp/phone-control-shell.log 2>&1 < /dev/null &
-echo $! > "$pidfile"
+echo $! > "$pidfile" || exit 1
 echo CAMERA_HUB_STARTED
 "#,
+            candidate = if replace_apk { format!("{APK}.upload") } else { APK.into() },
             quality = config.jpeg_quality,
             interval = config.frame_interval_ms
         );
@@ -500,6 +552,60 @@ echo CAMERA_HUB_STARTED
         .unwrap_or_default();
         bail!("已发送启动命令，但控制或截图未就绪：{log}")
     }
+}
+
+async fn check_data_writable(connection: &mut Connection<AdbTcp>) -> Result<()> {
+    let output = remote_shell(connection, DATA_CHECK).await?;
+    ensure!(
+        output == "CAMERA_HUB_DATA_RW",
+        "电视 /data 不可写，已停止部署：{output}"
+    );
+    Ok(())
+}
+
+async fn apk_matches(
+    connection: &mut Connection<AdbTcp>,
+    path: &str,
+    expected_size: usize,
+    digest: &str,
+) -> Result<bool> {
+    let output = remote_shell(connection, &format!(
+        "if [ ! -f {path} ]; then echo CAMERA_HUB_APK_MISSING; \
+         elif command -v sha256sum >/dev/null 2>&1; then sha256sum {path}; \
+         else echo CAMERA_HUB_HASH_UNAVAILABLE; fi"
+    )).await?;
+    if output == "CAMERA_HUB_APK_MISSING" {
+        return Ok(false);
+    }
+    if output != "CAMERA_HUB_HASH_UNAVAILABLE" {
+        let hash = output.split_whitespace().next().unwrap_or_default();
+        ensure!(
+            hash.len() == 64 && hash.bytes().all(|c| c.is_ascii_hexdigit()),
+            "读取电视 APK 校验值失败，旧进程已保留：{output}"
+        );
+        return Ok(hash.eq_ignore_ascii_case(digest));
+    }
+    // Older Android builds may lack sha256sum. Pull bounded chunks over sync
+    // and hash locally; do not degrade verification to file size alone.
+    let mut buffer = vec![0_u8; 66_000];
+    let mut session = sync::open(connection, &mut buffer)
+        .await
+        .map_err(|e| anyhow::anyhow!("ADB sync 校验：{e}"))?;
+    let stat = session.stat(path).await.map_err(|e| anyhow::anyhow!("读取 APK 大小：{e}"))?;
+    let mut matches = false;
+    if stat.mode != 0 && stat.size as usize == expected_size {
+        session.recv_start(path).await.map_err(|e| anyhow::anyhow!("读取 APK：{e}"))?;
+        let mut hash = Sha256::new();
+        let mut size = 0;
+        while let Some(chunk) = session.recv_next().await.map_err(|e| anyhow::anyhow!("校验 APK：{e}"))? {
+            size += chunk.len();
+            ensure!(size <= MAX_APK_BYTES, "电视 APK 超过 16 MiB");
+            hash.update(chunk);
+        }
+        matches = size == expected_size && hex::encode(hash.finalize()) == digest;
+    }
+    session.quit().await.map_err(|e| anyhow::anyhow!("结束 APK 校验：{e}"))?;
+    Ok(matches)
 }
 
 async fn remote_shell(connection: &mut Connection<AdbTcp>, command: &str) -> Result<String> {

@@ -30,6 +30,13 @@ class Tv:
     errors = []
     pid_owner = "unrelated"
     pid_checks = []
+    read_only = False
+    hash_available = True
+    corrupt_upload = False
+    apk = None
+    temporary_apk = None
+    data_checks = 0
+    hash_pulls = 0
 
 
 def check_pid_cleanup(script):
@@ -39,6 +46,9 @@ def check_pid_cleanup(script):
     with tempfile.TemporaryDirectory(prefix="camera-hub-tv-pid-") as temporary:
         root = Path(temporary)
         (root / "phone-control-shell.apk").write_bytes(b"APK")
+        if "mv /data/local/tmp/phone-control-shell.apk.upload" in cleanup:
+            (root / "phone-control-shell.apk.upload").write_bytes(b"NEW_APK")
+            assert cleanup.index('kill "$pid"') < cleanup.index("mv /data/local/tmp/")
         pidfile = root / "phone-control-shell.pid"
         child = subprocess.Popen(["sleep", "30"])
         try:
@@ -49,6 +59,12 @@ def check_pid_cleanup(script):
                 name = ("site.gwghome.aicontrol.shell.ShellAgent" if Tv.pid_owner == "agent"
                         else "com.yunos.tv.yingshi.boutique")
                 (proc / "cmdline").write_bytes(name.encode() + b"\0")
+                if Tv.pid_owner == "agent":
+                    # A real /proc entry vanishes when the terminated process exits.
+                    def reap():
+                        child.wait(timeout=4)
+                        (proc / "cmdline").unlink()
+                    threading.Thread(target=reap, daemon=True).start()
             cleanup = cleanup.replace("/data/local/tmp/", str(root) + "/")
             cleanup = cleanup.replace("/proc/", str(root / "proc") + "/")
             cleanup = "am() { return 1; }\n" + cleanup
@@ -144,10 +160,20 @@ class Adbd(socketserver.BaseRequestHandler):
                         script = service[6:]
                         if script.startswith("pm path "):
                             raise AssertionError("Package-independent recovery must not require pm path")
-                        elif "CAMERA_HUB_APK_READY" in script:
-                            output = b"CAMERA_HUB_APK_READY\n"
+                        elif "CAMERA_HUB_DATA_UNKNOWN" in script:
+                            Tv.data_checks += 1
+                            output = (b"CAMERA_HUB_DATA_READ_ONLY\n" if Tv.read_only
+                                      else b"CAMERA_HUB_DATA_RW\n")
+                        elif "CAMERA_HUB_HASH_UNAVAILABLE" in script:
+                            data = Tv.temporary_apk if ".apk.upload" in script else Tv.apk
+                            output = (b"CAMERA_HUB_APK_MISSING\n" if data is None
+                                      else b"CAMERA_HUB_HASH_UNAVAILABLE\n" if not Tv.hash_available
+                                      else hashlib.sha256(data).hexdigest().encode() + b"  agent.apk\n")
                         elif "CAMERA_HUB_STARTED" in script:
+                            assert not Tv.read_only, "Read-only TV must not be stopped or started"
                             check_pid_cleanup(script)
+                            if "mv /data/local/tmp/phone-control-shell.apk.upload" in script:
+                                Tv.apk = Tv.temporary_apk
                             Tv.starts += 1
                             Tv.online = Tv.start_succeeds
                             output = b"CAMERA_HUB_STARTED\n"
@@ -162,6 +188,8 @@ class Adbd(socketserver.BaseRequestHandler):
                     channel = channels[remote_id]
                     if channel["service"].startswith("shell:"):
                         send(connection, b"CLSE", remote_id, host_id)
+                    elif channel.get("pending"):
+                        send(connection, b"WRTE", remote_id, host_id, channel["pending"].pop(0))
                 elif command == b"WRTE":
                     channel = channels[remote_id]
                     assert channel["service"] == "sync:"
@@ -176,12 +204,30 @@ class Adbd(socketserver.BaseRequestHandler):
                         payload = bytes(channel["buffer"][8:length])
                         del channel["buffer"][:length]
                         if tag == b"SEND":
+                            assert not Tv.read_only, "Read-only TV must not receive APK writes"
                             assert payload.startswith(b"/data/local/tmp/phone-control-shell.apk.upload,")
                         elif tag == b"DATA":
                             channel["upload"].extend(payload)
                         elif tag == b"DONE":
                             Tv.uploads.append(bytes(channel["upload"]))
+                            Tv.temporary_apk = bytes(channel["upload"])
+                            if Tv.corrupt_upload:
+                                Tv.temporary_apk = Tv.temporary_apk[:-1] + b"!"
                             send(connection, b"WRTE", remote_id, host_id, b"OKAY\0\0\0\0")
+                        elif tag in (b"STAT", b"RECV"):
+                            data = Tv.temporary_apk if payload.endswith(b".upload") else Tv.apk
+                            if tag == b"STAT":
+                                reply = struct.pack("<4sIII", b"STAT", 0o100644 if data else 0,
+                                                    len(data) if data else 0, 1)
+                                send(connection, b"WRTE", remote_id, host_id, reply)
+                            else:
+                                assert data is not None
+                                Tv.hash_pulls += 1
+                                replies = [b"DATA" + struct.pack("<I", len(data[i:i + 4088])) +
+                                           data[i:i + 4088] for i in range(0, len(data), 4088)]
+                                replies.append(b"DONE\0\0\0\0")
+                                channel["pending"] = replies[1:]
+                                send(connection, b"WRTE", remote_id, host_id, replies[0])
                         elif tag == b"QUIT":
                             send(connection, b"CLSE", remote_id, host_id)
                         else:
@@ -326,7 +372,8 @@ def run(binary, browser=False):
             Tv.online = False
             until(lambda: overview()["status"]["phase"] == "checking", 8)
             assert Tv.connections == 0, "first failed check must not restart the TV"
-            until(lambda: overview()["status"]["recovery_count"] == 1, 15)
+            # First bootstrap also generates a persistent RSA host key.
+            until(lambda: overview()["status"]["recovery_count"] == 1, 50)
             assert Tv.starts == 1 and Tv.uploads == [apk]
             assert Tv.pid_checks == ["unrelated"]
             checked = overview()["status"]["last_checked_epoch"]
@@ -348,6 +395,7 @@ def run(binary, browser=False):
             assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
             until(lambda: overview()["status"]["recovery_count"] == 2, 15)
             assert Tv.starts == 2
+            assert Tv.uploads == [apk], "Identical APK was uploaded again"
             assert Tv.pid_checks == ["unrelated", "agent"]
             assert not overview()["config"]["enabled"]
             assert http(base, "/api/v1/tv", cookie, {**config, "host": "x; reboot"}, "PUT")[0] == 400
@@ -365,13 +413,69 @@ def run(binary, browser=False):
             assert Tv.starts == 3
             assert Tv.pid_checks == ["unrelated", "agent", "missing"]
 
+            # Verify transferred content before touching the old APK/process.
+            Tv.start_succeeds = True
+            Tv.pid_owner = "agent"
+            replacement = apk[:-1] + b"x"
+            assert http(base, "/api/v1/tv/apk", cookie, method="POST", binary=replacement)[0] == 200
+            Tv.corrupt_upload = True
+            starts, uploads = Tv.starts, len(Tv.uploads)
+            assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
+            until(lambda: "校验失败" in (overview()["status"]["last_error"] or ""), 15)
+            assert "校验失败" in overview()["status"]["last_error"]
+            assert Tv.starts == starts and Tv.apk == apk
+            assert len(Tv.uploads) == uploads + 1
+            Tv.corrupt_upload = False
+            assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
+            until(lambda: overview()["status"]["recovery_count"] == 3, 15)
+            assert Tv.apk == replacement
+            print("PASS: identical APK reused; corrupt upload preserves old APK and process; atomic update",
+                  flush=True)
+
+            # RO is simulated at the protocol boundary, never by remounting a device.
+            Tv.online = False
+            Tv.read_only = True
+            starts, uploads, checks = Tv.starts, len(Tv.uploads), Tv.data_checks
+            config["enabled"] = True
+            assert http(base, "/api/v1/tv", cookie, config, "PUT")[0] == 200
+            assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
+            until(lambda: overview()["status"]["phase"] == "filesystem_readonly", 15)
+            assert "/data" in overview()["status"]["message"]
+            assert "CAMERA_HUB_DATA_READ_ONLY" in overview()["status"]["last_error"]
+            until(lambda: Tv.data_checks >= checks + 2, 12)
+            assert Tv.starts == starts and len(Tv.uploads) == uploads
+            Tv.read_only = False
+            until(lambda: overview()["status"]["recovery_count"] == 4, 12)
+            assert Tv.starts == starts + 1 and len(Tv.uploads) == uploads
+            assert overview()["status"]["last_error"] is None
+            print("PASS: read-only blocks writes/restarts; periodic probe resumes recovery when writable",
+                  flush=True)
+
+            # No sha256sum: compare via bounded sync stat/recv, including same-size differences.
+            config["enabled"] = False
+            assert http(base, "/api/v1/tv", cookie, config, "PUT")[0] == 200
+            Tv.online = False
+            Tv.hash_available = False
+            fallback_apk = replacement[:-1] + b"y"
+            assert http(base, "/api/v1/tv/apk", cookie, method="POST", binary=fallback_apk)[0] == 200
+            assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
+            until(lambda: overview()["status"]["recovery_count"] == 5, 18)
+            assert Tv.apk == fallback_apk and Tv.hash_pulls == 2
+            Tv.online = False
+            uploads = len(Tv.uploads)
+            assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
+            until(lambda: overview()["status"]["recovery_count"] == 6, 15)
+            assert len(Tv.uploads) == uploads and Tv.hash_pulls == 3
+            print("PASS: hash fallback detects same-size changes and reuses identical APK", flush=True)
+
             process.terminate()
             process.wait(timeout=5)
             process = start()
             assert overview()["config"] == config
-            assert overview()["apk_bytes"] == len(apk)
+            assert overview()["apk_bytes"] == len(fallback_apk)
             assert hashlib.sha256(key_path.read_bytes()).hexdigest() == key_hash
             Tv.auth_required = True
+            Tv.online = False
             assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
             until(lambda: overview()["status"]["phase"] == "waiting", 18)
             assert not overview()["status"]["service_online"]
@@ -386,6 +490,10 @@ def run(binary, browser=False):
                 "ADB authorization failure", "reused PID preserves unrelated app",
                 "verified agent stopped", "exited process PID cleaned",
                 "recovery without installed remote App",
+                "identical APK skips upload", "corrupt upload preserves old APK/process",
+                "stop before atomic APK replacement", "read-only blocks writes and restart",
+                "read-only polling resumes when writable", "sha256sum fallback via bounded sync",
+                "same-size APK difference detected",
             ]}, ensure_ascii=False))
         except Exception:
             if process is not None and process.poll() is None:

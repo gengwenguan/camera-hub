@@ -3,6 +3,12 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.26 电视部署减少写入与只读保护
+
+恢复时比对 APK SHA-256，相同则复用；升级先传输并校验临时文件，停止确认过的
+ShellAgent 并等待退出后才原子替换。电视 `/data` 只读时停止部署并显示具体原因，
+按检测周期读取挂载状态，恢复可写后自动重试。详情见 [电视自动恢复](../docs/tv-control.md)。
+
 ## 0.5.25 TV 无需安装远控 App
 
 电视恢复流程不再检查远控 App 安装记录。搭配 ai-control-agent 0.1.32 或更新的
