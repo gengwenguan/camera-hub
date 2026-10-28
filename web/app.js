@@ -2680,26 +2680,21 @@
     }
 
     function httpProxyCurlGuide() {
-        const exampleUrl = "https://www.baidu.com";
+        const exampleUrl = "http://192.168.1.28/api/click?sv=0&act=1";
         const encodedUrl = encodeURIComponent(exampleUrl);
         const target = httpProxyUrl(exampleUrl);
         return [
-            "HTTP 代理调用说明",
+            "HTTP 代理 GET 调用说明",
             "",
             "url 参数必须使用 URL 编码，再作为 Hub 接口的 url 查询参数。",
             `示例目标 URL：${exampleUrl}`,
             `编码后的 url：${encodedUrl}`,
-            "Hub 收到请求后会解码 url，并使用相同 HTTP 方法访问目标地址。",
+            "Hub 收到请求后会解码 url，并使用 GET 访问目标地址。",
             "URL 中的 token 已使用当前代理 Token，供 Hub 验证代理访问权限。",
             "仅当目标接口要求鉴权时才添加 Authorization，请填写目标服务的真实凭据，Hub 会将其转发给目标。",
             "",
             "GET 示例",
             `curl '${target}'`,
-            "",
-            "POST JSON 示例",
-            `curl -X POST '${target}' \\`,
-            "  -H 'Content-Type: application/json' \\",
-            "  --data '{\"enabled\":true}'",
         ].join("\n");
     }
 

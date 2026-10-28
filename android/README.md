@@ -3,6 +3,11 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.29 HTTP 代理 GET 示例
+
+调用示例改为代理 GET 访问 `http://192.168.1.28/api/click?sv=0&act=1`。
+目标 URL 的查询参数整体编码进 `url` 参数；复制命令带当前真实代理 Token。
+
 ## 0.5.28 HTTP 代理示例鉴权说明
 
 调用示例直接使用 URL 中的当前代理 Token；移除 POST 示例的 `TARGET_TOKEN`
