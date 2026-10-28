@@ -429,11 +429,6 @@ impl TvControlService {
         if self.healthy(config).await.is_ok() {
             return Ok(());
         }
-        let package = remote_shell(&mut connection, "pm path site.gwghome.aicontrol").await?;
-        ensure!(
-            package.lines().any(|line| line.starts_with("package:")),
-            "电视尚未安装手机远控 App；ShellAgent 仍需要该 App 的 Context"
-        );
         match tokio::fs::read(self.data_dir.join("agent.apk")).await {
             Ok(bytes) => {
                 let mut buffer = vec![0_u8; 66_000];
@@ -477,7 +472,7 @@ if [ -f "$pidfile" ]; then
     fi
     rm -f "$pidfile"
 fi
-am force-stop site.gwghome.aicontrol || exit 1
+am force-stop site.gwghome.aicontrol >/dev/null 2>&1 || true
 trap '' HUP
 CLASSPATH={APK} app_process /system/bin {ENTRY} {quality} {interval} > /data/local/tmp/phone-control-shell.log 2>&1 < /dev/null &
 echo $! > "$pidfile"

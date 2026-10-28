@@ -33,8 +33,8 @@ class Tv:
 
 
 def check_pid_cleanup(script):
-    """Execute the received recovery script against isolated PID/proc fixtures."""
-    cleanup = script.split("am force-stop site.gwghome.aicontrol", 1)[0]
+    """Check PID cleanup and recovery with the optional App absent."""
+    cleanup = script.split("trap '' HUP", 1)[0]
     assert cleanup != script, "Missing startup boundary"
     with tempfile.TemporaryDirectory(prefix="camera-hub-tv-pid-") as temporary:
         root = Path(temporary)
@@ -51,6 +51,7 @@ def check_pid_cleanup(script):
                 (proc / "cmdline").write_bytes(name.encode() + b"\0")
             cleanup = cleanup.replace("/data/local/tmp/", str(root) + "/")
             cleanup = cleanup.replace("/proc/", str(root / "proc") + "/")
+            cleanup = "am() { return 1; }\n" + cleanup
             result = subprocess.run(["/bin/sh", "-c", cleanup], text=True,
                                     capture_output=True, timeout=5)
             assert result.returncode == 0, result.stdout + result.stderr
@@ -142,7 +143,7 @@ class Adbd(socketserver.BaseRequestHandler):
                     if service.startswith("shell:"):
                         script = service[6:]
                         if script.startswith("pm path "):
-                            output = b"package:/data/app/phone-control.apk\n"
+                            raise AssertionError("Package-independent recovery must not require pm path")
                         elif "CAMERA_HUB_APK_READY" in script:
                             output = b"CAMERA_HUB_APK_READY\n"
                         elif "CAMERA_HUB_STARTED" in script:
@@ -331,7 +332,7 @@ def run(binary, browser=False):
             checked = overview()["status"]["last_checked_epoch"]
             until(lambda: overview()["status"]["last_checked_epoch"] > checked, 8)
             assert Tv.starts == 1 and Tv.connections == 1, "healthy service was restarted"
-            print("PASS: two failed probes, legacy ADB shell/sync, no repeated restart", flush=True)
+            print("PASS: recovery without installed App, legacy ADB shell/sync, no repeated restart", flush=True)
             key_path = root / "camera-hub-state/tv-control.state/adb/adbkey"
             key_hash = hashlib.sha256(key_path.read_bytes()).hexdigest()
             assert key_path.stat().st_mode & 0o777 == 0o600
@@ -384,6 +385,7 @@ def run(binary, browser=False):
                 "health confirmation after start", "persistent config/APK/key/session",
                 "ADB authorization failure", "reused PID preserves unrelated app",
                 "verified agent stopped", "exited process PID cleaned",
+                "recovery without installed remote App",
             ]}, ensure_ascii=False))
         except Exception:
             if process is not None and process.poll() is None:

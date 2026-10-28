@@ -4,8 +4,9 @@ Web 导航的“电视控制”（`/#tv`）由 camera-hub 的 Rust 常驻服务�
 不依赖网页定时器，关闭浏览器后继续工作。支持一台开启网络 ADB 的电视。
 
 配置电视局域网 IP / 主机名、ADB 端口（通常 5555），上传 ai-control-agent 构建的
-手机远控 APK，然后启用守护。电视必须已经安装 `site.gwghome.aicontrol`，
-ShellAgent 仍依赖它的 Context；Hub 上传 APK 不会代替普通 App 安装。
+手机远控 APK（0.1.32 或更新），然后启用守护。Hub 0.5.25 起不再检查
+`site.gwghome.aicontrol` 安装记录；新 ShellAgent 使用系统 Context，电视只需
+`/data/local/tmp/phone-control-shell.apk` 文件。旧远控 App 可卸载。
 建议给电视分配固定 DHCP 地址。
 
 默认每 15 秒检查 `http://电视:9080/api/v1/status`，要求控制后端为 `adb_shell`、
@@ -13,10 +14,13 @@ ShellAgent 仍依赖它的 Context；Hub 上传 APK 不会代替普通 App 安�
 
 1. Rust 通过原生 ADB TCP 协议连接电视，无需 Hub 安装 adb 可执行文件。
 2. 再次检查 HTTP 健康状态，避免电视自行恢复后被重启。
-3. 检查已安装 App，使用 ADB sync 将 Hub 缓存 APK 传到 `/data/local/tmp/phone-control-shell.apk`。
+3. 使用 ADB sync 将 Hub 缓存 APK 传到 `/data/local/tmp/phone-control-shell.apk`。
 4. 核对 PID 文件：确为 ShellAgent 时停止旧进程；进程已退出或 PID 已被其他应用
    复用时只删除过期 PID 文件，不停止其他应用。然后通过 `app_process` 拉起新进程。
 5. 等待控制与截图健康检查通过后才标记恢复成功。
+
+恢复前尝试停止可选的普通远控 App 以释放 9080；未安装该 App 不影响启动。
+升级时先上传新版 ShellAgent APK，再更新 Hub；旧 APK 本身仍有安装依赖。
 
 电视离线时按检测间隔重试；ADB 授权或启动失败按 30、60、120、240 秒延迟重试。
 每次恢复最多 60 秒，检查和恢复串行执行。首次连接需要在开启 ADB 身份认证的
@@ -27,6 +31,11 @@ ShellAgent 仍依赖它的 Context；Hub 上传 APK 不会代替普通 App 安�
 “检查并恢复”可手动执行，包括守护关闭时。关闭守护不会停止电视已运行的服务。
 上传新 APK 也不会重启健康服务；下次恢复时使用新 APK。
 JPEG 质量和截图间隔只应用于恢复后的进程，默认 25 / 300 ms。
+
+2026-10-28 已在海尔 Android 5.1 电视验证 Hub 0.5.25 + ShellAgent 0.1.32：
+卸载普通远控 App 后停止服务并删除临时 APK，Hub 从缓存重新传输，约 22 秒恢复；
+恢复前后前台包名一致，控制与截图通过健康检查。Hub 更新后电视配置、APK 缓存及
+语音、TTS、DDNS、红外组件状态正常。
 
 可选“AI 访问地址”只用于远控与指南链接，例如 `http://[电视公网IPv6]:9080`；
 局域网健康检测仍使用电视局域网地址。外部 AI 先读取 `/api/v1/guide`，

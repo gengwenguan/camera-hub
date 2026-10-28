@@ -3,6 +3,12 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.25 TV 无需安装远控 App
+
+电视恢复流程不再检查远控 App 安装记录。搭配 ai-control-agent 0.1.32 或更新的
+APK 文件，ShellAgent 使用系统 Context，旧远控 App 可卸载。
+上传新版恢复 APK 后，电视上线及服务异常仍由 Hub 通过 ADB 自动恢复。
+
 ## 0.5.24 电视重启恢复修复
 
 电视重启后，旧 ShellAgent 的 PID 可能被其他应用复用。守护现在只清理过期
