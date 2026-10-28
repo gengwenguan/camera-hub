@@ -3,6 +3,11 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.28 HTTP 代理示例鉴权说明
+
+调用示例直接使用 URL 中的当前代理 Token；移除 POST 示例的 `TARGET_TOKEN`
+请求头。仅当目标接口要求鉴权时，Authorization 才填写目标服务的真实凭据并由 Hub 转发。
+
 ## 0.5.27 电视截图健康检查
 
 检测帧龄与旧服务的帧编号增长，连续确认停滞后恢复。截图明确不可用而控制在线时，
