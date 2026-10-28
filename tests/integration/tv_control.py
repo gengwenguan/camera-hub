@@ -40,6 +40,7 @@ class Tv:
     capture = True
     stalled = False
     legacy_status = False
+    idle = False
 
 
 def check_pid_cleanup(script):
@@ -102,6 +103,10 @@ class TvHttp(BaseHTTPRequestHandler):
         }
         if not Tv.legacy_status:
             body["capture"]["frameAgeMs"] = 20_000 if Tv.stalled else 0
+        if Tv.idle:
+            body["capture"]["mode"] = "idle"
+            body["capture"]["effectiveFrameIntervalMs"] = 10_000
+            body["capture"]["frameAgeMs"] = 60_000 if Tv.stalled else 12_000
         if not Tv.capture:
             del body["capture"]["latestFrame"]
         data = json.dumps(body).encode()
@@ -496,11 +501,17 @@ def run(binary, browser=False):
             assert Tv.starts == starts
             print("PASS: unavailable screenshot keeps working control service; capture resumes without restart",
                   flush=True)
+            Tv.idle = True
+            checked = overview()["status"]["last_checked_epoch"]
+            until(lambda: overview()["status"]["last_checked_epoch"] > checked, 8)
+            assert overview()["status"]["phase"] == "online" and Tv.starts == starts
+            print("PASS: idle effective interval permits older frames without false recovery", flush=True)
             Tv.stalled = True
             until(lambda: overview()["status"]["phase"] == "capture_stalled", 8)
             assert overview()["status"]["service_online"] and Tv.starts == starts
             until(lambda: overview()["status"]["recovery_count"] == 7, 12)
             assert Tv.starts == starts + 1
+            Tv.idle = False
             Tv.legacy_status = True
             Tv.stalled = True
             until(lambda: overview()["status"]["recovery_count"] == 8, 35)
@@ -538,6 +549,7 @@ def run(binary, browser=False):
                 "same-size APK difference detected",
                 "capture unavailable preserves connected control", "capture resumes without restart",
                 "stale frame age recovery", "legacy frozen-frame recovery",
+                "adaptive idle threshold", "idle capture still detects true stall",
             ]}, ensure_ascii=False))
         except Exception:
             if process is not None and process.poll() is None:

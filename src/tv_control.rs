@@ -314,7 +314,9 @@ impl TvControlService {
         let capture = &body["capture"];
         let frame = &capture["latestFrame"];
         let active = capture["projectionActive"] == true && frame.is_object();
-        let interval = capture["config"]["frameIntervalMs"].as_u64().unwrap_or(config.frame_interval_ms);
+        let interval = capture["effectiveFrameIntervalMs"].as_u64()
+            .or_else(|| capture["config"]["frameIntervalMs"].as_u64())
+            .unwrap_or(config.frame_interval_ms);
         let stale_after = Duration::from_millis(interval.saturating_mul(5).max(10_000));
         let mut status = self.status.write().await;
         let stalled = if active {
