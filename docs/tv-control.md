@@ -14,7 +14,8 @@ ShellAgent 仍依赖它的 Context；Hub 上传 APK 不会代替普通 App 安�
 1. Rust 通过原生 ADB TCP 协议连接电视，无需 Hub 安装 adb 可执行文件。
 2. 再次检查 HTTP 健康状态，避免电视自行恢复后被重启。
 3. 检查已安装 App，使用 ADB sync 将 Hub 缓存 APK 传到 `/data/local/tmp/phone-control-shell.apk`。
-4. 核对 PID 文件对应的确为 ShellAgent，停止旧进程并通过 `app_process` 拉起新进程。
+4. 核对 PID 文件：确为 ShellAgent 时停止旧进程；进程已退出或 PID 已被其他应用
+   复用时只删除过期 PID 文件，不停止其他应用。然后通过 `app_process` 拉起新进程。
 5. 等待控制与截图健康检查通过后才标记恢复成功。
 
 电视离线时按检测间隔重试；ADB 授权或启动失败按 30、60、120、240 秒延迟重试。

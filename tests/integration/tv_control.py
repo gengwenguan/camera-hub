@@ -28,6 +28,42 @@ class Tv:
     uploads = []
     public_keys = []
     errors = []
+    pid_owner = "unrelated"
+    pid_checks = []
+
+
+def check_pid_cleanup(script):
+    """Execute the received recovery script against isolated PID/proc fixtures."""
+    cleanup = script.split("am force-stop site.gwghome.aicontrol", 1)[0]
+    assert cleanup != script, "Missing startup boundary"
+    with tempfile.TemporaryDirectory(prefix="camera-hub-tv-pid-") as temporary:
+        root = Path(temporary)
+        (root / "phone-control-shell.apk").write_bytes(b"APK")
+        pidfile = root / "phone-control-shell.pid"
+        child = subprocess.Popen(["sleep", "30"])
+        try:
+            pidfile.write_text(str(child.pid))
+            if Tv.pid_owner != "missing":
+                proc = root / "proc" / str(child.pid)
+                proc.mkdir(parents=True)
+                name = ("site.gwghome.aicontrol.shell.ShellAgent" if Tv.pid_owner == "agent"
+                        else "com.yunos.tv.yingshi.boutique")
+                (proc / "cmdline").write_bytes(name.encode() + b"\0")
+            cleanup = cleanup.replace("/data/local/tmp/", str(root) + "/")
+            cleanup = cleanup.replace("/proc/", str(root / "proc") + "/")
+            result = subprocess.run(["/bin/sh", "-c", cleanup], text=True,
+                                    capture_output=True, timeout=5)
+            assert result.returncode == 0, result.stdout + result.stderr
+            assert not pidfile.exists(), "Stale PID still blocks startup"
+            if Tv.pid_owner == "agent":
+                assert child.wait(timeout=2) < 0, "Verified agent was not stopped"
+            else:
+                assert child.poll() is None, "Unrelated process was stopped"
+            Tv.pid_checks.append(Tv.pid_owner)
+        finally:
+            if child.poll() is None:
+                child.terminate()
+            child.wait(timeout=2)
 
 
 class TvHttp(BaseHTTPRequestHandler):
@@ -110,6 +146,7 @@ class Adbd(socketserver.BaseRequestHandler):
                         elif "CAMERA_HUB_APK_READY" in script:
                             output = b"CAMERA_HUB_APK_READY\n"
                         elif "CAMERA_HUB_STARTED" in script:
+                            check_pid_cleanup(script)
                             Tv.starts += 1
                             Tv.online = Tv.start_succeeds
                             output = b"CAMERA_HUB_STARTED\n"
@@ -290,6 +327,7 @@ def run(binary, browser=False):
             assert Tv.connections == 0, "first failed check must not restart the TV"
             until(lambda: overview()["status"]["recovery_count"] == 1, 15)
             assert Tv.starts == 1 and Tv.uploads == [apk]
+            assert Tv.pid_checks == ["unrelated"]
             checked = overview()["status"]["last_checked_epoch"]
             until(lambda: overview()["status"]["last_checked_epoch"] > checked, 8)
             assert Tv.starts == 1 and Tv.connections == 1, "healthy service was restarted"
@@ -302,12 +340,14 @@ def run(binary, browser=False):
             config["enabled"] = False
             assert http(base, "/api/v1/tv", cookie, config, "PUT")[0] == 200
             Tv.online = False
+            Tv.pid_owner = "agent"
             until(lambda: overview()["status"]["phase"] == "disabled", 8)
             time.sleep(5.2)
             assert Tv.starts == 1, "disabled monitor restored the TV"
             assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
             until(lambda: overview()["status"]["recovery_count"] == 2, 15)
             assert Tv.starts == 2
+            assert Tv.pid_checks == ["unrelated", "agent"]
             assert not overview()["config"]["enabled"]
             assert http(base, "/api/v1/tv", cookie, {**config, "host": "x; reboot"}, "PUT")[0] == 400
             assert http(base, "/api/v1/tv", cookie, {**config, "api_origin": "javascript:alert(1)"}, "PUT")[0] == 400
@@ -315,12 +355,14 @@ def run(binary, browser=False):
             # An acknowledged shell start is not sufficient to report recovery.
             Tv.online = False
             Tv.start_succeeds = False
+            Tv.pid_owner = "missing"
             assert http(base, "/api/v1/tv/check", cookie, method="POST")[0] == 200
             until(lambda: overview()["status"]["phase"] == "waiting", 20)
             assert overview()["status"]["recovery_count"] == 2
             assert not overview()["status"]["service_online"]
             assert "未就绪" in overview()["status"]["last_error"]
             assert Tv.starts == 3
+            assert Tv.pid_checks == ["unrelated", "agent", "missing"]
 
             process.terminate()
             process.wait(timeout=5)
@@ -340,7 +382,8 @@ def run(binary, browser=False):
                 "authentication", "APK upload > 2 MiB", "two failed probes before recovery",
                 "legacy adbd shell + sync", "healthy service not restarted", "disabled + manual",
                 "health confirmation after start", "persistent config/APK/key/session",
-                "ADB authorization failure",
+                "ADB authorization failure", "reused PID preserves unrelated app",
+                "verified agent stopped", "exited process PID cleaned",
             ]}, ensure_ascii=False))
         except Exception:
             if process is not None and process.poll() is None:

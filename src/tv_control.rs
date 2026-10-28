@@ -470,8 +470,10 @@ if [ -f "$pidfile" ]; then
     case "$pid" in ''|*[!0-9]*) echo CAMERA_HUB_INVALID_PID; exit 1 ;; esac
     if [ -r /proc/$pid/cmdline ]; then
         name=$(tr '\000' ' ' < /proc/$pid/cmdline)
-        case "$name" in *{ENTRY}*) kill "$pid" || exit 1 ;; *) echo CAMERA_HUB_PID_REUSED; exit 1 ;; esac
-        sleep 1
+        case "$name" in
+            *{ENTRY}*) kill "$pid" || exit 1; sleep 1 ;;
+            *) echo CAMERA_HUB_STALE_PID ;;
+        esac
     fi
     rm -f "$pidfile"
 fi

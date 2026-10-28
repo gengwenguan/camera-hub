@@ -3,6 +3,11 @@
 Android App 内置 ARM64 Rust 服务，可独立部署，不需要 Termux、LinuxDeploy、SSH 或 Root。
 App 只管理当前手机上的 camera-hub 节点。
 
+## 0.5.24 电视重启恢复修复
+
+电视重启后，旧 ShellAgent 的 PID 可能被其他应用复用。守护现在只清理过期
+PID 文件并继续启动；只有确认属于 ShellAgent 的进程才会被停止。
+
 ## 0.5.22 电视控制守护
 
 Web 增加“电视控制”页面，由 Rust 常驻检测电视，连续两次健康检查失败后通过
