@@ -2538,6 +2538,8 @@
             online: config.enabled ? "服务正常" : "服务正常 · 守护关闭",
             recovering: "恢复中", waiting: "等待上线 / 重试",
             filesystem_readonly: "电视文件系统只读",
+            capture_unavailable: "控制正常 · 无截图",
+            capture_stalled: "截图停止更新",
         };
         tvUi.tvStatus.textContent = phases[status.phase] || "等待检测";
         tvUi.tvStatus.className = `chip ${status.service_online ? "active" : "offline"}`;

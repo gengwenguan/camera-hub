@@ -37,6 +37,9 @@ class Tv:
     temporary_apk = None
     data_checks = 0
     hash_pulls = 0
+    capture = True
+    stalled = False
+    legacy_status = False
 
 
 def check_pid_cleanup(script):
@@ -88,11 +91,20 @@ class TvHttp(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        data = json.dumps({
+        body = {
             "service": "phone-control", "controlBackend": "adb_shell",
             "controlConnected": Tv.online,
-            "capture": {"projectionActive": Tv.online, "latestFrame": {"frameId": "1"}},
-        }).encode()
+            "instanceId": str(Tv.starts),
+            "capture": {"projectionActive": Tv.online and Tv.capture, "screenEpoch": "1",
+                        "latestFrame": {"frameId": "stuck" if Tv.stalled else str(time.monotonic_ns())},
+                        "lastError": None if Tv.capture else "screenshot_unavailable",
+                        "config": {"frameIntervalMs": 300}},
+        }
+        if not Tv.legacy_status:
+            body["capture"]["frameAgeMs"] = 20_000 if Tv.stalled else 0
+        if not Tv.capture:
+            del body["capture"]["latestFrame"]
+        data = json.dumps(body).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -176,6 +188,7 @@ class Adbd(socketserver.BaseRequestHandler):
                                 Tv.apk = Tv.temporary_apk
                             Tv.starts += 1
                             Tv.online = Tv.start_succeeds
+                            Tv.stalled = False
                             output = b"CAMERA_HUB_STARTED\n"
                         elif script.startswith("tail "):
                             output = b"mock startup did not produce a screenshot\n"
@@ -468,6 +481,35 @@ def run(binary, browser=False):
             assert len(Tv.uploads) == uploads and Tv.hash_pulls == 3
             print("PASS: hash fallback detects same-size changes and reuses identical APK", flush=True)
 
+            starts, connections = Tv.starts, Tv.connections
+            config["enabled"] = True
+            assert http(base, "/api/v1/tv", cookie, config, "PUT")[0] == 200
+            Tv.capture = False
+            until(lambda: overview()["status"]["phase"] == "capture_unavailable", 8)
+            assert overview()["status"]["service_online"]
+            assert "方向键" in overview()["status"]["message"]
+            checked = overview()["status"]["last_checked_epoch"]
+            until(lambda: overview()["status"]["last_checked_epoch"] > checked, 8)
+            assert Tv.starts == starts and Tv.connections == connections
+            Tv.capture = True
+            until(lambda: overview()["status"]["phase"] == "online", 8)
+            assert Tv.starts == starts
+            print("PASS: unavailable screenshot keeps working control service; capture resumes without restart",
+                  flush=True)
+            Tv.stalled = True
+            until(lambda: overview()["status"]["phase"] == "capture_stalled", 8)
+            assert overview()["status"]["service_online"] and Tv.starts == starts
+            until(lambda: overview()["status"]["recovery_count"] == 7, 12)
+            assert Tv.starts == starts + 1
+            Tv.legacy_status = True
+            Tv.stalled = True
+            until(lambda: overview()["status"]["recovery_count"] == 8, 35)
+            assert Tv.starts == starts + 2
+            assert len(Tv.uploads) == uploads
+            print("PASS: stale frame age and legacy frozen frame ID trigger confirmed recovery", flush=True)
+            config["enabled"] = False
+            assert http(base, "/api/v1/tv", cookie, config, "PUT")[0] == 200
+
             process.terminate()
             process.wait(timeout=5)
             process = start()
@@ -494,6 +536,8 @@ def run(binary, browser=False):
                 "stop before atomic APK replacement", "read-only blocks writes and restart",
                 "read-only polling resumes when writable", "sha256sum fallback via bounded sync",
                 "same-size APK difference detected",
+                "capture unavailable preserves connected control", "capture resumes without restart",
+                "stale frame age recovery", "legacy frozen-frame recovery",
             ]}, ensure_ascii=False))
         except Exception:
             if process is not None and process.poll() is None:

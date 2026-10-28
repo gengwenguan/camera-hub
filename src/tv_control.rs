@@ -133,6 +133,16 @@ pub struct TvStatus {
     retry_at: Option<Instant>,
     #[serde(skip)]
     recovery_failures: u32,
+    #[serde(skip)]
+    last_frame_key: Option<String>,
+    #[serde(skip)]
+    last_frame_progress: Option<Instant>,
+}
+
+struct TvProbe {
+    capture_ready: bool,
+    capture_stalled: bool,
+    capture_error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -278,7 +288,7 @@ impl TvControlService {
         Ok(())
     }
 
-    async fn healthy(&self, config: &TvConfig) -> Result<()> {
+    async fn probe(&self, config: &TvConfig) -> Result<TvProbe> {
         let response = self
             .client
             .get(format!("{}/api/v1/status", config.lan_origin()))
@@ -298,11 +308,40 @@ impl TvControlService {
         ensure!(
             body["service"] == "phone-control"
                 && body["controlBackend"] == "adb_shell"
-                && body["controlConnected"] == true
-                && body["capture"]["projectionActive"] == true
-                && body["capture"]["latestFrame"].is_object(),
-            "电视控制或截图尚未就绪"
+                && body["controlConnected"] == true,
+            "电视控制尚未就绪"
         );
+        let capture = &body["capture"];
+        let frame = &capture["latestFrame"];
+        let active = capture["projectionActive"] == true && frame.is_object();
+        let interval = capture["config"]["frameIntervalMs"].as_u64().unwrap_or(config.frame_interval_ms);
+        let stale_after = Duration::from_millis(interval.saturating_mul(5).max(10_000));
+        let mut status = self.status.write().await;
+        let stalled = if active {
+            let key = format!("{}:{}:{}", body["instanceId"], capture["screenEpoch"], frame["frameId"]);
+            if status.last_frame_key.as_ref() != Some(&key) {
+                status.last_frame_key = Some(key);
+                status.last_frame_progress = Some(Instant::now());
+            }
+            if let Some(age) = capture["frameAgeMs"].as_u64() {
+                Duration::from_millis(age) > stale_after
+            } else {
+                status.last_frame_progress.is_some_and(|at| at.elapsed() > stale_after)
+            }
+        } else {
+            status.last_frame_key = None;
+            status.last_frame_progress = None;
+            false
+        };
+        Ok(TvProbe {
+            capture_ready: active && !stalled,
+            capture_stalled: stalled,
+            capture_error: capture["lastError"].as_str().map(str::to_owned),
+        })
+    }
+
+    async fn healthy(&self, config: &TvConfig) -> Result<()> {
+        ensure!(self.probe(config).await?.capture_ready, "电视截图尚未就绪或已停止更新");
         Ok(())
     }
 
@@ -315,12 +354,12 @@ impl TvControlService {
             status.message = "自动守护未启用；可手动检查并恢复".into();
             return;
         }
-        let probe = self.healthy(&config).await;
+        let probe = self.probe(&config).await;
         {
             let mut status = self.status.write().await;
             status.last_checked_epoch = Some(epoch());
             status.service_online = probe.is_ok();
-            if probe.is_ok() {
+            if probe.as_ref().is_ok_and(|p| p.capture_ready) {
                 status.phase = "online".into();
                 status.message = "电视控制与截图服务正常".into();
                 status.consecutive_failures = 0;
@@ -330,13 +369,34 @@ impl TvControlService {
                 status.last_error = None;
                 return;
             }
+            if let Ok(ref capture) = probe {
+                if !capture.capture_stalled && !manual {
+                    status.phase = "capture_unavailable".into();
+                    status.message = "控制服务在线，截图暂不可用；可继续使用方向键和页面控件".into();
+                    status.last_error = capture.capture_error.clone();
+                    status.consecutive_failures = 0;
+                    status.recovery_failures = 0;
+                    status.retry_at = None;
+                    status.next_retry_epoch = None;
+                    return;
+                }
+            }
             status.consecutive_failures = status.consecutive_failures.saturating_add(1);
             if status.retry_at.is_none() {
-                status.last_error = probe.err().map(|e| format!("{e:#}"));
+                status.last_error = match &probe {
+                    Ok(p) if p.capture_stalled => Some("电视截图帧已停止更新".into()),
+                    Ok(p) => p.capture_error.clone(),
+                    Err(e) => Some(format!("{e:#}")),
+                };
             }
             if !manual && status.consecutive_failures < 2 {
-                status.phase = "checking".into();
-                status.message = "首次健康检查失败，等待再次确认".into();
+                if probe.as_ref().is_ok_and(|p| p.capture_stalled) {
+                    status.phase = "capture_stalled".into();
+                    status.message = "控制服务在线，但截图停止更新，等待再次确认".into();
+                } else {
+                    status.phase = "checking".into();
+                    status.message = "首次健康检查失败，等待再次确认".into();
+                }
                 return;
             }
             if !manual && status.retry_at.is_some_and(|next| next > Instant::now()) {
